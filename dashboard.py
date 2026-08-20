@@ -289,6 +289,11 @@ def find_balanco_json(resultados: Path) -> Path:
     return candidatos[0]
 
 
+def find_optional_balanco_json(resultados: Path) -> Path | None:
+    candidatos = sorted(resultados.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidatos[0] if candidatos else None
+
+
 def load_json(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Arquivo nao encontrado: {path}")
@@ -299,6 +304,21 @@ def load_optional_json(path: Path) -> dict | None:
     if not path.exists():
         return None
     return load_json(path)
+
+
+def load_optional_statement(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
+    return load_json(path)
+
+
+def file_metadata(path: Path | None, expected_path: Path | None = None) -> dict:
+    reference = path or expected_path
+    return {
+        "path": str(reference) if reference is not None else "",
+        "modified_at": path.stat().st_mtime if path is not None and path.exists() else None,
+        "exists": bool(path is not None and path.exists()),
+    }
 
 
 def load_methodology_markdown() -> str:
@@ -340,15 +360,21 @@ def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
             if ticker not in TICKERS or "metricas" not in data:
                 continue
             companies[ticker] = data
-            file_meta[f"operacional_{ticker}"] = {"path": str(path), "modified_at": path.stat().st_mtime}
+            file_meta[f"operacional_{ticker}"] = {"path": str(path), "modified_at": path.stat().st_mtime, "exists": True}
     return {"companies": companies}, file_meta
 
 
 def dashboard_payload(resultados: Path) -> dict:
+    resultados.mkdir(parents=True, exist_ok=True)
     paths = {
-        "balanco": find_balanco_json(resultados),
+        "balanco": find_optional_balanco_json(resultados),
         "dre": resultados / "DRE_ITR_CVM_ultimos_5_anos.json",
         "dfc": resultados / "DFC_ITR_CVM.json",
+    }
+    expected_paths = {
+        "balanco": resultados / "balancos_itr_cvm_*.json",
+        "dre": paths["dre"],
+        "dfc": paths["dfc"],
     }
     indicator_paths = {
         "indicadores": resultados / "indicadores.json",
@@ -357,13 +383,18 @@ def dashboard_payload(resultados: Path) -> dict:
         "market_cap": resultados / "market_cap.json",
     }
     operational_data, operational_files = load_operational_data(resultados)
+    statements = {
+        "balanco": load_optional_statement(paths["balanco"]),
+        "dre": load_optional_statement(paths["dre"]),
+        "dfc": load_optional_statement(paths["dfc"]),
+    }
+    # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
+    # os tres demonstrativos financeiros minimos ja foram gerados.
+    has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))
     return {
         "tickers": TICKERS,
-        "statements": {
-            "balanco": load_json(paths["balanco"]),
-            "dre": load_json(paths["dre"]),
-            "dfc": load_json(paths["dfc"]),
-        },
+        "has_data": has_data,
+        "statements": statements,
         "indicators": {
             key: load_optional_json(path)
             for key, path in indicator_paths.items()
@@ -372,15 +403,13 @@ def dashboard_payload(resultados: Path) -> dict:
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
         "files": {
-            key: {
-                "path": str(path),
-                "modified_at": path.stat().st_mtime,
-            }
+            key: file_metadata(path, expected_paths.get(key))
             for key, path in paths.items()
         } | {
             key: {
                 "path": str(path),
                 "modified_at": path.stat().st_mtime if path.exists() else None,
+                "exists": path.exists(),
             }
             for key, path in indicator_paths.items()
         } | operational_files,
@@ -2264,6 +2293,11 @@ HTML = """<!doctype html>
         document.getElementById("content").innerHTML = renderAudit(currentTicker);
         return;
       }
+      if (currentMain === "dados" && DATA.has_data === false) {
+        document.getElementById("meta").textContent = "Sem dados carregados";
+        document.getElementById("content").innerHTML = '<div class="empty">Nenhum dado carregado. Execute a atualização para gerar os dados.</div>';
+        return;
+      }
       const statement = DATA.statements[currentStatement] || {};
       const company = statement.companies?.[currentTicker];
       renderViewTabs(company);
@@ -2306,6 +2340,7 @@ HTML = """<!doctype html>
 
 
 def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
+    resultados.mkdir(parents=True, exist_ok=True)
     app = Flask(__name__)
 
     @app.get("/")
