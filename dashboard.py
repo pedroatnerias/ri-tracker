@@ -2294,6 +2294,20 @@ HTML = """<!doctype html>
         return;
       }
       if (currentMain === "dados" && DATA.has_data === false) {
+        const viewTabs = document.getElementById("view-tabs");
+        viewTabs.innerHTML = "";
+        viewTabs.style.display = "flex";
+        if (!window.__STATIC_DATA__) {
+          const updateButton = button("Atualizar tudo", false, () => {
+            startFullUpdate().catch(error => {
+              const el = document.getElementById("update-status");
+              if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
+            });
+          });
+          updateButton.classList.add("update-button");
+          updateButton.disabled = Boolean(DATA.update_status?.running);
+          viewTabs.appendChild(updateButton);
+        }
         document.getElementById("meta").textContent = "Sem dados carregados";
         document.getElementById("content").innerHTML = '<div class="empty">Nenhum dado carregado. Execute a atualização para gerar os dados.</div>';
         return;
