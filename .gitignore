@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Segredos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs / temporarios
+*.log
+*.tmp
+*.temp
+*.part
+*.bak
+*.swp
+~$*
+
+# Dados gerados e downloads do Nerias
+resultados/
+downloads/
+dados_cvm/
+dados_cvm_itr/
+resultados_validacao*/
+Releases e relatórios/Entrada/
+Releases e relatórios/entrada/
+Releases e relatórios/Saída/
+Releases e relatórios/saída/
+Releases e relatórios/manifesto_downloads.json
+releases e relatórios/Entrada/
+releases e relatórios/entrada/
+releases e relatórios/Saída/
+releases e relatórios/saída/
+releases e relatórios/manifesto_downloads.json
+
+# Exports HTML estaticos gerados pelo dashboard
+acompanhador_de_mercado*.html
+
+# Arquivos de dados/downloads que nao devem ser versionados por padrao
+*.zip
+*.pdf
+*.xlsx
+*.xls
+*.xlsm
+*.csv
