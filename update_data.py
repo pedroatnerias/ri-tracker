@@ -23,13 +23,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Anos a passar para os apps da CVM. Quando omitido, usa a janela padrao do dashboard.",
     )
+    parser.add_argument(
+        "--diagnostico-ri",
+        action="store_true",
+        help="Repassa --diagnostico-ri somente para a etapa app_parser_operacional.py.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     resultados = resolve_app_path(args.resultados)
-    run_full_update(resultados, args.anos)
+    run_full_update(resultados, args.anos, diagnostico_ri=args.diagnostico_ri)
     return 0
 
 

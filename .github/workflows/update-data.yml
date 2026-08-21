@@ -30,7 +30,7 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Executar pipeline Nerias
-        run: python update_data.py --resultados resultados
+        run: python update_data.py --resultados resultados --diagnostico-ri
 
       - name: Validar JSONs gerados
         run: |

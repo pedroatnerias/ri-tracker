@@ -128,7 +128,11 @@ def run_update_command(label: str, command: list[str]) -> None:
     append_update_log(f"Concluido: {label}")
 
 
-def run_full_update(resultados: Path, anos: list[int] | None = None) -> None:
+def run_full_update(
+    resultados: Path,
+    anos: list[int] | None = None,
+    diagnostico_ri: bool = False,
+) -> None:
     resultados = resultados.expanduser().resolve()
     resultados.mkdir(parents=True, exist_ok=True)
     operational_dir = resultados / "dados_operacionais"
@@ -164,7 +168,10 @@ def run_full_update(resultados: Path, anos: list[int] | None = None) -> None:
     dfc_cmd.append("--sobrescrever-downloads")
     run_update_command("DFC CVM", dfc_cmd)
 
-    run_update_command("Releases e relatorios operacionais", [sys.executable, script_path("app_parser_operacional.py")])
+    parser_cmd = [sys.executable, script_path("app_parser_operacional.py")]
+    if diagnostico_ri:
+        parser_cmd.append("--diagnostico-ri")
+    run_update_command("Releases e relatorios operacionais", parser_cmd)
     run_update_command(
         "Dados operacionais",
         [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],

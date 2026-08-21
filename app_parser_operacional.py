@@ -31,6 +31,7 @@ PASTA_SAIDA_PADRAO = RELEASES_RELATORIOS_DIR / "Saída"
 ARQUIVO_MANIFESTO_DOWNLOADS = (
     RELEASES_RELATORIOS_DIR / "manifesto_downloads.json"
 )
+PASTA_DIAGNOSTICO_RI = BASE_DIR / "diagnostico_ri"
 
 ANO_INICIAL_PADRAO = 2022
 TIMEOUT_REQUISICAO = 45
@@ -190,6 +191,13 @@ class DownloadRealizado:
     status: str
 
 
+@dataclass
+class RespostaPlaywright:
+    html: str
+    url_final: str
+    network_items: list[dict[str, str | int]]
+
+
 # ============================================================
 # FUNÇÕES GERAIS
 # ============================================================
@@ -329,6 +337,102 @@ def parece_pdf(url: str, texto: str = "") -> bool:
         or "download" in combinado
         or "documento" in combinado
         or "arquivo" in combinado
+        or "file" in combinado
+        or "document" in combinado
+        or "download" in caminho
+    )
+
+
+def contexto_elemento(elemento: Any, limite_ancestrais: int = 5) -> str:
+    partes: list[str] = []
+    atual = elemento
+
+    for _ in range(limite_ancestrais):
+        if not atual:
+            break
+        try:
+            texto = atual.get_text(" ", strip=True)
+        except Exception:
+            texto = ""
+        if texto:
+            partes.append(texto)
+        atual = getattr(atual, "parent", None)
+
+    anterior = elemento.find_previous(["h1", "h2", "h3", "h4", "h5", "h6"])
+    if anterior:
+        partes.append(anterior.get_text(" ", strip=True))
+
+    return " ".join(partes)
+
+
+def valores_url_atributos(elemento: Any) -> list[str]:
+    urls: list[str] = []
+    for nome, valor in elemento.attrs.items():
+        valores = valor if isinstance(valor, list) else [valor]
+        for item in valores:
+            texto = str(item).strip()
+            if not texto:
+                continue
+            nome_normalizado = normalizar_texto(nome)
+            texto_normalizado = normalizar_texto(texto)
+            if (
+                nome in {"href", "src", "data-href", "data-url", "data-download"}
+                or nome_normalizado.startswith("data")
+                or parece_pdf(texto, nome)
+                or any(
+                    termo in texto_normalizado
+                    for termo in ("download", "document", "arquivo", "documento", "pdf")
+                )
+            ):
+                urls.append(texto)
+    return urls
+
+
+def limpar_url_extraida(url: str) -> str:
+    return url.replace("\\/", "/").strip().strip("\"'()[]{};,")
+
+
+def urls_em_texto(texto: str) -> list[str]:
+    urls = [
+        limpar_url_extraida(url)
+        for url in re.findall(r"""https?://[^"'<>\\\s]+""", texto)
+    ]
+    relativas = re.findall(
+        r"""(?P<url>/[^"'<>\\\s]*(?:\.pdf|download|document|arquivo|documento)[^"'<>\\\s]*)""",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    urls.extend(limpar_url_extraida(url) for url in relativas)
+    return urls
+
+
+def montar_documento(
+    *,
+    ticker: str,
+    empresa: str,
+    periodo_ano: tuple[str, int] | None,
+    tipo: str | None,
+    ano_inicial: int,
+    titulo: str,
+    url_origem: str,
+    url_documento: str,
+) -> DocumentoEncontrado | None:
+    if not tipo or not periodo_ano:
+        return None
+
+    periodo, ano = periodo_ano
+    if ano < ano_inicial:
+        return None
+
+    return DocumentoEncontrado(
+        ticker=ticker,
+        empresa=empresa,
+        periodo=periodo,
+        ano=ano,
+        tipo=tipo,
+        titulo_original=titulo or Path(urlparse(url_documento).path).name,
+        url_origem=url_origem,
+        url_documento=url_documento.split("#", 1)[0],
     )
 
 
@@ -343,110 +447,70 @@ def extrair_links_html(
     encontrados: list[DocumentoEncontrado] = []
     urls_vistas: set[str] = set()
 
-    for elemento in soup.find_all(["a", "button"]):
-        href = (
-            elemento.get("href")
-            or elemento.get("data-href")
-            or elemento.get("data-url")
-            or elemento.get("data-download")
-        )
-
-        if not href:
-            continue
-
-        href = href.strip()
-
-        if href.startswith(("javascript:", "mailto:", "tel:", "#")):
-            continue
-
-        url_documento = urljoin(url_base, href)
+    for elemento in soup.find_all(True):
+        urls_elemento = valores_url_atributos(elemento)
         titulo = " ".join(elemento.stripped_strings).strip()
 
         atributos = " ".join(
             str(valor)
             for valor in elemento.attrs.values()
         )
+        contexto = contexto_elemento(elemento)
 
-        texto_completo = (
-            f"{titulo} {href} {atributos} "
-            f"{elemento.parent.get_text(' ', strip=True) if elemento.parent else ''}"
-        )
+        for href in urls_elemento:
+            if href.startswith(("javascript:", "mailto:", "tel:", "#")):
+                continue
 
-        tipo = classificar_tipo_documento(texto_completo)
-        periodo_ano = identificar_periodo(texto_completo)
+            url_documento = urljoin(url_base, href)
+            texto_completo = f"{titulo} {href} {atributos} {contexto}"
 
-        if not tipo or not periodo_ano:
-            continue
+            if not parece_pdf(url_documento, texto_completo):
+                continue
 
-        periodo, ano = periodo_ano
-
-        if ano < ano_inicial:
-            continue
-
-        if not parece_pdf(url_documento, texto_completo):
-            continue
-
-        url_sem_fragmento = url_documento.split("#", 1)[0]
-
-        if url_sem_fragmento in urls_vistas:
-            continue
-
-        urls_vistas.add(url_sem_fragmento)
-
-        encontrados.append(
-            DocumentoEncontrado(
+            documento = montar_documento(
                 ticker=ticker,
                 empresa=empresa,
-                periodo=periodo,
-                ano=ano,
-                tipo=tipo,
-                titulo_original=titulo or Path(
-                    urlparse(url_documento).path
-                ).name,
-                url_origem=url_base,
-                url_documento=url_sem_fragmento,
-            )
-        )
-
-    # Captura URLs de PDF presentes em scripts ou objetos JSON.
-    for correspondencia in re.findall(
-        r"""https?://[^"'<>\\\s]+?\.pdf(?:\?[^"'<>\\\s]*)?""",
-        html,
-        flags=re.IGNORECASE,
-    ):
-        url_documento = correspondencia.replace("\\/", "/")
-        contexto = url_documento
-        tipo = classificar_tipo_documento(contexto)
-        periodo_ano = identificar_periodo(contexto)
-
-        if (
-            not tipo
-            or not periodo_ano
-            or url_documento in urls_vistas
-        ):
-            continue
-
-        periodo, ano = periodo_ano
-
-        if ano < ano_inicial:
-            continue
-
-        urls_vistas.add(url_documento)
-
-        encontrados.append(
-            DocumentoEncontrado(
-                ticker=ticker,
-                empresa=empresa,
-                periodo=periodo,
-                ano=ano,
-                tipo=tipo,
-                titulo_original=Path(
-                    urlparse(url_documento).path
-                ).name,
+                periodo_ano=identificar_periodo(texto_completo),
+                tipo=classificar_tipo_documento(texto_completo),
+                ano_inicial=ano_inicial,
+                titulo=titulo,
                 url_origem=url_base,
                 url_documento=url_documento,
             )
+
+            if not documento or documento.url_documento in urls_vistas:
+                continue
+
+            urls_vistas.add(documento.url_documento)
+            encontrados.append(documento)
+
+    # Captura URLs presentes em scripts/JSON. A URL nao precisa terminar em
+    # .pdf, mas precisa ter contexto suficiente de periodo e tipo.
+    for url_extraida in urls_em_texto(html):
+        url_documento = urljoin(url_base, url_extraida)
+        posicao = html.find(url_documento)
+        if posicao < 0:
+            posicao = html.find(url_extraida)
+        contexto = (
+            f"{url_extraida} {url_documento} "
+            f"{html[max(0, posicao - 600):posicao + 600] if posicao >= 0 else ''}"
         )
+        if not parece_pdf(url_documento, contexto):
+            continue
+
+        documento = montar_documento(
+            ticker=ticker,
+            empresa=empresa,
+            periodo_ano=identificar_periodo(contexto),
+            tipo=classificar_tipo_documento(contexto),
+            ano_inicial=ano_inicial,
+            titulo=Path(urlparse(url_documento).path).name,
+            url_origem=url_base,
+            url_documento=url_documento,
+        )
+        if documento and documento.url_documento not in urls_vistas:
+            urls_vistas.add(documento.url_documento)
+            encontrados.append(documento)
 
     return encontrados
 
@@ -467,7 +531,103 @@ def obter_html_requests(
     return resposta.text
 
 
-def obter_html_playwright(url: str) -> str:
+def diagnostico_html(html: str, url_final: str) -> dict[str, Any]:
+    soup = BeautifulSoup(html, "html.parser")
+    urls = []
+    for elemento in soup.find_all(True):
+        urls.extend(valores_url_atributos(elemento))
+    urls.extend(urls_em_texto(html))
+    dominios: dict[str, int] = {}
+    for item in urls:
+        dominio = urlparse(item).netloc
+        if dominio:
+            dominios[dominio] = dominios.get(dominio, 0) + 1
+    texto = normalizar_texto(html)
+    return {
+        "url_final": url_final,
+        "html_bytes": len(html.encode("utf-8", errors="replace")),
+        "links_a": len(soup.find_all("a")),
+        "buttons": len(soup.find_all("button")),
+        "url_attrs": len(urls),
+        "urls_pdf": sum(1 for item in urls if "pdf" in normalizar_texto(item)),
+        "urls_download": sum(1 for item in urls if "download" in normalizar_texto(item)),
+        "urls_arquivo": sum(1 for item in urls if "arquivo" in normalizar_texto(item)),
+        "urls_documento": sum(1 for item in urls if "documento" in normalizar_texto(item) or "document" in normalizar_texto(item)),
+        "iframes": len(soup.find_all("iframe")),
+        "scripts": len(soup.find_all("script")),
+        "principais_dominios": sorted(dominios.items(), key=lambda item: item[1], reverse=True)[:10],
+        "contem_textos": {
+            termo: normalizar_texto(termo) in texto
+            for termo in ("1T26", "2T26", "resultados", "release", "apresentacao", "apresentação", "demonstrações financeiras")
+        },
+    }
+
+
+def imprimir_diagnostico(ticker: str, origem: str, dados: dict[str, Any]) -> None:
+    print(f"[diagnostico-ri] {ticker} | {origem}")
+    for chave, valor in dados.items():
+        print(f"  {chave}: {valor}")
+
+
+def salvar_snapshot_diagnostico(ticker: str, origem: str, html: str) -> None:
+    PASTA_DIAGNOSTICO_RI.mkdir(parents=True, exist_ok=True)
+    nome = normalizar_nome_arquivo(f"{ticker}_{origem}.html")
+    (PASTA_DIAGNOSTICO_RI / nome).write_text(html, encoding="utf-8")
+
+
+def documento_de_contexto(
+    *,
+    ticker: str,
+    empresa: str,
+    ano_inicial: int,
+    url_origem: str,
+    url_documento: str,
+    contexto: str,
+) -> DocumentoEncontrado | None:
+    if not parece_pdf(url_documento, contexto):
+        return None
+    return montar_documento(
+        ticker=ticker,
+        empresa=empresa,
+        periodo_ano=identificar_periodo(contexto),
+        tipo=classificar_tipo_documento(contexto),
+        ano_inicial=ano_inicial,
+        titulo=Path(urlparse(url_documento).path).name,
+        url_origem=url_origem,
+        url_documento=url_documento,
+    )
+
+
+def documentos_de_network(
+    network_items: list[dict[str, str | int]],
+    ticker: str,
+    empresa: str,
+    ano_inicial: int,
+    url_origem: str,
+) -> list[DocumentoEncontrado]:
+    documentos: list[DocumentoEncontrado] = []
+    vistos: set[str] = set()
+    for item in network_items:
+        url = str(item.get("url") or "")
+        content_type = str(item.get("content_type") or "")
+        contexto = f"{url} {content_type} {item.get('body_preview') or ''}"
+        if "application/pdf" in content_type.lower():
+            contexto = f"{contexto} pdf"
+        documento = documento_de_contexto(
+            ticker=ticker,
+            empresa=empresa,
+            ano_inicial=ano_inicial,
+            url_origem=url_origem,
+            url_documento=url,
+            contexto=contexto,
+        )
+        if documento and documento.url_documento not in vistos:
+            vistos.add(documento.url_documento)
+            documentos.append(documento)
+    return documentos
+
+
+def obter_html_playwright_resultado(url: str) -> RespostaPlaywright:
     """
     Renderiza páginas dinâmicas. Requer:
 
@@ -501,10 +661,44 @@ def obter_html_playwright(url: str) -> str:
                 ) from None
             raise
 
+        network_items: list[dict[str, str | int]] = []
+
+        def registrar_resposta(resposta: Any) -> None:
+            try:
+                content_type = resposta.headers.get("content-type", "")
+                url_resposta = resposta.url
+                url_norm = normalizar_texto(url_resposta)
+                content_norm = normalizar_texto(content_type)
+                relevante = (
+                    "application/pdf" in content_norm
+                    or ".pdf" in url_norm
+                    or "download" in url_norm
+                    or "document" in url_norm
+                    or "arquivo" in url_norm
+                    or "json" in content_norm
+                )
+                if not relevante:
+                    return
+                item: dict[str, str | int] = {
+                    "url": url_resposta,
+                    "method": resposta.request.method,
+                    "status": resposta.status,
+                    "content_type": content_type,
+                }
+                if "json" in content_norm or "text" in content_norm:
+                    try:
+                        item["body_preview"] = resposta.text()[:4000]
+                    except Exception:
+                        pass
+                network_items.append(item)
+            except Exception:
+                return
+
         pagina = navegador.new_page(
             user_agent=USER_AGENT,
             locale="pt-BR",
         )
+        pagina.on("response", registrar_resposta)
 
         pagina.goto(
             url,
@@ -557,9 +751,18 @@ def obter_html_playwright(url: str) -> str:
 
         pagina.wait_for_timeout(2_000)
         html = pagina.content()
+        url_final = pagina.url
         navegador.close()
 
-    return html
+    return RespostaPlaywright(
+        html=html,
+        url_final=url_final,
+        network_items=network_items,
+    )
+
+
+def obter_html_playwright(url: str) -> str:
+    return obter_html_playwright_resultado(url).html
 
 
 def coletar_documentos_empresa(
@@ -568,6 +771,7 @@ def coletar_documentos_empresa(
     sessao: requests.Session,
     ano_inicial: int,
     usar_playwright: bool,
+    diagnostico_ri: bool = False,
 ) -> list[DocumentoEncontrado]:
     empresa = configuracao["empresa"]
     url = configuracao["url"]
@@ -578,7 +782,15 @@ def coletar_documentos_empresa(
     documentos_requests: list[DocumentoEncontrado] = []
 
     try:
-        html = obter_html_requests(sessao, url)
+        resposta = sessao.get(url, timeout=TIMEOUT_REQUISICAO)
+        resposta.raise_for_status()
+        html = resposta.text
+
+        if diagnostico_ri:
+            dados = diagnostico_html(html, resposta.url)
+            dados["status_http"] = resposta.status_code
+            imprimir_diagnostico(ticker, "requests", dados)
+            salvar_snapshot_diagnostico(ticker, "requests", html)
 
         documentos_requests = extrair_links_html(
             html=html,
@@ -606,7 +818,32 @@ def coletar_documentos_empresa(
         return documentos_requests
 
     try:
-        html_renderizado = obter_html_playwright(url)
+        resposta_playwright = obter_html_playwright_resultado(url)
+        html_renderizado = resposta_playwright.html
+
+        if diagnostico_ri:
+            dados = diagnostico_html(
+                html_renderizado,
+                resposta_playwright.url_final,
+            )
+            dados["network_items_relevantes"] = len(
+                resposta_playwright.network_items
+            )
+            dados["network_pdf"] = sum(
+                1
+                for item in resposta_playwright.network_items
+                if "application/pdf" in str(item.get("content_type", "")).lower()
+                or ".pdf" in str(item.get("url", "")).lower()
+            )
+            imprimir_diagnostico(ticker, "playwright", dados)
+            for item in resposta_playwright.network_items[:30]:
+                print(
+                    "[diagnostico-ri] "
+                    f"{ticker} | network | {item.get('method')} "
+                    f"{item.get('status')} | {item.get('content_type')} | "
+                    f"{item.get('url')}"
+                )
+            salvar_snapshot_diagnostico(ticker, "playwright", html_renderizado)
 
         documentos_renderizados = extrair_links_html(
             html=html_renderizado,
@@ -615,11 +852,20 @@ def coletar_documentos_empresa(
             empresa=empresa,
             ano_inicial=ano_inicial,
         )
+        documentos_network = documentos_de_network(
+            resposta_playwright.network_items,
+            ticker=ticker,
+            empresa=empresa,
+            ano_inicial=ano_inicial,
+            url_origem=url,
+        )
 
         combinados = {
             documento.url_documento: documento
             for documento in (
-                documentos_requests + documentos_renderizados
+                documentos_requests
+                + documentos_renderizados
+                + documentos_network
             )
         }
 
@@ -786,6 +1032,7 @@ def baixar_documentos_ri(
     tickers: set[str] | None,
     usar_playwright: bool,
     sobrescrever: bool,
+    diagnostico_ri: bool = False,
 ) -> list[DownloadRealizado]:
     sessao = criar_sessao_http()
     registros: list[DownloadRealizado] = []
@@ -804,6 +1051,7 @@ def baixar_documentos_ri(
                 sessao=sessao,
                 ano_inicial=ano_inicial,
                 usar_playwright=usar_playwright,
+                diagnostico_ri=diagnostico_ri,
             )
         except PlaywrightIndisponivel as erro:
             print(
@@ -861,6 +1109,13 @@ def baixar_documentos_ri(
             time.sleep(INTERVALO_ENTRE_DOWNLOADS)
 
     salvar_manifesto_downloads(registros)
+    if not registros:
+        afetados = ", ".join(sorted(empresas_selecionadas))
+        print(
+            "0 documentos encontrados nos sites de RI. "
+            f"Tickers afetados: {afetados}",
+            file=sys.stderr,
+        )
     return registros
 
 
@@ -1356,6 +1611,15 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--diagnostico-ri",
+        action="store_true",
+        help=(
+            "Registra diagnostico controlado da descoberta de documentos "
+            "nos sites de RI e salva snapshots HTML em diagnostico_ri/."
+        ),
+    )
+
+    parser.add_argument(
         "--sobrescrever-downloads",
         action="store_true",
         help="Baixa novamente documentos já existentes.",
@@ -1433,6 +1697,7 @@ def main() -> int:
             tickers=tickers,
             usar_playwright=not argumentos.sem_playwright,
             sobrescrever=argumentos.sobrescrever_downloads,
+            diagnostico_ri=argumentos.diagnostico_ri,
         )
 
         print(
