@@ -1260,9 +1260,41 @@ Os níveis determinísticos de confiança são:
 HIGH   >= 85
 MEDIUM >= 70 e < 85
 LOW    < 70
+NOT_FOUND = nenhuma observação válida localizada
 ```
 
-Somente observações HIGH ou MEDIUM alimentam automaticamente o dashboard. Candidatos LOW ficam marcados como `requires_review = true` e não devem ser usados como dado final.
+Somente observações HIGH ou MEDIUM alimentam automaticamente o dashboard. Candidatos LOW ficam marcados como `requires_review = true`, permanecem auditáveis e não são usados como dado final.
+
+## 22.3.2. Prioridade de fontes
+
+A prioridade de fontes operacionais é:
+
+```text
+1. planilha histórica/fundamentos oficial do RI
+2. release ou apresentação convertidos para Markdown
+3. outro documento oficial de RI
+```
+
+Quando a planilha traz observação HIGH, ela não é substituída por Markdown. Quando a planilha não traz observação válida, o Markdown funciona como complemento. Candidatos alternativos e rejeitados permanecem em auditoria.
+
+## 22.3.3. Proxies permitidos
+
+Os proxies aceitos são específicos por companhia e sempre aparecem como `nature = "proxy"` e `confidence = "medium"`.
+
+Exemplos relevantes:
+
+| Companhia | Métrica | Proxy permitido | Observação |
+|---|---|---|---|
+| DASA3 | N. Atendimentos | Exames - Total | Proxy aceito porque a operação é predominantemente diagnóstica; exame ainda não é atendimento único |
+| FLRY3 | N. Pacientes | Atendimentos | Não representa pacientes únicos |
+| MATD3 | N. Atendimentos / N. Pacientes | Pacientes-dia | Não representa pacientes únicos |
+| ONCO3 | N. Atendimentos / N. Pacientes | Total de Procedimentos | Não representa pacientes únicos |
+| RDOR3 | N. Atendimentos / N. Pacientes | Pacientes-dia | Escopo hospitalar individual |
+| RDOR3 | N. Unidades | Hospitais próprios | Proxy de unidades |
+
+## 22.3.4. Avisos operacionais no dashboard
+
+Na aba Dados Operacionais, observações HIGH aparecem sem aviso. Observações MEDIUM aparecem na tabela e geram aviso abaixo dela. Métricas NOT_FOUND ficam vazias/N.A. e geram aviso informativo. Candidatos LOW não aparecem na tabela principal e geram aviso de rejeição quando preservados pela auditoria.
 
 ## 22.3. Identificação dos períodos
 
@@ -1496,6 +1528,124 @@ receita operacional/gerencial extraída de RI não substituem a receita contábi
 CVM `3.01`; elas ficam em camada separada para análise gerencial.
 
 Essas regras são heurísticas de identificação dos rótulos divulgados pela companhia; o valor continua sendo armazenado com a fonte original em `fonte_linha` e `escopo`.
+
+---
+
+## 23.7. Camada Comparativo
+
+A aba `Comparativo` mostra simultaneamente as sete companhias acompanhadas:
+
+```text
+AALR3
+DASA3
+FLRY3
+HAPV3
+MATD3
+ONCO3
+RDOR3
+```
+
+Ela consome os JSONs já produzidos pelo sistema e não cria metodologia financeira ou operacional nova.
+
+### 23.7.1. Métricas da tabela comparativa
+
+A tabela possui exatamente 11 métricas:
+
+| Métrica | Fonte | Seleção temporal |
+|---|---|---|
+| CAGR Receita | `indicadores.json` | mesma janela anual usada no dashboard individual |
+| CAGR Lucros | `indicadores.json` | mesma janela anual usada no dashboard individual |
+| Ciclo Financeiro | `ciclo_financeiro.json` | último exercício anual completo |
+| Margem Bruta | `indicadores.json` | último exercício anual completo |
+| Margem Operacional | `indicadores.json` | último exercício anual completo |
+| Margem EBITDA | `indicadores.json` | último exercício anual completo |
+| Margem Líquida | `indicadores.json` | último exercício anual completo |
+| EV/EBITDA | `indicadores.json` | último trimestre com `ev_ebitda_ltm` válido |
+| Delta Preço da Ação 30 dias | `market_cap.json` | snapshot atual, campo `variacao_30d_pct` |
+| Delta Preço da Ação 360 dias | `market_cap.json` | snapshot atual, campo `variacao_360d_pct` |
+| N. Unidades | `dados_operacionais` | período operacional válido mais recente |
+
+Cada célula pode ter seu próprio período. O comparativo não força uma data comum entre métricas que possuem naturezas temporais diferentes.
+
+### 23.7.2. CAGR
+
+O CAGR do comparativo usa a mesma regra da visão individual:
+
+```text
+CAGR = (valor_final / valor_inicial) ^ (1 / anos) - 1
+```
+
+A janela é determinada pelos registros anuais disponíveis para cada companhia. Se não houver base válida, o valor permanece `N/A`.
+
+### 23.7.3. Gráficos históricos
+
+Somente métricas que fazem sentido como série temporal recebem gráfico:
+
+```text
+Ciclo Financeiro
+Margem Bruta
+Margem Operacional
+Margem EBITDA
+Margem Líquida
+EV/EBITDA LTM
+```
+
+Os cinco primeiros gráficos são anuais. O gráfico de `EV/EBITDA LTM` é trimestral.
+
+Não há gráfico para:
+
+```text
+CAGR Receita
+CAGR Lucros
+Delta Preço da Ação 30 dias
+Delta Preço da Ação 360 dias
+N. Unidades
+```
+
+### 23.7.4. EV/EBITDA histórico
+
+A série histórica trimestral de EV/EBITDA reutiliza o campo já calculado:
+
+```text
+ev_ebitda_ltm
+```
+
+Esse campo é produzido a partir da metodologia existente:
+
+```text
+EV(t) = Market Cap Histórico(t) + Dívida Líquida Padronizada(t)
+EV/EBITDA LTM(t) = EV(t) / EBITDA Contábil LTM(t)
+```
+
+O comparativo apenas seleciona e apresenta os períodos onde o valor já existe. Quando os componentes não estão disponíveis ou não são comparáveis, o ponto permanece ausente e não é convertido em zero.
+
+### 23.7.5. N. Unidades
+
+`N. Unidades` vem da mesma métrica operacional usada na visão individual. O comparativo não reinterpreta hospitais, clínicas ou outros proxies nesta camada.
+
+Regras:
+
+```text
+HIGH   -> mostra normalmente
+MEDIUM -> mostra com indicação discreta de confiança média
+LOW    -> não mostra como valor válido
+NOT_FOUND -> N/A
+```
+
+### 23.7.6. N/A e quality flags
+
+Ausências são exibidas como `N/A`. Valores `null` não são convertidos em zero.
+
+Quality flags como:
+
+```text
+incomplete
+not_comparable
+methodology_difference
+requires_review
+```
+
+são preservadas em campos de qualidade e podem aparecer como indicação discreta/tooltip na interface.
 
 ---
 

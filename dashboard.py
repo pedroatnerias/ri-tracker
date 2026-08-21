@@ -695,6 +695,7 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
     # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
     # os tres demonstrativos financeiros minimos ja foram gerados.
     has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))
+    comparison = build_comparison_payload(indicators, operational_data)
     return {
         "tickers": TICKERS,
         "has_data": has_data,
@@ -704,6 +705,7 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
         "statements": statements,
         "indicators": indicators,
         "operational": operational_data,
+        "comparison": comparison,
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
         "files": source.files | operational_files,
@@ -796,6 +798,257 @@ def filter_records_for_view(records: list[dict], view: str) -> list[dict]:
             if (not is_ytd) or quarter == 1:
                 selected.append(record)
     return sorted(selected, key=key)
+
+
+COMPARISON_METRICS = (
+    ("cagr_receita", "CAGR Receita", "percent"),
+    ("cagr_lucros", "CAGR Lucros", "percent"),
+    ("ciclo_financeiro", "Ciclo Financeiro", "days"),
+    ("margem_bruta", "Margem Bruta", "percent"),
+    ("margem_operacional", "Margem Operacional", "percent"),
+    ("margem_ebitda", "Margem EBITDA", "percent"),
+    ("margem_liquida", "Margem Líquida", "percent"),
+    ("ev_ebitda", "EV/EBITDA", "multiple"),
+    ("delta_preco_30d", "Delta Preço da Ação 30 dias", "signed_percent"),
+    ("delta_preco_360d", "Delta Preço da Ação 360 dias", "signed_percent"),
+    ("n_unidades", "N. Unidades", "integer"),
+)
+
+
+def _as_number(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and pd.notna(value) else None
+
+
+def _record_sort_tuple(record: dict) -> tuple[int, int, int]:
+    meta = record.get("metadata") or {}
+    return (
+        int(meta.get("year") or 0),
+        int(meta.get("quarter") or 0),
+        1 if meta.get("is_ytd") else 0,
+    )
+
+
+def _period_sort_key(period: str) -> tuple[int, int]:
+    text = str(period or "")
+    if len(text) == 4 and text.isdigit():
+        return int(text), 5
+    if len(text) >= 4 and text[1].upper() == "T" and text[0].isdigit():
+        yy = text[2:]
+        year = int(yy) + 2000 if len(yy) == 2 and yy.isdigit() else 0
+        return year, int(text[0])
+    return 0, 0
+
+
+def _quarter_label_from_record(record: dict) -> str:
+    meta = record.get("metadata") or {}
+    year = meta.get("year")
+    quarter = meta.get("quarter")
+    if year and quarter:
+        return f"{int(quarter)}T{str(year)[-2:]}"
+    return period_label(record)
+
+
+def _annual_records(records: list[dict]) -> list[dict]:
+    return filter_records_for_view(records, "annual")
+
+
+def _cagr_value(first: object, last: object, years: int) -> float | None:
+    first_num = _as_number(first)
+    last_num = _as_number(last)
+    if first_num is None or last_num is None or first_num <= 0 or last_num <= 0 or years <= 0:
+        return None
+    return (pow(last_num / first_num, 1 / years) - 1) * 100
+
+
+def _quality_for_metric(record: dict | None, metric: str) -> dict | None:
+    if not record:
+        return None
+    for flag in record.get("quality_flags") or []:
+        if flag.get("metric") == metric:
+            return flag
+    quality = record.get(f"quality_{metric}")
+    return quality if isinstance(quality, dict) else None
+
+
+def _comparison_cell(
+    value: float | int | None,
+    period: str | None = None,
+    *,
+    quality: dict | None = None,
+    confidence: str | None = None,
+    source: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    return {
+        "value": value,
+        "period": period,
+        "quality": quality,
+        "confidence": confidence,
+        "source": source,
+        **(extra or {}),
+    }
+
+
+def _latest_annual_cycle(records: list[dict]) -> dict | None:
+    annual = []
+    for record in records or []:
+        periodo = record.get("periodo") or {}
+        inicio = str(periodo.get("inicio") or "")
+        fim = str(periodo.get("fim") or "")
+        if inicio.endswith("-01-01") and fim.endswith("-12-31"):
+            annual.append(record)
+    return sorted(annual, key=lambda item: str((item.get("periodo") or {}).get("fim") or ""))[-1] if annual else None
+
+
+def _latest_operational_metric(company: dict, metric: str) -> dict | None:
+    candidates = []
+    for item in (company.get("metricas") or {}).get(metric, []) or []:
+        if item.get("confidence") == "low":
+            continue
+        for period, value in (item.get("serie") or {}).items():
+            number = _as_number(value)
+            if number is None:
+                continue
+            candidates.append(
+                {
+                    "period": period,
+                    "value": number,
+                    "confidence": item.get("confidence"),
+                    "source": item.get("fonte_linha") or item.get("escopo"),
+                }
+            )
+    return sorted(candidates, key=lambda item: _period_sort_key(str(item["period"])))[-1] if candidates else None
+
+
+def build_comparison_payload(indicators: dict, operational: dict) -> dict:
+    indicadores = ((indicators.get("indicadores") or {}).get("companies") or {})
+    ciclo = ((indicators.get("ciclo_financeiro") or {}).get("companies") or {})
+    market = ((indicators.get("market_cap") or {}).get("companies") or {})
+    operational_companies = ((operational or {}).get("companies") or {})
+    companies: dict[str, dict[str, dict]] = {}
+    charts = {
+        "ciclo_financeiro": {"title": "Ciclo Financeiro", "unit": "dias", "periodicity": "annual", "series": {}},
+        "margem_bruta": {"title": "Margem Bruta", "unit": "%", "periodicity": "annual", "series": {}},
+        "margem_operacional": {"title": "Margem Operacional", "unit": "%", "periodicity": "annual", "series": {}},
+        "margem_ebitda": {"title": "Margem EBITDA", "unit": "%", "periodicity": "annual", "series": {}},
+        "margem_liquida": {"title": "Margem Líquida", "unit": "%", "periodicity": "annual", "series": {}},
+        "ev_ebitda": {"title": "EV/EBITDA LTM", "unit": "x", "periodicity": "quarterly", "series": {}},
+    }
+
+    for ticker in TICKERS:
+        records = list((indicadores.get(ticker) or {}).get("periodos") or [])
+        annual = _annual_records(records)
+        first = annual[0] if annual else None
+        last = annual[-1] if annual else None
+        first_year = (first.get("metadata") or {}).get("year") if first else None
+        last_year = (last.get("metadata") or {}).get("year") if last else None
+        years = int(last_year) - int(first_year) if first_year and last_year else 0
+        cagr_period = f"{first_year}–{last_year}" if years > 0 else None
+
+        company = {
+            "cagr_receita": _comparison_cell(
+                _cagr_value(first.get("receita_liquida") if first else None, last.get("receita_liquida") if last else None, years),
+                cagr_period,
+            ),
+            "cagr_lucros": _comparison_cell(
+                _cagr_value(first.get("lucro_liquido") if first else None, last.get("lucro_liquido") if last else None, years),
+                cagr_period,
+            ),
+        }
+
+        cycle_record = _latest_annual_cycle(ciclo.get(ticker) or [])
+        cycle_value = ((cycle_record or {}).get("indicadores_dias") or {}).get("ciclo_financeiro")
+        cycle_period = None
+        if cycle_record:
+            fim = ((cycle_record.get("periodo") or {}).get("fim") or "")[:4]
+            cycle_period = f"FY{fim}" if fim else None
+        company["ciclo_financeiro"] = _comparison_cell(_as_number(cycle_value), cycle_period)
+
+        margin_map = {
+            "margem_bruta": "margem_bruta",
+            "margem_operacional": "margem_operacional",
+            "margem_ebitda": "margem_ebitda",
+            "margem_liquida": "margem_liquida",
+        }
+        for out_key, source_key in margin_map.items():
+            value = ((last or {}).get("margens_percentual") or {}).get(source_key)
+            period = f"FY{last_year}" if last_year else None
+            quality = _quality_for_metric(last, source_key)
+            if quality and quality.get("status") in {"incomplete", "not_comparable"}:
+                value = None
+            company[out_key] = _comparison_cell(_as_number(value), period, quality=quality)
+
+        valid_ev = [
+            record for record in records
+            if _as_number(record.get("ev_ebitda_ltm")) is not None
+        ]
+        valid_ev = sorted(valid_ev, key=_record_sort_tuple)
+        ev_record = valid_ev[-1] if valid_ev else None
+        company["ev_ebitda"] = _comparison_cell(
+            _as_number(ev_record.get("ev_ebitda_ltm")) if ev_record else None,
+            f"LTM {_quarter_label_from_record(ev_record)}" if ev_record else None,
+            quality=(ev_record or {}).get("quality_ev_ebitda_ltm") if ev_record else None,
+            extra={
+                "enterprise_value": (ev_record or {}).get("enterprise_value"),
+                "ebitda_ltm": (ev_record or {}).get("ebitda_ltm"),
+                "data_market_cap": (ev_record or {}).get("data_market_cap"),
+                "data_divida_liquida": (ev_record or {}).get("data_divida_liquida"),
+                "data_ebitda_ltm": (ev_record or {}).get("data_ebitda_ltm"),
+            } if ev_record else None,
+        )
+
+        quote_data = market.get(ticker) or {}
+        company["delta_preco_30d"] = _comparison_cell(_as_number(quote_data.get("variacao_30d_pct")), "Atual")
+        company["delta_preco_360d"] = _comparison_cell(_as_number(quote_data.get("variacao_360d_pct")), "Atual")
+
+        units = _latest_operational_metric(operational_companies.get(ticker) or {}, "N. Unidades")
+        company["n_unidades"] = _comparison_cell(
+            units.get("value") if units else None,
+            units.get("period") if units else None,
+            confidence=units.get("confidence") if units else "not_found",
+            source=units.get("source") if units else None,
+        )
+        companies[ticker] = company
+
+        charts["ciclo_financeiro"]["series"][ticker] = [
+            {
+                "period": f"FY{(item.get('periodo') or {}).get('fim', '')[:4]}",
+                "value": _as_number((item.get("indicadores_dias") or {}).get("ciclo_financeiro")),
+            }
+            for item in sorted([item for item in (ciclo.get(ticker) or []) if _latest_annual_cycle([item])], key=lambda row: str((row.get("periodo") or {}).get("fim") or ""))
+        ]
+        for chart_key, source_key in margin_map.items():
+            charts[chart_key]["series"][ticker] = [
+                {
+                    "period": f"FY{(record.get('metadata') or {}).get('year')}",
+                    "value": _as_number((record.get("margens_percentual") or {}).get(source_key)),
+                    "quality": _quality_for_metric(record, source_key),
+                }
+                for record in annual
+            ]
+        charts["ev_ebitda"]["series"][ticker] = [
+            {
+                "period": _quarter_label_from_record(record),
+                "value": _as_number(record.get("ev_ebitda_ltm")),
+                "enterprise_value": record.get("enterprise_value"),
+                "ebitda_ltm": record.get("ebitda_ltm"),
+                "data_market_cap": record.get("data_market_cap"),
+                "data_divida_liquida": record.get("data_divida_liquida"),
+                "data_ebitda_ltm": record.get("data_ebitda_ltm"),
+                "quality": record.get("quality_ev_ebitda_ltm"),
+            }
+            for record in valid_ev
+        ]
+
+    return {
+        "companies_order": list(TICKERS),
+        "metrics": [
+            {"key": key, "label": label, "format": fmt}
+            for key, label, fmt in COMPARISON_METRICS
+        ],
+        "companies": companies,
+        "charts": charts,
+    }
 
 
 def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str) -> pd.DataFrame:
@@ -1108,6 +1361,26 @@ HTML = """<!doctype html>
     .chart-card h2 { margin: 0 0 10px; }
     .chart-card .table-wrap { max-height: none; }
     .chart-card svg { width: 100%; height: auto; }
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      padding: 0 12px 10px;
+      color: var(--nerias-muted);
+      font-size: 12px;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .legend-item i {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
     .chart-img {
       display: block;
       width: 100%;
@@ -1276,7 +1549,7 @@ HTML = """<!doctype html>
     let updatePolling = null;
     const expandedRows = new Set();
     const labels = { dashboard: "Dashboard", operacional: "Dados Operacionais", balanco: "Balanço", dre: "DRE", dfc: "DFC" };
-    const mainLabels = { dados: "Dados", metodologia: "Metodologia", auditoria: "Auditoria" };
+    const mainLabels = { dados: "Dados", comparativo: "Comparativo", metodologia: "Metodologia", auditoria: "Auditoria" };
     const viewLabels = { annual: "Anual", quarterly: "Trimestral" };
 
     async function loadData() {
@@ -2384,7 +2657,8 @@ HTML = """<!doctype html>
       const selectedMetrics = defaultMetrics;
       return selectedMetrics.map(metric => {
         const items = metricas[metric] || [];
-        const item = (items || []).find(candidate => candidate?.serie && Object.keys(candidate.serie).length) || items[0] || null;
+        const validItems = (items || []).filter(candidate => candidate?.confidence !== "low");
+        const item = validItems.find(candidate => candidate?.serie && Object.keys(candidate.serie).length) || validItems[0] || null;
         const values = {};
         if (item?.serie) {
           Object.entries(item.serie).forEach(([period, value]) => {
@@ -2411,7 +2685,7 @@ HTML = """<!doctype html>
         const metricas = company?.metricas || {};
         Object.entries(metricas).forEach(([metric, items]) => {
           if (["Receita Bruta", "Glosa/PCLD"].includes(metric)) return;
-        (items || []).forEach((item, index) => {
+        (items || []).filter(item => item?.confidence !== "low").forEach((item, index) => {
           const serie = item?.serie || {};
           Object.entries(serie).forEach(([period, value]) => {
             const info = operationalPeriodInfo(period);
@@ -2468,7 +2742,113 @@ HTML = """<!doctype html>
       }).join("");
       const colgroup = `<colgroup><col style="width:220px"><col style="width:300px"><col style="width:150px">${periods.map(() => '<col style="width:130px">').join("")}</colgroup>`;
       const disclaimer = '<div class="disclaimer"><strong>Aviso:</strong> os dados operacionais são capturados de forma experimental a partir de planilhas de fundamentos, releases e documentos convertidos para Markdown. Eles podem estar incompletos, classificados incorretamente ou conter erros de leitura. Use estes dados como apoio exploratório e valide contra os documentos originais antes de qualquer decisão.</div>';
-      return `<h2>Dados Operacionais</h2>${disclaimer}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
+      return `<h2>Dados Operacionais</h2>${disclaimer}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}`;
+    }
+
+    function renderOperationalWarnings(company) {
+      const warnings = company?.warnings || [];
+      if (!warnings.length) return "";
+      const rows = warnings.map(item => {
+        const status = item.status === "not_found" ? "Não encontrado" : item.status === "medium_confidence" ? "Confiança média" : item.status === "low_confidence_rejected" ? "LOW rejeitado" : item.status;
+        return `<tr><td class="desc">${escapeHtml(item.metric || "")}</td><td>${escapeHtml(status)}</td><td class="desc">${escapeHtml(item.message || "")}</td></tr>`;
+      }).join("");
+      return `<h3>Avisos sobre os dados operacionais</h3><div class="table-wrap"><table class="fixed-layout operational-table"><colgroup><col style="width:220px"><col style="width:160px"><col style="width:620px"></colgroup><thead><tr><th>Indicador</th><th>Status</th><th>Mensagem</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function formatComparisonValue(value, format) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "N/A";
+      if (format === "percent") return `${formatPercent(value)}%`;
+      if (format === "signed_percent") return `${value >= 0 ? "+" : ""}${formatPercent(value)}%`;
+      if (format === "days") return `${value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} dias`;
+      if (format === "multiple") return `${value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}x`;
+      if (format === "integer") return value.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+      return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+    }
+
+    function comparisonCellHtml(cell, format) {
+      const value = formatComparisonValue(cell?.value, format);
+      const period = cell?.period ? `<div class="muted">${escapeHtml(cell.period)}</div>` : "";
+      const confidence = cell?.confidence === "medium" ? '<div class="muted">Confiança média</div>' : "";
+      const quality = cell?.quality?.status && !["validated", "ok"].includes(cell.quality.status)
+        ? `<div class="muted">${escapeHtml(cell.quality.status)}</div>`
+        : "";
+      const title = [
+        cell?.quality?.message,
+        ...(cell?.quality?.warnings || []),
+        cell?.source ? `Fonte: ${cell.source}` : "",
+      ].filter(Boolean).join(" | ");
+      return `<td class="num" title="${escapeHtml(title)}"><strong>${escapeHtml(value)}</strong>${period}${confidence}${quality}</td>`;
+    }
+
+    function renderComparisonTable() {
+      const comparison = DATA.comparison || {};
+      const tickers = comparison.companies_order || DATA.tickers || [];
+      const metrics = comparison.metrics || [];
+      const headers = ["Métrica", ...tickers].map(value => `<th>${escapeHtml(value)}</th>`).join("");
+      const body = metrics.map(metric => {
+        const cells = tickers.map(ticker => comparisonCellHtml(comparison.companies?.[ticker]?.[metric.key], metric.format)).join("");
+        return `<tr><td class="desc">${escapeHtml(metric.label)}</td>${cells}</tr>`;
+      }).join("");
+      const colgroup = `<colgroup><col style="width:260px">${tickers.map(() => '<col style="width:150px">').join("")}</colgroup>`;
+      return `<h2>Quadro Comparativo</h2><div class="table-wrap"><table class="fixed-layout comparison-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    function comparisonPeriodSort(period) {
+      const text = String(period || "");
+      const fy = text.match(/^FY(20\\d{2})$/);
+      if (fy) return Number(fy[1]) * 10 + 5;
+      const q = text.match(/^([1-4])T(\\d{2}|\\d{4})$/);
+      if (q) {
+        const year = Number(q[2].length === 2 ? `20${q[2]}` : q[2]);
+        return year * 10 + Number(q[1]);
+      }
+      return 0;
+    }
+
+    function renderComparisonLineChart(chartKey, chart) {
+      const tickers = DATA.comparison?.companies_order || DATA.tickers || [];
+      const periods = Array.from(new Set(tickers.flatMap(ticker => (chart.series?.[ticker] || []).map(point => point.period))))
+        .filter(Boolean)
+        .sort((a, b) => comparisonPeriodSort(a) - comparisonPeriodSort(b));
+      const values = tickers.flatMap(ticker => (chart.series?.[ticker] || []).map(point => point.value)).filter(value => typeof value === "number" && Number.isFinite(value));
+      if (!periods.length || !values.length) return "";
+      const width = Math.max(860, periods.length * 72 + 160);
+      const height = 310;
+      const left = 80, right = 28, top = 34, bottom = 72;
+      const plotW = width - left - right;
+      const plotH = height - top - bottom;
+      const rawMin = Math.min(0, ...values);
+      const rawMax = Math.max(0, ...values);
+      const pad = Math.max(1, (rawMax - rawMin) * 0.16);
+      const min = rawMin - pad;
+      const max = rawMax + pad;
+      const span = max === min ? 1 : max - min;
+      const x = period => left + (periods.indexOf(period) / Math.max(1, periods.length - 1)) * plotW;
+      const y = value => top + (max - value) / span * plotH;
+      const colors = ["#006341", "#23AC81", "#6B7C3A", "#B08A3C", "#6C8CA6", "#8A6F98", "#4D5D53"];
+      const formatter = chart.unit === "%" ? value => `${formatPercent(value)}%` : chart.unit === "x" ? value => `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}x` : value => `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}`;
+      const lines = tickers.map((ticker, index) => {
+        const data = (chart.series?.[ticker] || []).filter(point => typeof point.value === "number" && Number.isFinite(point.value));
+        if (!data.length) return "";
+        const points = data.map(point => `${x(point.period)},${y(point.value)}`).join(" ");
+        const dots = data.map(point => `<circle cx="${x(point.period)}" cy="${y(point.value)}" r="3" fill="${colors[index % colors.length]}"><title>${escapeHtml(`${ticker} | ${point.period} | ${formatter(point.value)}${point.enterprise_value ? ` | EV ${formatMillions(point.enterprise_value)}` : ""}${point.ebitda_ltm ? ` | EBITDA LTM ${formatMillions(point.ebitda_ltm)}` : ""}`)}</title></circle>`).join("");
+        return `<polyline points="${points}" fill="none" stroke="${colors[index % colors.length]}" stroke-width="1.6"></polyline>${dots}`;
+      }).join("");
+      const xLabels = periods.map(period => `<text x="${x(period)}" y="${height - 28}" text-anchor="middle" font-size="10">${escapeHtml(period)}</text>`).join("");
+      const legend = tickers.map((ticker, index) => `<span class="legend-item"><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(ticker)}</span>`).join("");
+      const zeroY = y(0);
+      return `<h2>${escapeHtml(chart.title)}</h2><div class="table-wrap"><svg width="${width}" height="${height}" role="img" aria-label="${escapeHtml(chart.title)}">
+        <line x1="${left}" y1="${top}" x2="${left}" y2="${height - bottom}" stroke="#DDD5B3"></line>
+        <line x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}" stroke="#DDD5B3"></line>
+        ${lines}${xLabels}
+      </svg><div class="chart-legend">${legend}</div></div>`;
+    }
+
+    function renderComparison() {
+      const charts = DATA.comparison?.charts || {};
+      const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida", "ev_ebitda"];
+      const chartHtml = chartOrder.map(key => renderComparisonLineChart(key, charts[key] || {})).filter(Boolean);
+      return `${renderComparisonTable()}<h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div>`;
     }
 
     function renderInlineMarkdown(text) {
@@ -2593,8 +2973,15 @@ HTML = """<!doctype html>
       });
       const opRows = Object.entries(op.metricas || {}).map(([metric, items]) => {
         const sources = (items || []).map(item => item.fonte_documento || item.fonte_linha || item.escopo || "").filter(Boolean).join(" | ");
-        const missing = !(items || []).some(item => item?.serie && Object.keys(item.serie).length);
-        return auditRow("Operacional", metric, missing ? "Dado faltante" : "OK", "", "", sources || op.fonte_planilha || op.fonte_alternativa || "", op.erro_planilha || "");
+        const validItems = (items || []).filter(item => item?.confidence !== "low");
+        const missing = !validItems.some(item => item?.serie && Object.keys(item.serie).length);
+        const status = missing ? "NOT_FOUND" : validItems.some(item => item?.confidence === "medium") ? "MEDIUM" : "HIGH";
+        const note = validItems.map(item => `${item.nature || "reported"} / ${item.confidence || ""} / ${item.fonte_linha || ""}`).join(" | ");
+        return auditRow("Operacional", metric, status, "", "", sources || op.fonte_planilha || op.fonte_alternativa || "", note || op.erro_planilha || "");
+      });
+      (op.warnings || []).forEach(item => {
+        const status = item.status === "not_found" ? "NOT_FOUND" : item.status === "medium_confidence" ? "MEDIUM" : item.status;
+        opRows.push(auditRow("Operacional", item.metric || "", status, item.period || "", "", item.fonte_linha || item.escopo || op.fonte_planilha || op.fonte_alternativa || "", item.message || ""));
       });
       const defaultOperationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
       const existingOp = new Set(Object.keys(op.metricas || {}));
@@ -2617,6 +3004,13 @@ HTML = """<!doctype html>
       if (currentMain === "metodologia") {
         document.getElementById("meta").textContent = "Metodologia";
         document.getElementById("content").innerHTML = renderMethodology();
+        return;
+      }
+      if (currentMain === "comparativo") {
+        document.getElementById("view-tabs").innerHTML = "";
+        document.getElementById("view-tabs").style.display = "none";
+        document.getElementById("meta").textContent = "Comparativo | 7 empresas";
+        document.getElementById("content").innerHTML = renderComparison();
         return;
       }
       if (currentMain === "auditoria") {

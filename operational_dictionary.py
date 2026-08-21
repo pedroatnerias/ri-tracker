@@ -45,7 +45,13 @@ GENERIC_OPERATIONAL_DICTIONARY: dict[str, dict[str, Any]] = {
     "Receita Bruta": {
         "aliases": ("receita bruta", "gross revenue"),
         "expected_units": ("R$ milhões", "R$ milhares", "R$"),
-        "forbidden_contexts": ("receita liquida", "net revenue"),
+        "forbidden_contexts": (
+            "receita liquida",
+            "net revenue",
+            "receita bruta ajustada",
+            "receitas de construcao",
+            "receitas de construção",
+        ),
     },
     "Glosa/PCLD": {
         "aliases": ("glosas", "pcld", "perdas estimadas", "creditos de liquidacao duvidosa", "glosa"),
@@ -55,28 +61,61 @@ GENERIC_OPERATIONAL_DICTIONARY: dict[str, dict[str, Any]] = {
 
 COMPANY_OPERATIONAL_DICTIONARY: dict[str, dict[str, dict[str, Any]]] = {
     "AALR3": {
+        "Ticket Médio": {
+            "preferred_labels": (
+                "ticket medio de exames",
+                "ticket medio de imagem",
+                "ticket medio de analises clinicas",
+            )
+        },
+        "N. Atendimentos": {"allowed_proxies": ("volume de exames", "exames realizados")},
         "N. Unidades": {"preferred_labels": ("unidades",), "allowed_breakdowns": ("mega", "padrao", "postos", "b2b")},
+        "N. Pacientes": {"preferred_labels": ("pacientes atendidos",)},
         "Glosa/PCLD": {"allowed_proxies": ("perdas", "glosas", "contas a receber", "365 dias")},
     },
     "DASA3": {
         "Ticket Médio": {"preferred_labels": ("receita bruta por exame", "ticket por paciente-dia")},
+        "N. Atendimentos": {"allowed_proxies": ("exames - total", "exames total", "exames")},
+        "N. Unidades": {"preferred_labels": ("unidades de atendimento",)},
+        "Glosa/PCLD": {
+            "allowed_proxies": (
+                "perda por reducao ao valor recuperavel de contas a receber",
+                "perda por redução ao valor recuperável de contas a receber",
+                "perdas de credito",
+                "perdas de crédito",
+                "pcld",
+                "glosas",
+            )
+        },
     },
     "FLRY3": {
         "Ticket Médio": {"preferred_labels": ("receita bruta por exame",)},
         "N. Atendimentos": {"preferred_labels": ("atendimentos",)},
+        "N. Pacientes": {"allowed_proxies": ("atendimentos",)},
+        "Receita Bruta": {"preferred_labels": ("receita bruta",)},
         "Glosa/PCLD": {"preferred_labels": ("glosas e abatimentos",)},
     },
     "HAPV3": {
-        "N. Unidades": {"preferred_labels": ("rede propria", "hospitais", "pronto atendimento", "clinicas")},
-        "Glosa/PCLD": {"forbidden_contexts": ("reversao", "reversão")},
+        "Ticket Médio": {"preferred_labels": ("ticket medio (saude)", "ticket medio saude")},
+        "N. Unidades": {"preferred_labels": ("unidades da rede propria", "rede propria")},
+        "Glosa/PCLD": {
+            "preferred_labels": ("provisao/(reversao) de glosa esperada", "provisao de glosa esperada"),
+            "forbidden_contexts": ("pdd + glosa",),
+        },
     },
     "MATD3": {
+        "N. Atendimentos": {"allowed_proxies": ("pacientes-dia",)},
         "N. Pacientes": {"allowed_proxies": ("pacientes-dia",), "preferred_labels": ("pacientes oncologicos",)},
-        "Glosa/PCLD": {"preferred_labels": ("glosas",)},
+        "Glosa/PCLD": {
+            "preferred_labels": ("constituicao (reversao) de provisao para glosas", "glosas"),
+            "forbidden_contexts": ("impostos, deducoes e glosas",),
+        },
     },
     "ONCO3": {
-        "N. Atendimentos": {"allowed_proxies": ("procedimentos", "tratamentos")},
-        "N. Pacientes": {"allowed_proxies": ("procedimentos", "tratamentos")},
+        "N. Atendimentos": {"allowed_proxies": ("total de procedimentos", "procedimentos", "tratamentos", "infusoes")},
+        "N. Pacientes": {"allowed_proxies": ("total de procedimentos", "procedimentos", "tratamentos")},
+        "N. Unidades": {"preferred_labels": ("numero de unidades",)},
+        "Glosa/PCLD": {"preferred_labels": ("pcld",)},
     },
     "RDOR3": {
         "Receita Bruta": {
@@ -85,6 +124,8 @@ COMPANY_OPERATIONAL_DICTIONARY: dict[str, dict[str, dict[str, Any]]] = {
         },
         "Glosa/PCLD": {"forbidden_contexts": ("sulamerica", "sul america", "seguros e previdencia")},
         "N. Unidades": {"allowed_proxies": ("hospitais",)},
+        "N. Atendimentos": {"allowed_proxies": ("pacientes-dia", "infusoes")},
+        "N. Pacientes": {"allowed_proxies": ("pacientes-dia",)},
     },
 }
 
@@ -106,7 +147,11 @@ def metric_definition(ticker: str, metric: str) -> dict[str, Any]:
 
 def metric_aliases(ticker: str, metric: str) -> tuple[str, ...]:
     definition = metric_definition(ticker, metric)
-    aliases = tuple(definition.get("aliases", ())) + tuple(definition.get("preferred_labels", ()))
+    aliases = (
+        tuple(definition.get("aliases", ()))
+        + tuple(definition.get("preferred_labels", ()))
+        + tuple(definition.get("allowed_proxies", ()))
+    )
     seen: list[str] = []
     for alias in aliases:
         if alias not in seen:

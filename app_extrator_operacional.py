@@ -215,18 +215,42 @@ GENERIC_PATTERNS.update(
 COMPANY_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
     "RDOR3": {
         "N. Unidades": (r"^numero de hospitais proprios em operacao", r"^hospitais proprios"),
+        "N. Atendimentos": (r"^pacientes[- ]dia$", r"^oncologia - infusoes", r"^infusoes"),
+        "N. Pacientes": (r"^pacientes[- ]dia$"),
+        "Ticket Médio": (r"^ticket medio$",),
+        "Glosa/PCLD": (r"^glosas?$",),
     },
     # No Fleury, "Número de Unidades" é um cabeçalho com zeros. O total de
     # unidades diagnósticas fica na linha imediatamente abaixo, "Medicina Diagnóstica".
     "FLRY3": {
         "N. Unidades": (r"^medicina diagnostica$",),
         "N. Atendimentos": (r"^atendimentos(?:\b|\s|\()",),
+        "N. Pacientes": (r"^atendimentos(?:\b|\s|\()",),
+        "Glosa/PCLD": (r"^glosas?$", r"^glosas e abatimentos$"),
     },
     "MATD3": {
+        "Ticket Médio": (r"^ticket medio(?:\b|\s|\()",),
+        "N. Atendimentos": (r"^pacientes[- ]dia$",),
         "N. Pacientes": (r"^pacientes oncol", r"^pacientes"),
+        "Receita Bruta": (r"^receita bruta$",),
+        "Glosa/PCLD": (r"^constituicao .*provisao para glosas$", r"^glosas?$"),
     },
     "HAPV3": {
-        "N. Unidades": (r"^unidades(?:\b|\s|\()", r"^rede propria", r"^clinicas"),
+        "Ticket Médio": (r"^ticket medio .*saude", r"^ticket medio \\(saude\\)"),
+        "N. Unidades": (r"^unidades da rede propria", r"^unidades(?:\b|\s|\()", r"^rede propria"),
+        "Glosa/PCLD": (r"^provisao.*glosa esperada",),
+    },
+    "DASA3": {
+        "Ticket Médio": (r"^ticket medio \(r\$\)", r"^ticket medio$",),
+        "N. Atendimentos": (r"^exames - total", r"^exames total"),
+        "N. Unidades": (r"^unidades de atendimento$",),
+    },
+    "ONCO3": {
+        "N. Atendimentos": (r"^total de procedimentos$", r"^procedimentos$", r"^infusoes$"),
+        "N. Pacientes": (r"^total de procedimentos$", r"^procedimentos$"),
+        "N. Unidades": (r"^numero de unidades$",),
+        "Ticket Médio": (r"^ticket medio$",),
+        "Glosa/PCLD": (r"^pcld$",),
     },
 }
 
@@ -258,6 +282,7 @@ FINANCIAL_SHEET_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
 
 
 FINANCIAL_UNITS: dict[str, str] = {
+    "AALR3": "R$ milhões",
     "RDOR3": "R$ milhões",
     "MATD3": "R$ milhares",
     "FLRY3": "R$ milhares",
@@ -373,7 +398,15 @@ def classify_operational_observation(
     if calculated:
         score = 82
     if nature == "proxy":
-        score = min(score, 74)
+        score = 82 if company.ticker == "DASA3" and metric == "N. Atendimentos" else 74
+    if (
+        metric == "Receita Bruta"
+        and is_number(value)
+        and float(value) < 10
+        and (unit is None or "r$" in normalise_text(unit))
+    ):
+        rejection = rejection or "gross_revenue_value_incompatible_with_unit"
+        score = 35
     if rejection:
         score = 35
     confidence = confidence_label(score)
@@ -400,6 +433,7 @@ def classify_operational_observation(
         "confidence_score": score,
         "requires_review": requires_review,
         "rejection_reason": rejection,
+        "status": "low_confidence_rejected" if rejection else "validated",
         "extraction_method": extraction_method,
     }
 
@@ -435,13 +469,14 @@ def enrich_metric_item(
         )
         for period, value in series.items()
     ]
-    if rejection:
+    low_observation = next((obs for obs in observations if obs.get("confidence") == "low"), None)
+    if rejection or low_observation:
         item["confidence"] = "low"
         item["confidence_score"] = 35
         item["requires_review"] = True
-        item["rejection_reason"] = rejection
+        item["rejection_reason"] = rejection or low_observation.get("rejection_reason") or "low_confidence_observation"
         item["observations"] = observations
-        return None
+        return item
     score = min((obs["confidence_score"] for obs in observations), default=90)
     nature = "calculated" if calculated else next((obs["nature"] for obs in observations if obs["nature"] != "reported"), "reported")
     item.setdefault("nature", nature)
@@ -451,6 +486,14 @@ def enrich_metric_item(
     item["requires_review"] = score < CONFIDENCE_MEDIUM
     item["observations"] = observations
     return item
+
+
+def metric_item_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
+    confidence_rank = {"high": 0, "medium": 1, "low": 9}.get(str(item.get("confidence")), 5)
+    nature_rank = {"reported": 0, "calculated": 1, "proxy": 2}.get(str(item.get("nature")), 5)
+    source_rank = 0 if str(item.get("extraction_method", "")).startswith("spreadsheet") else 1
+    label = normalise_text(item.get("fonte_linha"))
+    return confidence_rank, nature_rank, source_rank, label
 
 
 def normalise_period(value: Any) -> str | None:
@@ -637,7 +680,7 @@ def extract_metric(company: Company, workbook: Any, metric: str) -> list[dict[st
         if signature not in seen:
             seen.add(signature)
             unique.append(item)
-    return unique
+    return sorted(unique, key=metric_item_rank)
 
 
 def extract_arbitrary_row(
@@ -702,6 +745,8 @@ def prune_trailing_zero_periods(metrics: dict[str, list[dict[str, Any]]]) -> Non
     nonzero_periods: list[str] = []
     for items in metrics.values():
         for item in items:
+            if item.get("confidence") == "low":
+                continue
             for period, value in item.get("serie", {}).items():
                 if is_number(value) and float(value) != 0:
                     nonzero_periods.append(period)
@@ -711,10 +756,76 @@ def prune_trailing_zero_periods(metrics: dict[str, list[dict[str, Any]]]) -> Non
     latest_key = period_sort_key(latest_nonzero)
     for items in metrics.values():
         for item in items:
+            if item.get("confidence") == "low":
+                continue
             series = item.get("serie", {})
             for period in list(series):
                 if period_sort_key(period) > latest_key:
                     del series[period]
+
+
+def operational_warning_message(company: Company, metric: str, item: dict[str, Any] | None = None) -> str:
+    if item is None:
+        return "Nenhuma observação suficientemente confiável foi encontrada."
+    label = normalise_text(item.get("fonte_linha"))
+    if company.ticker == "DASA3" and metric == "N. Atendimentos" and "exames" in label:
+        return "Volume total de exames utilizado como proxy de atendimentos, refletindo a natureza predominantemente diagnóstica da operação."
+    if company.ticker == "FLRY3" and metric == "N. Pacientes" and "atendimentos" in label:
+        return "Atendimentos utilizados como proxy; não representa pacientes únicos."
+    if company.ticker == "MATD3" and metric in {"N. Atendimentos", "N. Pacientes"} and "pacientes-dia" in label:
+        return "Pacientes-dia utilizado como proxy; não representa pacientes únicos."
+    if company.ticker == "ONCO3" and metric in {"N. Atendimentos", "N. Pacientes"}:
+        return "Procedimentos utilizados como proxy; não representa pacientes únicos."
+    if company.ticker == "RDOR3" and metric == "N. Unidades":
+        return "Hospitais próprios utilizados como proxy de unidades."
+    if company.ticker == "RDOR3" and metric in {"N. Atendimentos", "N. Pacientes"}:
+        return "Pacientes-dia utilizado como proxy; não representa pacientes únicos."
+    return "Indicador exibido com confiança média por depender de proxy ou contexto menos estruturado."
+
+
+def build_operational_warnings(company: Company, metrics: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for metric in METRIC_NAMES:
+        items = metrics.get(metric) or []
+        valid_items = [item for item in items if item.get("confidence") != "low"]
+        for item in items:
+            if item.get("confidence") == "low":
+                warnings.append(
+                    {
+                        "metric": metric,
+                        "status": "low_confidence_rejected",
+                        "message": "Candidato rejeitado por valor incompatível com unidade/contexto.",
+                        "confidence": "low",
+                        "candidate_value": next(iter((item.get("serie") or {}).values()), None),
+                        "fonte_linha": item.get("fonte_linha"),
+                        "escopo": item.get("escopo"),
+                        "motivo": item.get("rejection_reason"),
+                    }
+                )
+        if not valid_items:
+            warnings.append(
+                {
+                    "metric": metric,
+                    "status": "not_found",
+                    "message": operational_warning_message(company, metric, None),
+                    "confidence": "not_found",
+                }
+            )
+            continue
+        for item in valid_items:
+            if item.get("confidence") == "medium":
+                warnings.append(
+                    {
+                        "metric": metric,
+                        "status": "medium_confidence",
+                        "message": operational_warning_message(company, metric, item),
+                        "confidence": item.get("confidence"),
+                        "nature": item.get("nature"),
+                        "fonte_linha": item.get("fonte_linha"),
+                        "escopo": item.get("escopo"),
+                    }
+                )
+    return warnings
 
 
 def parse_markdown_number(raw: str) -> int | float | None:
@@ -960,7 +1071,7 @@ def extract_metric_from_markdown(company: Company, markdown_paths: list[Path], m
             enriched = enrich_metric_item(company, metric, item, context=context)
             if enriched is not None and enriched.get("confidence_score", 0) >= CONFIDENCE_MEDIUM:
                 results.append(enriched)
-    return results
+    return sorted(results, key=metric_item_rank)
 
 
 def enrich_missing_metrics_from_markdown(
@@ -986,6 +1097,7 @@ def extract_company_from_markdown(
         for metric in METRIC_NAMES
     }
     prune_trailing_zero_periods(metrics)
+    warnings = build_operational_warnings(company, metrics)
     return {
         "ticker": company.ticker,
         "companhia": company.name,
@@ -996,6 +1108,7 @@ def extract_company_from_markdown(
         "erro_planilha": source_error,
         "extraido_em_utc": datetime.now(timezone.utc).isoformat(),
         "metricas": metrics,
+        "warnings": warnings,
     }
 
 
@@ -1044,6 +1157,7 @@ def extract_company(
         enrich_missing_metrics_from_markdown(company, metrics, markdown_paths)
 
     prune_trailing_zero_periods(metrics)
+    warnings = build_operational_warnings(company, metrics)
 
     return {
         "ticker": company.ticker,
@@ -1053,6 +1167,7 @@ def extract_company(
         "arquivo_fundamentos": workbook_path.name,
         "extraido_em_utc": datetime.now(timezone.utc).isoformat(),
         "metricas": metrics,
+        "warnings": warnings,
     }
 
 
