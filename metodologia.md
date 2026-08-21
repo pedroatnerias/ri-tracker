@@ -1587,10 +1587,9 @@ Margem Bruta
 Margem Operacional
 Margem EBITDA
 Margem Líquida
-EV/EBITDA LTM
 ```
 
-Os cinco primeiros gráficos são anuais. O gráfico de `EV/EBITDA LTM` é trimestral.
+Os cinco gráficos comparativos são gerados a partir dos dados anuais comparáveis já presentes nos JSONs finais. O `EV/EBITDA LTM` permanece disponível na tabela comparativa, mas não é exibido como gráfico nessa aba.
 
 Não há gráfico para:
 
@@ -1600,11 +1599,12 @@ CAGR Lucros
 Delta Preço da Ação 30 dias
 Delta Preço da Ação 360 dias
 N. Unidades
+EV/EBITDA LTM
 ```
 
 ### 23.7.4. EV/EBITDA histórico
 
-A série histórica trimestral de EV/EBITDA reutiliza o campo já calculado:
+O EV/EBITDA histórico reutiliza o campo já calculado:
 
 ```text
 ev_ebitda_ltm
@@ -1617,7 +1617,15 @@ EV(t) = Market Cap Histórico(t) + Dívida Líquida Padronizada(t)
 EV/EBITDA LTM(t) = EV(t) / EBITDA Contábil LTM(t)
 ```
 
-O comparativo apenas seleciona e apresenta os períodos onde o valor já existe. Quando os componentes não estão disponíveis ou não são comparáveis, o ponto permanece ausente e não é convertido em zero.
+O comparativo apenas seleciona e apresenta na tabela os períodos onde o valor já existe. Quando os componentes não estão disponíveis ou não são comparáveis, o valor permanece ausente e não é convertido em zero.
+
+### 23.7.4.1. Gráficos como artefatos derivados
+
+Os gráficos do Acompanhador de Mercado são artefatos derivados dos JSONs financeiros, operacionais e de indicadores. Eles não são fonte primária de dados, não substituem os JSONs publicados e não alteram qualquer metodologia de cálculo.
+
+No fluxo automatizado, o GitHub Actions gera os PNGs com Matplotlib depois da atualização dos dados e antes da publicação no repositório público de dados. O manifesto publicado registra os caminhos dos PNGs permitidos e uma versão de dados para controle de cache. O dashboard remoto consome esses PNGs versionados como imagens estáticas, evitando gerar gráficos dinamicamente no Render durante o carregamento normal.
+
+Se um PNG não estiver presente no manifesto publicado, o dashboard mostra o gráfico como indisponível para aquela atualização, sem criar dados fictícios e sem recalcular métricas no frontend.
 
 ### 23.7.5. N. Unidades
 

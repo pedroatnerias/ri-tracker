@@ -111,10 +111,31 @@ def validate_remote_relative_path(relative_path: str) -> str:
     return "/".join(parts)
 
 
+def validate_remote_asset_path(relative_path: str, suffixes: tuple[str, ...]) -> str:
+    normalized = str(relative_path).replace("\\", "/").lstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError(f"Caminho remoto invalido: {relative_path}")
+    if not parts[-1].endswith(suffixes):
+        raise ValueError(f"Extensao remota nao permitida: {relative_path}")
+    return "/".join(parts)
+
+
 def remote_url_for(relative_path: str) -> str:
     safe_path = validate_remote_relative_path(relative_path)
     encoded = "/".join(quote(part) for part in safe_path.split("/"))
     return f"{remote_data_base_url()}/{encoded}"
+
+
+def remote_repository_base_url() -> str:
+    base = remote_data_base_url()
+    return base.rsplit("/data", 1)[0] if base.endswith("/data") else base
+
+
+def remote_asset_url_for(relative_path: str) -> str:
+    safe_path = validate_remote_asset_path(relative_path, (".png", ".json"))
+    encoded = "/".join(quote(part) for part in safe_path.split("/"))
+    return f"{remote_repository_base_url()}/{encoded}"
 
 
 def remote_http_get_json(relative_path: str) -> dict:
@@ -218,6 +239,23 @@ class DashboardDataSource:
         if isinstance(self._remote_manifest.get("files"), dict):
             files.update({key: value for key, value in self._remote_manifest["files"].items() if value})
         return files
+
+    def chart_manifest(self) -> dict:
+        charts = {}
+        if isinstance(self.remote_metadata.get("charts"), dict):
+            charts.update(self.remote_metadata["charts"])
+        if isinstance(self._remote_manifest.get("charts"), dict):
+            charts.update(self._remote_manifest["charts"])
+        return charts
+
+    def data_version(self) -> str:
+        return str(
+            self.remote_metadata.get("data_version")
+            or self._remote_manifest.get("data_version")
+            or self.remote_metadata.get("source_commit")
+            or self.remote_metadata.get("updated_at_utc")
+            or ""
+        )
 
     def operational_paths(self) -> list[str]:
         paths = self.remote_metadata.get("operational_jsons")
@@ -696,6 +734,7 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
     # os tres demonstrativos financeiros minimos ja foram gerados.
     has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))
     comparison = build_comparison_payload(indicators, operational_data)
+    chart_assets = build_chart_assets(source)
     return {
         "tickers": TICKERS,
         "has_data": has_data,
@@ -706,6 +745,7 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
         "indicators": indicators,
         "operational": operational_data,
         "comparison": comparison,
+        "chart_assets": chart_assets,
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
         "files": source.files | operational_files,
@@ -932,7 +972,6 @@ def build_comparison_payload(indicators: dict, operational: dict) -> dict:
         "margem_operacional": {"title": "Margem Operacional", "unit": "%", "periodicity": "annual", "series": {}},
         "margem_ebitda": {"title": "Margem EBITDA", "unit": "%", "periodicity": "annual", "series": {}},
         "margem_liquida": {"title": "Margem Líquida", "unit": "%", "periodicity": "annual", "series": {}},
-        "ev_ebitda": {"title": "EV/EBITDA LTM", "unit": "x", "periodicity": "quarterly", "series": {}},
     }
 
     for ticker in TICKERS:
@@ -1026,19 +1065,6 @@ def build_comparison_payload(indicators: dict, operational: dict) -> dict:
                 }
                 for record in annual
             ]
-        charts["ev_ebitda"]["series"][ticker] = [
-            {
-                "period": _quarter_label_from_record(record),
-                "value": _as_number(record.get("ev_ebitda_ltm")),
-                "enterprise_value": record.get("enterprise_value"),
-                "ebitda_ltm": record.get("ebitda_ltm"),
-                "data_market_cap": record.get("data_market_cap"),
-                "data_divida_liquida": record.get("data_divida_liquida"),
-                "data_ebitda_ltm": record.get("data_ebitda_ltm"),
-                "quality": record.get("quality_ev_ebitda_ltm"),
-            }
-            for record in valid_ev
-        ]
 
     return {
         "companies_order": list(TICKERS),
@@ -1048,6 +1074,31 @@ def build_comparison_payload(indicators: dict, operational: dict) -> dict:
         ],
         "companies": companies,
         "charts": charts,
+    }
+
+
+def build_chart_assets(source: DashboardDataSource) -> dict:
+    manifest = source.chart_manifest()
+    version = source.data_version()
+
+    def with_url(path: str) -> dict:
+        url = remote_asset_url_for(path) if path else ""
+        return {"path": path, "url": f"{url}?v={quote(version)}" if url and version else url}
+
+    individual: dict[str, dict[str, dict]] = {}
+    for ticker, charts in (manifest.get("individual") or {}).items():
+        if not isinstance(charts, dict):
+            continue
+        individual[ticker] = {key: with_url(path) for key, path in charts.items() if isinstance(path, str)}
+    comparison = {
+        key: with_url(path)
+        for key, path in (manifest.get("comparison") or {}).items()
+        if isinstance(path, str)
+    }
+    return {
+        "version": version,
+        "individual": individual,
+        "comparison": comparison,
     }
 
 
@@ -2122,11 +2173,18 @@ HTML = """<!doctype html>
     }
 
     function renderPyplotChart(chartKey, title, ticker, view) {
-      const cacheBust = DATA.files?.indicadores?.modified_at || Date.now();
       const staticKey = `${ticker}|${view}|${chartKey}`;
-      const src = window.__STATIC_CHARTS__?.[staticKey]
-        || `/chart/${encodeURIComponent(ticker)}/${encodeURIComponent(view)}/${encodeURIComponent(chartKey)}?v=${encodeURIComponent(cacheBust)}`;
-      return `<h2>${escapeHtml(title)}</h2><div class="table-wrap"><img class="chart-img" src="${src}" alt="${escapeHtml(title)}"></div>`;
+      const assetKey = `${view}_${chartKey}`;
+      const remoteAsset = DATA.chart_assets?.individual?.[ticker]?.[assetKey]?.url;
+      const localVersion = DATA.chart_assets?.version || DATA.files?.indicadores?.modified_at || "";
+      const dynamicSrc = DATA.data_source_mode === "local"
+        ? `/chart/${encodeURIComponent(ticker)}/${encodeURIComponent(view)}/${encodeURIComponent(chartKey)}${localVersion ? `?v=${encodeURIComponent(localVersion)}` : ""}`
+        : "";
+      const src = window.__STATIC_CHARTS__?.[staticKey] || remoteAsset || dynamicSrc;
+      if (!src) {
+        return `<h2>${escapeHtml(title)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div>`;
+      }
+      return `<h2>${escapeHtml(title)}</h2><div class="table-wrap"><img class="chart-img" src="${src}" loading="lazy" alt="${escapeHtml(title)}"></div>`;
     }
 
     function renderComboChart(title, records, valueGetter, marginGetter, secondaryLabel = "Margem (%)") {
@@ -2765,9 +2823,9 @@ HTML = """<!doctype html>
       return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
     }
 
-    function comparisonCellHtml(cell, format) {
+    function comparisonCellHtml(cell, format, predominantPeriod = "") {
       const value = formatComparisonValue(cell?.value, format);
-      const period = cell?.period ? `<div class="muted">${escapeHtml(cell.period)}</div>` : "";
+      const period = cell?.period && cell.period !== predominantPeriod ? `<div class="muted">${escapeHtml(cell.period)}</div>` : "";
       const confidence = cell?.confidence === "medium" ? '<div class="muted">Confiança média</div>' : "";
       const quality = cell?.quality?.status && !["validated", "ok"].includes(cell.quality.status)
         ? `<div class="muted">${escapeHtml(cell.quality.status)}</div>`
@@ -2786,8 +2844,18 @@ HTML = """<!doctype html>
       const metrics = comparison.metrics || [];
       const headers = ["Métrica", ...tickers].map(value => `<th>${escapeHtml(value)}</th>`).join("");
       const body = metrics.map(metric => {
-        const cells = tickers.map(ticker => comparisonCellHtml(comparison.companies?.[ticker]?.[metric.key], metric.format)).join("");
-        return `<tr><td class="desc">${escapeHtml(metric.label)}</td>${cells}</tr>`;
+        const periods = tickers
+          .map(ticker => comparison.companies?.[ticker]?.[metric.key]?.period)
+          .filter(Boolean);
+        const counts = periods.reduce((acc, period) => {
+          acc[period] = (acc[period] || 0) + 1;
+          return acc;
+        }, {});
+        const predominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        const predominantPeriod = predominant && predominant[1] > periods.length / 2 ? predominant[0] : "";
+        const label = predominantPeriod ? `${metric.label} (${predominantPeriod})` : metric.label;
+        const cells = tickers.map(ticker => comparisonCellHtml(comparison.companies?.[ticker]?.[metric.key], metric.format, predominantPeriod)).join("");
+        return `<tr><td class="desc">${escapeHtml(label)}</td>${cells}</tr>`;
       }).join("");
       const colgroup = `<colgroup><col style="width:260px">${tickers.map(() => '<col style="width:150px">').join("")}</colgroup>`;
       return `<h2>Quadro Comparativo</h2><div class="table-wrap"><table class="fixed-layout comparison-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -2805,50 +2873,19 @@ HTML = """<!doctype html>
       return 0;
     }
 
-    function renderComparisonLineChart(chartKey, chart) {
-      const tickers = DATA.comparison?.companies_order || DATA.tickers || [];
-      const periods = Array.from(new Set(tickers.flatMap(ticker => (chart.series?.[ticker] || []).map(point => point.period))))
-        .filter(Boolean)
-        .sort((a, b) => comparisonPeriodSort(a) - comparisonPeriodSort(b));
-      const values = tickers.flatMap(ticker => (chart.series?.[ticker] || []).map(point => point.value)).filter(value => typeof value === "number" && Number.isFinite(value));
-      if (!periods.length || !values.length) return "";
-      const width = Math.max(860, periods.length * 72 + 160);
-      const height = 310;
-      const left = 80, right = 28, top = 34, bottom = 72;
-      const plotW = width - left - right;
-      const plotH = height - top - bottom;
-      const rawMin = Math.min(0, ...values);
-      const rawMax = Math.max(0, ...values);
-      const pad = Math.max(1, (rawMax - rawMin) * 0.16);
-      const min = rawMin - pad;
-      const max = rawMax + pad;
-      const span = max === min ? 1 : max - min;
-      const x = period => left + (periods.indexOf(period) / Math.max(1, periods.length - 1)) * plotW;
-      const y = value => top + (max - value) / span * plotH;
-      const colors = ["#006341", "#23AC81", "#6B7C3A", "#B08A3C", "#6C8CA6", "#8A6F98", "#4D5D53"];
-      const formatter = chart.unit === "%" ? value => `${formatPercent(value)}%` : chart.unit === "x" ? value => `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}x` : value => `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}`;
-      const lines = tickers.map((ticker, index) => {
-        const data = (chart.series?.[ticker] || []).filter(point => typeof point.value === "number" && Number.isFinite(point.value));
-        if (!data.length) return "";
-        const points = data.map(point => `${x(point.period)},${y(point.value)}`).join(" ");
-        const dots = data.map(point => `<circle cx="${x(point.period)}" cy="${y(point.value)}" r="3" fill="${colors[index % colors.length]}"><title>${escapeHtml(`${ticker} | ${point.period} | ${formatter(point.value)}${point.enterprise_value ? ` | EV ${formatMillions(point.enterprise_value)}` : ""}${point.ebitda_ltm ? ` | EBITDA LTM ${formatMillions(point.ebitda_ltm)}` : ""}`)}</title></circle>`).join("");
-        return `<polyline points="${points}" fill="none" stroke="${colors[index % colors.length]}" stroke-width="1.6"></polyline>${dots}`;
-      }).join("");
-      const xLabels = periods.map(period => `<text x="${x(period)}" y="${height - 28}" text-anchor="middle" font-size="10">${escapeHtml(period)}</text>`).join("");
-      const legend = tickers.map((ticker, index) => `<span class="legend-item"><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(ticker)}</span>`).join("");
-      const zeroY = y(0);
-      return `<h2>${escapeHtml(chart.title)}</h2><div class="table-wrap"><svg width="${width}" height="${height}" role="img" aria-label="${escapeHtml(chart.title)}">
-        <line x1="${left}" y1="${top}" x2="${left}" y2="${height - bottom}" stroke="#DDD5B3"></line>
-        <line x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}" stroke="#DDD5B3"></line>
-        ${lines}${xLabels}
-      </svg><div class="chart-legend">${legend}</div></div>`;
-    }
-
     function renderComparison() {
       const charts = DATA.comparison?.charts || {};
-      const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida", "ev_ebitda"];
-      const chartHtml = chartOrder.map(key => renderComparisonLineChart(key, charts[key] || {})).filter(Boolean);
+      const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"];
+      const chartHtml = chartOrder.map(key => renderComparisonChartImage(key, charts[key] || {})).filter(Boolean);
       return `${renderComparisonTable()}<h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div>`;
+    }
+
+    function renderComparisonChartImage(chartKey, chart) {
+      const asset = DATA.chart_assets?.comparison?.[chartKey]?.url;
+      if (!asset) {
+        return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div>`;
+      }
+      return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(chart.title || chartKey)}"></div>`;
     }
 
     function renderInlineMarkdown(text) {
@@ -3190,10 +3227,13 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
     @app.get("/logos/<path:filename>")
     def logos(filename: str) -> Response:
-        return send_from_directory(BASE_DIR / "Logos", filename)
+        response = send_from_directory(BASE_DIR / "Logos", filename)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
     @app.get("/chart/<ticker>/<view>/<chart_key>")
     def chart(ticker: str, view: str, chart_key: str) -> Response:
+        """Rota legada para desenvolvimento local; produção usa PNGs publicados."""
         if ticker not in TICKERS or view not in {"annual", "quarterly"} or chart_key not in CHARTS:
             return jsonify({"error": "chart_not_found"}), 404
         try:

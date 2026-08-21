@@ -56,6 +56,16 @@ def validate_json_file(path: Path, label: str) -> None:
     read_json(path)
 
 
+def validate_png_file(path: Path, label: str) -> None:
+    if not path.exists():
+        raise SystemExit(f"Arquivo {label} ausente: {path}")
+    if path.stat().st_size < 500:
+        raise SystemExit(f"Arquivo {label} PNG vazio/pequeno demais: {path}")
+    with path.open("rb") as fh:
+        if fh.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise SystemExit(f"Arquivo {label} nao e PNG valido: {path}")
+
+
 def validate_blocked_terms(paths: list[Path]) -> None:
     for path in paths:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -135,10 +145,28 @@ def build_publication_staging(base: Path, manifest: dict[str, object]) -> Path:
         for relative in publish_relatives
     ]
     validate_blocked_terms(staged_paths)
+    for relative in manifest.get("chart_pngs", []):
+        source = base / relative
+        validate_png_file(source, "grafico")
+        target = staging / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     return staging
 
 
-def data_manifest_payload(manifest: dict[str, object]) -> dict[str, object]:
+def data_manifest_payload(manifest: dict[str, object], data_version: str | None = None) -> dict[str, object]:
+    chart_paths = manifest.get("chart_pngs", [])
+    individual: dict[str, dict[str, str]] = {}
+    comparison: dict[str, str] = {}
+    for relative in chart_paths:
+        path = Path(str(relative))
+        parts = path.parts
+        if len(parts) == 4 and parts[0] == "charts" and parts[1] == "individual":
+            ticker = parts[2]
+            key = path.stem
+            individual.setdefault(ticker, {})[key] = Path(*parts).as_posix()
+        if len(parts) == 3 and parts[0] == "charts" and parts[1] == "comparison":
+            comparison[path.stem] = Path(*parts).as_posix()
     return {
         "files": {
             "balanco": next((name for name in manifest["root_jsons"] if name.startswith("balancos_itr_cvm_")), ""),
@@ -152,6 +180,11 @@ def data_manifest_payload(manifest: dict[str, object]) -> dict[str, object]:
             "reconciliacao": "relatorio_reconciliacao.json",
         },
         "operational_jsons": manifest["operational_jsons"],
+        "charts": {
+            "individual": individual,
+            "comparison": comparison,
+        },
+        "data_version": data_version if data_version is not None else os.environ.get("SOURCE_COMMIT") or os.environ.get("GITHUB_SHA") or "",
     }
 
 
@@ -172,9 +205,23 @@ def build_publish_manifest(base: Path) -> dict[str, object]:
     for path in operational_jsons:
         validate_json_file(path, "operacional")
 
+    chart_dir = base / "charts"
+    chart_pngs = sorted(chart_dir.rglob("*.png")) if chart_dir.exists() else []
+    chart_pngs = [
+        path for path in chart_pngs
+        if (
+            path.relative_to(base).as_posix().startswith("charts/individual/")
+            or path.relative_to(base).as_posix().startswith("charts/comparison/")
+        )
+        and path.name != "ev_ebitda_ltm.png"
+    ]
+    for path in chart_pngs:
+        validate_png_file(path, "grafico")
+
     manifest = {
         "root_jsons": [path.relative_to(base).as_posix() for path in financial_paths],
         "operational_jsons": [path.relative_to(base).as_posix() for path in operational_jsons],
+        "chart_pngs": [path.relative_to(base).as_posix() for path in chart_pngs],
         "warnings": [] if operational_jsons else [
             "Nenhum JSON operacional novo validado; snapshot operacional anterior sera preservado."
         ],
@@ -224,16 +271,19 @@ def publish_validated_data(
         raise SystemExit(f"Destino de publicacao inesperado: {target}")
 
     manifest = read_json(source / "publish_manifest.json")
+    data_version = source_commit or os.environ.get("SOURCE_COMMIT") or os.environ.get("GITHUB_SHA") or ""
     data_manifest_path = source / "data_manifest.json"
-    if not data_manifest_path.exists():
-        data_manifest_path.write_text(
-            json.dumps(data_manifest_payload(manifest), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    staging = publication_staging_dir(source)
-    if not staging.exists():
-        build_publication_staging(source, manifest)
+    data_manifest_path.write_text(
+        json.dumps(data_manifest_payload(manifest, data_version), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    staging = build_publication_staging(source, manifest)
+    staged_manifest = read_json(staging / "data_manifest.json")
     clear_financial_component(target)
+    chart_target = target.parent / "charts"
+    if chart_target.exists():
+        shutil.rmtree(chart_target)
+    chart_target.mkdir(parents=True, exist_ok=True)
 
     copied = 0
     for relative in manifest["root_jsons"]:
@@ -272,14 +322,27 @@ def publish_validated_data(
             },
         },
         "json_files_published": copied,
-        "files": read_json(staging / "data_manifest.json")["files"],
+        "chart_pngs_published": 0,
+        "files": staged_manifest["files"],
         "operational_jsons": manifest["operational_jsons"],
+        "charts": staged_manifest.get("charts", {}),
+        "data_version": staged_manifest.get("data_version", data_version),
     }
+    chart_copied = 0
+    for relative in manifest.get("chart_pngs", []):
+        source_path = staging / relative
+        if not source_path.exists():
+            continue
+        target_path = target.parent / relative
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        chart_copied += 1
+    metadata["chart_pngs_published"] = chart_copied
     (target / "update_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"Publicacao preparada: {copied} JSONs copiados para data/.")
+    print(f"Publicacao preparada: {copied} JSONs copiados para data/ e {chart_copied} PNGs para charts/.")
     return metadata
 
 

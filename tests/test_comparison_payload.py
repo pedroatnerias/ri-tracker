@@ -90,16 +90,14 @@ class ComparisonPayloadTests(unittest.TestCase):
         self.assertEqual(units["period"], "1T26")
         self.assertEqual(units["confidence"], "medium")
 
-    def test_ev_ebitda_chart_is_quarterly_and_preserves_nulls(self):
-        chart = self.payload()["charts"]["ev_ebitda"]
-        self.assertEqual(chart["periodicity"], "quarterly")
-        self.assertEqual(chart["series"]["AALR3"][0]["period"], "2T26")
-        self.assertEqual(chart["series"]["AALR3"][0]["value"], 7.8)
+    def test_ev_ebitda_remains_in_table_but_not_as_chart(self):
+        payload = self.payload()
+        self.assertEqual(payload["companies"]["AALR3"]["ev_ebitda"]["period"], "LTM 2T26")
+        self.assertNotIn("ev_ebitda", payload["charts"])
 
-    def test_chart_set_has_exactly_six_charts(self):
-        self.assertEqual(len(self.payload()["charts"]), 6)
+    def test_chart_set_has_exactly_five_charts(self):
+        self.assertEqual(len(self.payload()["charts"]), 5)
 
 
 if __name__ == "__main__":
     unittest.main()
-
