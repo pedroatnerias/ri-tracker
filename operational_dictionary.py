@@ -14,15 +14,7 @@ TARGET_METRICS: tuple[str, ...] = (
     "Ticket Médio",
     "N. Atendimentos",
     "N. Unidades",
-    "N. Médicos Relevantes",
-    "Concentração Clientes",
     "N. Pacientes",
-    "Vidas/Beneficiários",
-    "Exames",
-    "Procedimentos",
-    "Leitos",
-    "Hospitais/Clínicas",
-    "Ocupação",
     "Receita Bruta",
     "Glosa/PCLD",
 )
@@ -45,43 +37,10 @@ GENERIC_OPERATIONAL_DICTIONARY: dict[str, dict[str, Any]] = {
         "expected_units": ("unidades",),
         "forbidden_contexts": ("aluguel", "locacao", "r$", "cidade", "municipio", "equipamentos", "salas"),
     },
-    "N. Médicos Relevantes": {
-        "aliases": ("medicos", "medicos parceiros", "corpo clinico", "profissionais medicos"),
-        "expected_units": ("médicos", "medicos"),
-        "forbidden_contexts": ("medicos s.a", "médicos s.a", "razao social", "razão social"),
-    },
-    "Concentração Clientes": {
-        "aliases": ("concentracao de clientes", "maiores clientes", "top clientes", "cliente relevante"),
-        "expected_units": ("%",),
-    },
     "N. Pacientes": {
         "aliases": ("pacientes", "numero de pacientes", "pacientes oncol", "pacientes unicos"),
         "expected_units": ("pacientes",),
         "forbidden_contexts": ("pacientes-dia", "paciente-dia"),
-    },
-    "Vidas/Beneficiários": {
-        "aliases": ("vidas", "beneficiarios", "beneficiários", "vidas saude", "vidas odonto"),
-        "expected_units": ("vidas", "beneficiários", "beneficiarios"),
-    },
-    "Exames": {
-        "aliases": ("exames", "volume de exames", "exames realizados"),
-        "expected_units": ("exames",),
-    },
-    "Procedimentos": {
-        "aliases": ("procedimentos", "cirurgias", "avisos cirurgicos", "tratamentos", "infusoes"),
-        "expected_units": ("procedimentos", "cirurgias", "tratamentos"),
-    },
-    "Leitos": {
-        "aliases": ("leitos", "leitos operacionais", "leitos totais"),
-        "expected_units": ("leitos",),
-    },
-    "Hospitais/Clínicas": {
-        "aliases": ("hospitais", "clinicas", "clínicas", "hospitais e clinicas", "unidades hospitalares"),
-        "expected_units": ("hospitais", "clínicas", "clinicas", "unidades"),
-    },
-    "Ocupação": {
-        "aliases": ("ocupacao", "ocupação", "taxa de ocupacao", "occupancy rate"),
-        "expected_units": ("%",),
     },
     "Receita Bruta": {
         "aliases": ("receita bruta", "gross revenue"),
@@ -97,37 +56,27 @@ GENERIC_OPERATIONAL_DICTIONARY: dict[str, dict[str, Any]] = {
 COMPANY_OPERATIONAL_DICTIONARY: dict[str, dict[str, dict[str, Any]]] = {
     "AALR3": {
         "N. Unidades": {"preferred_labels": ("unidades",), "allowed_breakdowns": ("mega", "padrao", "postos", "b2b")},
-        "N. Médicos Relevantes": {"preferred_labels": ("medicos parceiros",)},
         "Glosa/PCLD": {"allowed_proxies": ("perdas", "glosas", "contas a receber", "365 dias")},
     },
     "DASA3": {
-        "Exames": {"allowed_scopes": ("Diagnósticos Nacional",)},
         "Ticket Médio": {"preferred_labels": ("receita bruta por exame", "ticket por paciente-dia")},
-        "Leitos": {"allowed_scopes": ("Hospitais/Onco NE", "Américas", "Hospital da Bahia", "Clínicas AMO")},
-        "Ocupação": {"allowed_scopes": ("Hospitais/Onco NE", "Américas", "Hospital da Bahia", "Clínicas AMO")},
     },
     "FLRY3": {
         "Ticket Médio": {"preferred_labels": ("receita bruta por exame",)},
-        "Exames": {"preferred_labels": ("exames",)},
         "N. Atendimentos": {"preferred_labels": ("atendimentos",)},
         "Glosa/PCLD": {"preferred_labels": ("glosas e abatimentos",)},
     },
     "HAPV3": {
-        "Vidas/Beneficiários": {"preferred_labels": ("vidas saude", "vidas odonto", "beneficiarios")},
         "N. Unidades": {"preferred_labels": ("rede propria", "hospitais", "pronto atendimento", "clinicas")},
         "Glosa/PCLD": {"forbidden_contexts": ("reversao", "reversão")},
     },
     "MATD3": {
-        "Leitos": {"preferred_labels": ("leitos operacionais",)},
         "N. Pacientes": {"allowed_proxies": ("pacientes-dia",), "preferred_labels": ("pacientes oncologicos",)},
-        "Procedimentos": {"preferred_labels": ("avisos cirurgicos",)},
         "Glosa/PCLD": {"preferred_labels": ("glosas",)},
     },
     "ONCO3": {
-        "Procedimentos": {"preferred_labels": ("procedimentos", "tratamentos")},
         "N. Atendimentos": {"allowed_proxies": ("procedimentos", "tratamentos")},
         "N. Pacientes": {"allowed_proxies": ("procedimentos", "tratamentos")},
-        "Hospitais/Clínicas": {"allowed_proxies": ("unidades", "clinicas", "clínicas")},
     },
     "RDOR3": {
         "Receita Bruta": {
@@ -135,10 +84,7 @@ COMPANY_OPERATIONAL_DICTIONARY: dict[str, dict[str, dict[str, Any]]] = {
             "forbidden_contexts": ("sulamerica", "sul america", "seguros e previdencia", "consolidado"),
         },
         "Glosa/PCLD": {"forbidden_contexts": ("sulamerica", "sul america", "seguros e previdencia")},
-        "Vidas/Beneficiários": {"allowed_scopes": ("SulAmérica", "Sul America")},
         "N. Unidades": {"allowed_proxies": ("hospitais",)},
-        "Hospitais/Clínicas": {"allowed_proxies": ("hospitais",)},
-        "Procedimentos": {"allowed_proxies": ("cirurgias", "infusoes")},
     },
 }
 
@@ -166,4 +112,3 @@ def metric_aliases(ticker: str, metric: str) -> tuple[str, ...]:
         if alias not in seen:
             seen.append(alias)
     return tuple(seen)
-

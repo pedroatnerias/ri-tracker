@@ -1162,20 +1162,12 @@ As métricas operacionais buscadas pelo extrator são:
 Ticket Médio
 N. Atendimentos
 N. Unidades
-N. Médicos Relevantes
-Concentração Clientes
 N. Pacientes
-Vidas/Beneficiários
-Exames
-Procedimentos
-Leitos
-Hospitais/Clínicas
-Ocupação
 Receita Bruta
 Glosa/PCLD
 ```
 
-O conjunto operacional foi ampliado para os indicadores acompanhados no setor de saúde, mas com uma regra mais restritiva de aceitação: cada observação recebe natureza, escopo, unidade, método de extração, nível de confiança e eventual indicação de revisão. `Receita Bruta` e `Glosa/PCLD` são extraídas pelo mesmo app operacional, mas no dashboard são exibidas junto à DRE, não na tabela operacional geral.
+O conjunto operacional fica restrito a essas seis métricas para reduzir falsos positivos e melhorar comparabilidade. Cada observação recebe natureza, escopo, unidade, método de extração, nível de confiança e eventual indicação de revisão. `Receita Bruta` e `Glosa/PCLD` são extraídas pelo mesmo app operacional, mas no dashboard são exibidas junto à DRE, não na tabela operacional geral.
 
 ## 22.1. Princípio de não equivalência
 
@@ -1235,15 +1227,7 @@ Exemplos de famílias de rótulos aceitos:
 | Ticket Médio | ticket medio, average ticket |
 | N. Atendimentos | atendimentos, número de atendimentos, volume de atendimentos, consultas |
 | N. Unidades | unidades, unidades de atendimento, unidades operacionais, unidades próprias |
-| N. Médicos Relevantes | médicos, médicos parceiros, corpo clínico |
-| Concentração Clientes | concentração de clientes, maiores clientes, top clientes |
 | N. Pacientes | pacientes, número de pacientes, pacientes oncológicos |
-| Vidas/Beneficiários | vidas, beneficiários, vidas saúde, vidas odonto |
-| Exames | exames, volume de exames |
-| Procedimentos | procedimentos, cirurgias, avisos cirúrgicos, tratamentos |
-| Leitos | leitos, leitos operacionais, leitos totais |
-| Hospitais/Clínicas | hospitais, clínicas, unidades hospitalares |
-| Ocupação | ocupação, taxa de ocupação |
 | Receita Bruta | receita bruta, gross revenue |
 | Glosa/PCLD | glosas, PCLD, provisões de crédito/glosas |
 
@@ -1386,15 +1370,7 @@ A busca operacional ativa inclui:
 Ticket Médio
 N. Atendimentos
 N. Unidades
-N. Médicos Relevantes
-Concentração Clientes
 N. Pacientes
-Vidas/Beneficiários
-Exames
-Procedimentos
-Leitos
-Hospitais/Clínicas
-Ocupação
 Receita Bruta
 Glosa/PCLD
 ```
@@ -1422,7 +1398,7 @@ ajustes
 pro forma
 ```
 
-`RDOR3` permanece explícita como escopo individual/hospitalar na camada operacional. Dados da SulAmérica só podem alimentar `Vidas/Beneficiários`; eles não alimentam receita hospitalar, ticket hospitalar, glosas hospitalares, unidades, leitos ou procedimentos.
+`RDOR3` permanece explícita como escopo individual/hospitalar na camada operacional. Dados da SulAmérica não alimentam os seis indicadores operacionais usados no dashboard.
 
 ## 23.2. FLRY3
 
@@ -1444,7 +1420,7 @@ Para `N. Atendimentos`, prioriza linhas explicitamente denominadas:
 Atendimentos
 ```
 
-Quando disponíveis, `Exames` e `Receita Bruta por Exame` são mantidos como indicadores próprios. `Exames por Atendimento` pode ser preservado como KPI auxiliar, mas não transforma automaticamente exames em atendimentos.
+`Receita Bruta por Exame` pode ser usada apenas quando o rótulo representar diretamente `Ticket Médio`. Exames por atendimento não transformam automaticamente exames em atendimentos.
 
 Quando a companhia não publica uma linha explícita de `Ticket Médio`, o indicador
 pode ser calculado por:
@@ -1488,7 +1464,7 @@ Os segmentos operacionais são mantidos separados quando necessário.
 
 Para `Receita Bruta` e `Glosa/PCLD`, a aba consolidada é priorizada.
 
-Em diagnósticos, o sistema procura `Exames`, `N. Unidades` e `Ticket Médio` por exame. Em hospitais e oncologia, o sistema pode capturar `Leitos`, `Ocupação` e ticket por paciente-dia quando o escopo estiver identificado. Esses escopos não são misturados.
+Em diagnósticos, o sistema procura apenas os seis indicadores ativos. Em hospitais e oncologia, métricas fora desse conjunto não alimentam automaticamente o dashboard. Os escopos não são misturados.
 
 ## 23.5. ONCO3
 
@@ -1505,7 +1481,7 @@ Glosa/PCLD
 DRE Trimestral
 ```
 
-Procedimentos, tratamentos e estrutura física podem ser capturados como métricas reportadas ou proxies, conforme a configuração da companhia. Quando procedimentos forem usados como proxy para atendimentos ou pacientes, isso fica explícito em `nature = "proxy"`.
+Procedimentos ou tratamentos só podem aparecer como proxy de `N. Atendimentos` ou `N. Pacientes` quando a regra da companhia permitir e sempre com `nature = "proxy"`.
 
 ## 23.6. HAPV3
 
@@ -1513,7 +1489,7 @@ Para `N. Unidades`, `N. Pacientes`, `Receita Bruta` e `Glosa/PCLD`, o valor
 somente deve ser aceito quando estiver claramente rotulado em planilha de
 fundamentos, release ou documento oficial de RI.
 
-Vidas de saúde e odonto são mantidas separadas quando divulgadas e podem formar total calculado apenas quando os componentes estiverem claros. PDD, reversão de glosa e glosa recorrente não são somados automaticamente quando a companhia não apresentar uma definição explícita.
+PDD, reversão de glosa e glosa recorrente não são somados automaticamente quando a companhia não apresentar uma definição explícita.
 
 Como HAPV3 tem tratamento específico de IFRS 17, `Receita Bruta` e qualquer
 receita operacional/gerencial extraída de RI não substituem a receita contábil
@@ -2060,7 +2036,7 @@ Contas não divulgadas permanecem `null`.
 
 ## 28.8. Escopo controlado de métricas operacionais
 
-A busca operacional automática é controlada pelo dicionário central `operational_dictionary.py` e cobre: `Ticket Médio`, `N. Atendimentos`, `N. Unidades`, `N. Médicos Relevantes`, `Concentração Clientes`, `N. Pacientes`, `Vidas/Beneficiários`, `Exames`, `Procedimentos`, `Leitos`, `Hospitais/Clínicas`, `Ocupação`, `Receita Bruta` e `Glosa/PCLD`.
+A busca operacional automática é controlada pelo dicionário central `operational_dictionary.py` e cobre apenas: `Ticket Médio`, `N. Atendimentos`, `N. Unidades`, `N. Pacientes`, `Receita Bruta` e `Glosa/PCLD`.
 
 Somente observações com confiança HIGH ou MEDIUM alimentam automaticamente o dashboard. Candidatos LOW permanecem como material de auditoria/revisão.
 

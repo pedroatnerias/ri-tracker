@@ -289,22 +289,6 @@ def metric_unit(company: Company, metric: str, source_label: str) -> str | None:
         if company.ticker == "MATD3":
             return "R$ milhões por leito utilizado"
         return "R$"
-    if metric == "N. Médicos Relevantes":
-        return "médicos"
-    if metric == "Concentração Clientes":
-        return "%"
-    if metric == "Vidas/Beneficiários":
-        return "vidas"
-    if metric == "Exames":
-        return "exames"
-    if metric == "Procedimentos":
-        return "procedimentos"
-    if metric == "Leitos":
-        return "leitos"
-    if metric == "Hospitais/Clínicas":
-        return "unidades"
-    if metric == "Ocupação":
-        return "%"
     return None
 
 
@@ -353,7 +337,7 @@ def forbidden_operational_context(company: Company, metric: str, label: str, con
             continue
         if normalized and normalized in haystack:
             return term
-    if metric in {"Ticket Médio", "Ocupação", "Concentração Clientes"}:
+    if metric == "Ticket Médio":
         if re.search(r"\b(?:var\.?|variacao|yoy|qoq|a/a|t/t)\b", haystack):
             return "variation_context"
     if metric == "N. Pacientes" and any(term in haystack for term in ("pacientes-dia", "paciente-dia")):

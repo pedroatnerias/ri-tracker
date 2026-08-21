@@ -5,39 +5,18 @@ from operational_dictionary import CONFIDENCE_MEDIUM, all_metric_names
 
 
 class OperationalDictionaryTests(unittest.TestCase):
-    def test_target_metrics_include_full_operational_scope(self):
+    def test_target_metrics_are_limited_to_agreed_scope(self):
         self.assertEqual(
             all_metric_names(),
             (
                 "Ticket Médio",
                 "N. Atendimentos",
                 "N. Unidades",
-                "N. Médicos Relevantes",
-                "Concentração Clientes",
                 "N. Pacientes",
-                "Vidas/Beneficiários",
-                "Exames",
-                "Procedimentos",
-                "Leitos",
-                "Hospitais/Clínicas",
-                "Ocupação",
                 "Receita Bruta",
                 "Glosa/PCLD",
             ),
         )
-
-    def test_hapvida_medicos_sa_is_not_doctor_kpi(self):
-        obs = classify_operational_observation(
-            COMPANIES["HAPV3"],
-            "N. Médicos Relevantes",
-            label="Médicos S.A.",
-            value=1,
-            context="Razão social: Hapvida Médicos S.A.",
-            extraction_method="markdown_contextual",
-        )
-        self.assertEqual(obs["confidence"], "low")
-        self.assertTrue(obs["requires_review"])
-        self.assertIsNotNone(obs["rejection_reason"])
 
     def test_materdei_rent_clause_is_not_units_kpi(self):
         obs = classify_operational_observation(
@@ -80,4 +59,3 @@ class OperationalDictionaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

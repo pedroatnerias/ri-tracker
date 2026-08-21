@@ -2379,15 +2379,7 @@ HTML = """<!doctype html>
         "Ticket Médio",
         "N. Atendimentos",
         "N. Unidades",
-        "N. Médicos Relevantes",
-        "Concentração Clientes",
         "N. Pacientes",
-        "Vidas/Beneficiários",
-        "Exames",
-        "Procedimentos",
-        "Leitos",
-        "Hospitais/Clínicas",
-        "Ocupação",
       ];
       const selectedMetrics = defaultMetrics;
       return selectedMetrics.map(metric => {
