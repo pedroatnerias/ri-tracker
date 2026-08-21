@@ -101,6 +101,7 @@ UPDATE_LOCK = threading.Lock()
 
 def append_update_log(message: str) -> None:
     message = sanitize_log_message(message)
+    print(message, flush=True)
     with UPDATE_LOCK:
         logs = list(UPDATE_STATE.get("logs") or [])
         logs.append(message)
