@@ -40,6 +40,14 @@ from urllib.parse import unquote, urlparse
 
 from openpyxl import load_workbook
 
+from operational_dictionary import (
+    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    all_metric_names,
+    metric_aliases,
+    metric_definition,
+)
+
 try:
     from app_parser_operacional import (
         PASTA_ENTRADA_PADRAO as PASTA_PDFS_OPERACIONAIS,
@@ -61,14 +69,7 @@ except Exception:  # pragma: no cover - fallback defensivo para ambientes sem pa
         return text.strip("._-") or "documento"
 
 
-METRIC_NAMES = (
-    "Ticket Médio",
-    "N. Atendimentos",
-    "N. Unidades",
-    "N. Pacientes",
-    "Receita Bruta",
-    "Glosa/PCLD",
-)
+METRIC_NAMES = all_metric_names()
 
 
 @dataclass(frozen=True)
@@ -201,6 +202,14 @@ GENERIC_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+GENERIC_PATTERNS.update(
+    {
+        metric: tuple(rf"^{re.escape(alias)}(?:\b|\s|\(|$)" for alias in metric_aliases("", metric))
+        for metric in METRIC_NAMES
+        if metric not in GENERIC_PATTERNS
+    }
+)
+
 
 # Regras que melhoram a precisão quando a nomenclatura da companhia é específica.
 COMPANY_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
@@ -280,6 +289,22 @@ def metric_unit(company: Company, metric: str, source_label: str) -> str | None:
         if company.ticker == "MATD3":
             return "R$ milhões por leito utilizado"
         return "R$"
+    if metric == "N. Médicos Relevantes":
+        return "médicos"
+    if metric == "Concentração Clientes":
+        return "%"
+    if metric == "Vidas/Beneficiários":
+        return "vidas"
+    if metric == "Exames":
+        return "exames"
+    if metric == "Procedimentos":
+        return "procedimentos"
+    if metric == "Leitos":
+        return "leitos"
+    if metric == "Hospitais/Clínicas":
+        return "unidades"
+    if metric == "Ocupação":
+        return "%"
     return None
 
 
@@ -290,6 +315,158 @@ def normalise_text(value: Any) -> str:
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub(r"\s+", " ", text).strip().lower()
     return text
+
+
+def confidence_label(score: int) -> str:
+    if score >= CONFIDENCE_HIGH:
+        return "high"
+    if score >= CONFIDENCE_MEDIUM:
+        return "medium"
+    return "low"
+
+
+def infer_observation_nature(
+    company: Company,
+    metric: str,
+    label: str,
+    context: str,
+    *,
+    calculated: bool = False,
+) -> tuple[str, str | None]:
+    if calculated:
+        return "calculated", "formula"
+    definition = metric_definition(company.ticker, metric)
+    haystack = normalise_text(f"{label} {context}")
+    for proxy in definition.get("allowed_proxies", ()):
+        if normalise_text(proxy) in haystack:
+            return "proxy", proxy
+    return "reported", None
+
+
+def forbidden_operational_context(company: Company, metric: str, label: str, context: str) -> str | None:
+    haystack = normalise_text(f"{label} {context}")
+    definition = metric_definition(company.ticker, metric)
+    allowed_proxies = tuple(normalise_text(proxy) for proxy in definition.get("allowed_proxies", ()))
+    for term in definition.get("forbidden_contexts", ()):
+        normalized = normalise_text(term)
+        if normalized in allowed_proxies:
+            continue
+        if normalized and normalized in haystack:
+            return term
+    if metric in {"Ticket Médio", "Ocupação", "Concentração Clientes"}:
+        if re.search(r"\b(?:var\.?|variacao|yoy|qoq|a/a|t/t)\b", haystack):
+            return "variation_context"
+    if metric == "N. Pacientes" and any(term in haystack for term in ("pacientes-dia", "paciente-dia")):
+        if any(proxy in haystack for proxy in allowed_proxies):
+            return None
+        return "pacientes-dia_is_not_unique_patients"
+    if metric == "Receita Bruta" and any(term in haystack for term in ("receita liquida", "net revenue")):
+        return "net_revenue_is_not_gross_revenue"
+    return None
+
+
+def classify_operational_observation(
+    company: Company,
+    metric: str,
+    *,
+    label: str,
+    value: Any = None,
+    unit: str | None = None,
+    period: str | None = None,
+    scope: str | None = None,
+    context: str = "",
+    document: str | None = None,
+    page: int | None = None,
+    extraction_method: str = "",
+    calculated: bool = False,
+    formula: str | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rejection = forbidden_operational_context(company, metric, label, context)
+    nature, proxy = infer_observation_nature(company, metric, label, context, calculated=calculated)
+    mapping_type = "exact_label" if nature == "reported" else nature
+    score = 90 if extraction_method.startswith("spreadsheet") else 76
+    if calculated:
+        score = 82
+    if nature == "proxy":
+        score = min(score, 74)
+    if rejection:
+        score = 35
+    confidence = confidence_label(score)
+    requires_review = confidence == "low" or bool(rejection)
+    return {
+        "metric": metric,
+        "nature": nature,
+        "original_label": label,
+        "original_value": serialisable_number(value) if is_number(value) else value,
+        "normalized_value": serialisable_number(value) if is_number(value) else value,
+        "unit": unit,
+        "period": period,
+        "period_type": "quarter" if period and re.fullmatch(r"[1-4]T\d{2}", period) else "annual" if period else None,
+        "measurement_basis": "period_value",
+        "scope": scope,
+        "document": document,
+        "page": page,
+        "source_context": context[:500],
+        "mapping_type": mapping_type,
+        "proxy_for": proxy,
+        "formula": formula,
+        "inputs": inputs or {},
+        "confidence": confidence,
+        "confidence_score": score,
+        "requires_review": requires_review,
+        "rejection_reason": rejection,
+        "extraction_method": extraction_method,
+    }
+
+
+def enrich_metric_item(
+    company: Company,
+    metric: str,
+    item: dict[str, Any],
+    *,
+    context: str = "",
+) -> dict[str, Any] | None:
+    series = item.get("serie") or {}
+    label = str(item.get("fonte_linha") or item.get("original_label") or metric)
+    scope = str(item.get("escopo") or item.get("scope") or "")
+    method = str(item.get("extraction_method") or "")
+    calculated = bool(item.get("calculado"))
+    rejection = forbidden_operational_context(company, metric, label, f"{scope} {context}")
+    observations = [
+        classify_operational_observation(
+            company,
+            metric,
+            label=label,
+            value=value,
+            unit=item.get("unidade"),
+            period=period,
+            scope=scope,
+            context=f"{scope} {context}",
+            document=item.get("fonte_documento"),
+            extraction_method=method,
+            calculated=calculated,
+            formula=item.get("formula"),
+            inputs=item.get("inputs"),
+        )
+        for period, value in series.items()
+    ]
+    if rejection:
+        item["confidence"] = "low"
+        item["confidence_score"] = 35
+        item["requires_review"] = True
+        item["rejection_reason"] = rejection
+        item["observations"] = observations
+        return None
+    score = min((obs["confidence_score"] for obs in observations), default=90)
+    nature = "calculated" if calculated else next((obs["nature"] for obs in observations if obs["nature"] != "reported"), "reported")
+    item.setdefault("nature", nature)
+    item.setdefault("mapping_type", "formula" if calculated else ("proxy" if nature == "proxy" else "exact_label"))
+    item["confidence_score"] = score
+    item["confidence"] = confidence_label(score)
+    item["requires_review"] = score < CONFIDENCE_MEDIUM
+    item["observations"] = observations
+    return item
 
 
 def normalise_period(value: Any) -> str | None:
@@ -400,7 +577,9 @@ def has_context_above(ws: Any, row: int, pattern: str, lookback: int = 8) -> boo
 
 
 def metric_patterns(ticker: str, metric: str) -> tuple[str, ...]:
-    return COMPANY_PATTERNS.get(ticker, {}).get(metric, GENERIC_PATTERNS[metric])
+    configured = tuple(rf"^{re.escape(alias)}(?:\b|\s|\(|$)" for alias in metric_aliases(ticker, metric))
+    patterns = COMPANY_PATTERNS.get(ticker, {}).get(metric, GENERIC_PATTERNS[metric])
+    return tuple(dict.fromkeys((*patterns, *configured)))
 
 
 def candidate_rows(ws: Any, patterns: Iterable[str]) -> list[tuple[int, str]]:
@@ -451,18 +630,20 @@ def extract_metric(company: Company, workbook: Any, metric: str) -> list[dict[st
             series = row_series(ws, row)
             if not series:
                 continue
-            results.append(
-                {
-                    "escopo": company.sheet_aliases.get(ws.title, ws.title),
-                    "fonte_linha": source_label,
-                    "unidade": metric_unit(company, metric, source_label),
-                    "calculado": False,
-                    "confidence": "high",
-                    "extraction_method": "spreadsheet_labeled_row",
-                    "requires_review": False,
-                    "serie": series,
-                }
-            )
+            scope = company.sheet_aliases.get(ws.title, ws.title)
+            item = {
+                "escopo": scope,
+                "fonte_linha": source_label,
+                "unidade": metric_unit(company, metric, source_label),
+                "calculado": False,
+                "confidence": "high",
+                "extraction_method": "spreadsheet_labeled_row",
+                "requires_review": False,
+                "serie": series,
+            }
+            enriched = enrich_metric_item(company, metric, item, context=scope)
+            if enriched is not None:
+                results.append(enriched)
 
     # Remove séries repetidas, preservando a primeira ocorrência.
     unique: list[dict[str, Any]] = []
@@ -516,14 +697,19 @@ def derive_fleury_average_ticket(company: Company, workbook: Any) -> list[dict[s
     if not series:
         return []
     return [
-        {
+        enrich_metric_item(
+            company,
+            "Ticket Médio",
+            {
             "escopo": "Empresa Combinada",
             "fonte_linha": "Receita Bruta / Atendimentos",
             "unidade": "R$ por atendimento",
             "calculado": True,
             "formula": "Receita Bruta (R$ milhares) / Atendimentos (milhares)",
             "serie": series,
-        }
+            },
+            context="Empresa Combinada",
+        )
     ]
 
 
@@ -750,6 +936,8 @@ def extract_metric_from_markdown(company: Company, markdown_paths: list[Path], m
                 "aluguel" in normalized_full_line or "locacao" in normalized_full_line or "r$" in full_line.lower()
             ):
                 continue
+            if forbidden_operational_context(company, metric, label, full_line):
+                continue
 
             header, periods = nearest_markdown_period_header(lines, index)
             values = markdown_values(line)
@@ -773,19 +961,21 @@ def extract_metric_from_markdown(company: Company, markdown_paths: list[Path], m
             if signature in seen:
                 continue
             seen.add(signature)
-            results.append(
-                {
-                    "escopo": "Release/relatório",
-                    "fonte_linha": line.strip()[:180],
-                    "fonte_documento": str(path),
-                    "unidade": metric_unit(company, metric, line),
-                    "calculado": False,
-                    "confidence": "medium",
-                    "extraction_method": "markdown_contextual",
-                    "requires_review": False,
-                    "serie": series,
-                }
-            )
+            context = nearby_markdown_context(lines, index)
+            item = {
+                "escopo": "Release/relatório",
+                "fonte_linha": line.strip()[:180],
+                "fonte_documento": str(path),
+                "unidade": metric_unit(company, metric, line),
+                "calculado": False,
+                "confidence": "medium",
+                "extraction_method": "markdown_contextual",
+                "requires_review": False,
+                "serie": series,
+            }
+            enriched = enrich_metric_item(company, metric, item, context=context)
+            if enriched is not None and enriched.get("confidence_score", 0) >= CONFIDENCE_MEDIUM:
+                results.append(enriched)
     return results
 
 
@@ -1041,6 +1231,35 @@ def write_json(payload: dict[str, Any], output_dir: Path) -> Path:
     return output
 
 
+def collect_operational_observations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for metric, items in payload.get("metricas", {}).items():
+        for item in items:
+            for observation in item.get("observations", []):
+                row = {
+                    "ticker": payload.get("ticker"),
+                    "companhia": payload.get("companhia"),
+                    **observation,
+                    "fonte_pagina_ri": payload.get("fonte_pagina_ri"),
+                    "fonte_planilha": payload.get("fonte_planilha"),
+                    "arquivo_fundamentos": payload.get("arquivo_fundamentos"),
+                }
+                observations.append(row)
+    return observations
+
+
+def write_observations_json(observations: list[dict[str, Any]], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / "operational_observations.json"
+    payload = {
+        "schema_version": "operational_observations_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "observations": observations,
+    }
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output
+
+
 def parse_local_files(values: list[str]) -> dict[str, Path]:
     parsed: dict[str, Path] = {}
     for value in values:
@@ -1078,6 +1297,7 @@ async def run(args: argparse.Namespace) -> int:
         raise ValueError(f"tickers não suportados: {', '.join(invalid)}")
 
     failures: list[tuple[str, str]] = []
+    all_observations: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="ri_fundamentos_") as temporary:
         temp_dir = Path(temporary)
         for ticker in tickers:
@@ -1103,6 +1323,7 @@ async def run(args: argparse.Namespace) -> int:
                         raise workbook_exc
                     safe_print(f"[{ticker}] aviso: usando Markdown porque a planilha falhou ({workbook_exc})")
                 output = write_json(payload, output_dir)
+                all_observations.extend(collect_operational_observations(payload))
                 found = sum(bool(payload["metricas"][metric]) for metric in METRIC_NAMES)
                 safe_print(f"[{ticker}] {output} ({found}/{len(METRIC_NAMES)} indicadores encontrados)")
             except Exception as exc:
@@ -1114,6 +1335,8 @@ async def run(args: argparse.Namespace) -> int:
         for ticker, message in failures:
             safe_print(f"  - {ticker}: {message}")
         return 1
+    audit_output = write_observations_json(all_observations, output_dir)
+    safe_print(f"[AUDITORIA] {audit_output} ({len(all_observations)} observações operacionais)")
     return 0
 
 

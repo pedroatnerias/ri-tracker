@@ -1162,12 +1162,20 @@ As métricas operacionais buscadas pelo extrator são:
 Ticket Médio
 N. Atendimentos
 N. Unidades
+N. Médicos Relevantes
+Concentração Clientes
 N. Pacientes
+Vidas/Beneficiários
+Exames
+Procedimentos
+Leitos
+Hospitais/Clínicas
+Ocupação
 Receita Bruta
 Glosa/PCLD
 ```
 
-O conjunto operacional foi restringido a essas seis métricas para reduzir falsos positivos e melhorar comparabilidade. `Receita Bruta` e `Glosa/PCLD` são extraídas pelo mesmo app operacional, mas no dashboard são exibidas junto à DRE, não na tabela operacional geral.
+O conjunto operacional foi ampliado para os indicadores acompanhados no setor de saúde, mas com uma regra mais restritiva de aceitação: cada observação recebe natureza, escopo, unidade, método de extração, nível de confiança e eventual indicação de revisão. `Receita Bruta` e `Glosa/PCLD` são extraídas pelo mesmo app operacional, mas no dashboard são exibidas junto à DRE, não na tabela operacional geral.
 
 ## 22.1. Princípio de não equivalência
 
@@ -1177,9 +1185,13 @@ Exemplos:
 
 ```text
 Pacientes-Dia != N. Pacientes
+Procedimentos != Atendimentos
+Exames != Procedimentos
+Leitos != Unidades
+Beneficiários != Pacientes
 ```
 
-Quando determinado indicador não é divulgado, sua série permanece vazia.
+Quando determinado indicador não é divulgado, sua série permanece vazia. Proxies só são aceitos quando estiverem explicitamente configurados para a companhia e ficam marcados como `nature = "proxy"`.
 
 ```text
 serie = []
@@ -1214,7 +1226,7 @@ Antes de qualquer uso analítico ou decisório, recomenda-se validar os valores 
 
 ## 22.3. Método de localização nas planilhas
 
-O extrator procura rótulos nas primeiras colunas das planilhas utilizando padrões textuais genéricos e, quando necessário, padrões específicos por companhia.
+O extrator procura rótulos nas primeiras colunas das planilhas utilizando padrões textuais genéricos, o dicionário central `operational_dictionary.py` e, quando necessário, padrões específicos por companhia.
 
 Exemplos de famílias de rótulos aceitos:
 
@@ -1223,11 +1235,50 @@ Exemplos de famílias de rótulos aceitos:
 | Ticket Médio | ticket medio, average ticket |
 | N. Atendimentos | atendimentos, número de atendimentos, volume de atendimentos, consultas |
 | N. Unidades | unidades, unidades de atendimento, unidades operacionais, unidades próprias |
+| N. Médicos Relevantes | médicos, médicos parceiros, corpo clínico |
+| Concentração Clientes | concentração de clientes, maiores clientes, top clientes |
 | N. Pacientes | pacientes, número de pacientes, pacientes oncológicos |
+| Vidas/Beneficiários | vidas, beneficiários, vidas saúde, vidas odonto |
+| Exames | exames, volume de exames |
+| Procedimentos | procedimentos, cirurgias, avisos cirúrgicos, tratamentos |
+| Leitos | leitos, leitos operacionais, leitos totais |
+| Hospitais/Clínicas | hospitais, clínicas, unidades hospitalares |
+| Ocupação | ocupação, taxa de ocupação |
 | Receita Bruta | receita bruta, gross revenue |
 | Glosa/PCLD | glosas, PCLD, provisões de crédito/glosas |
 
 Os padrões funcionam como regras de identificação; eles não alteram a definição econômica do dado divulgado.
+
+## 22.3.1. Natureza, confiança e auditoria
+
+Cada observação operacional passa a ser classificada como:
+
+```text
+reported   = indicador explicitamente divulgado no rótulo aceito
+calculated = indicador calculado a partir de componentes divulgados
+proxy      = indicador aproximado aceito apenas quando configurado
+```
+
+O item extraído preserva a estrutura legada de `metricas`, `serie`, `escopo` e `unidade`, e acrescenta campos de auditoria:
+
+```text
+nature
+mapping_type
+confidence
+confidence_score
+requires_review
+observations
+```
+
+Os níveis determinísticos de confiança são:
+
+```text
+HIGH   >= 85
+MEDIUM >= 70 e < 85
+LOW    < 70
+```
+
+Somente observações HIGH ou MEDIUM alimentam automaticamente o dashboard. Candidatos LOW ficam marcados como `requires_review = true` e não devem ser usados como dado final.
 
 ## 22.3. Identificação dos períodos
 
@@ -1329,20 +1380,26 @@ Quando a escala não é explicitamente identificada no contexto, o valor é pres
 
 # 23. Regras Operacionais Específicas por Companhia
 
-A busca operacional ativa fica limitada a:
+A busca operacional ativa inclui:
 
 ```text
 Ticket Médio
 N. Atendimentos
 N. Unidades
+N. Médicos Relevantes
+Concentração Clientes
 N. Pacientes
+Vidas/Beneficiários
+Exames
+Procedimentos
+Leitos
+Hospitais/Clínicas
+Ocupação
 Receita Bruta
 Glosa/PCLD
 ```
 
-Regras antigas de vidas, exames, procedimentos, leitos, hospitais/clínicas,
-ocupação, médicos relevantes e concentração de clientes não alimentam mais a
-extração automática.
+Essas métricas são controladas pelo módulo `operational_dictionary.py`, que centraliza aliases, rótulos preferidos, proxies permitidos, escopos aceitos e contextos proibidos. A existência de uma regra não obriga preenchimento: se o documento não divulgar a métrica com evidência suficiente, a série permanece vazia.
 
 ## 23.1. RDOR3
 
@@ -1365,6 +1422,8 @@ ajustes
 pro forma
 ```
 
+`RDOR3` permanece explícita como escopo individual/hospitalar na camada operacional. Dados da SulAmérica só podem alimentar `Vidas/Beneficiários`; eles não alimentam receita hospitalar, ticket hospitalar, glosas hospitalares, unidades, leitos ou procedimentos.
+
 ## 23.2. FLRY3
 
 Para `N. Unidades`, utiliza a linha:
@@ -1384,6 +1443,8 @@ Para `N. Atendimentos`, prioriza linhas explicitamente denominadas:
 ```text
 Atendimentos
 ```
+
+Quando disponíveis, `Exames` e `Receita Bruta por Exame` são mantidos como indicadores próprios. `Exames por Atendimento` pode ser preservado como KPI auxiliar, mas não transforma automaticamente exames em atendimentos.
 
 Quando a companhia não publica uma linha explícita de `Ticket Médio`, o indicador
 pode ser calculado por:
@@ -1410,6 +1471,8 @@ Pacientes oncológicos
 Pacientes
 ```
 
+`Pacientes-dia` não é tratado como paciente único. Para MATD3, pode ser aceito apenas como proxy configurado quando a companhia divulga essa base operacional, sempre com `nature = "proxy"`.
+
 ## 23.4. DASA3
 
 Mapeamento de abas:
@@ -1424,6 +1487,8 @@ Mapeamento de abas:
 Os segmentos operacionais são mantidos separados quando necessário.
 
 Para `Receita Bruta` e `Glosa/PCLD`, a aba consolidada é priorizada.
+
+Em diagnósticos, o sistema procura `Exames`, `N. Unidades` e `Ticket Médio` por exame. Em hospitais e oncologia, o sistema pode capturar `Leitos`, `Ocupação` e ticket por paciente-dia quando o escopo estiver identificado. Esses escopos não são misturados.
 
 ## 23.5. ONCO3
 
@@ -1440,11 +1505,15 @@ Glosa/PCLD
 DRE Trimestral
 ```
 
+Procedimentos, tratamentos e estrutura física podem ser capturados como métricas reportadas ou proxies, conforme a configuração da companhia. Quando procedimentos forem usados como proxy para atendimentos ou pacientes, isso fica explícito em `nature = "proxy"`.
+
 ## 23.6. HAPV3
 
 Para `N. Unidades`, `N. Pacientes`, `Receita Bruta` e `Glosa/PCLD`, o valor
 somente deve ser aceito quando estiver claramente rotulado em planilha de
 fundamentos, release ou documento oficial de RI.
+
+Vidas de saúde e odonto são mantidas separadas quando divulgadas e podem formar total calculado apenas quando os componentes estiverem claros. PDD, reversão de glosa e glosa recorrente não são somados automaticamente quando a companhia não apresentar uma definição explícita.
 
 Como HAPV3 tem tratamento específico de IFRS 17, `Receita Bruta` e qualquer
 receita operacional/gerencial extraída de RI não substituem a receita contábil
@@ -1989,11 +2058,11 @@ O sistema evita converter indicadores operacionalmente diferentes em métricas e
 Contas não divulgadas permanecem `null`.
 
 
-## 28.8. Escopo restrito de métricas operacionais
+## 28.8. Escopo controlado de métricas operacionais
 
-A busca operacional automática fica restrita a `Ticket Médio`, `N. Atendimentos`, `N. Unidades`, `N. Pacientes`, `Receita Bruta` e `Glosa/PCLD`.
+A busca operacional automática é controlada pelo dicionário central `operational_dictionary.py` e cobre: `Ticket Médio`, `N. Atendimentos`, `N. Unidades`, `N. Médicos Relevantes`, `Concentração Clientes`, `N. Pacientes`, `Vidas/Beneficiários`, `Exames`, `Procedimentos`, `Leitos`, `Hospitais/Clínicas`, `Ocupação`, `Receita Bruta` e `Glosa/PCLD`.
 
-Outras métricas operacionais não alimentam automaticamente o dashboard.
+Somente observações com confiança HIGH ou MEDIUM alimentam automaticamente o dashboard. Candidatos LOW permanecem como material de auditoria/revisão.
 
 A nomenclatura e o escopo divulgados por cada RI permanecem parte da definição da observação.
 

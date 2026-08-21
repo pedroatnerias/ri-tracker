@@ -1764,6 +1764,13 @@ HTML = """<!doctype html>
       return (Math.pow(last / first, 1 / years) - 1) * 100;
     }
 
+    function cagrPeriodSuffix(firstInfo, lastInfo) {
+      const firstYear = Number(firstInfo?.year);
+      const lastYear = Number(lastInfo?.year);
+      if (!Number.isFinite(firstYear) || !Number.isFinite(lastYear)) return "";
+      return ` ${firstYear}–${lastYear}`;
+    }
+
     function dashboardAnnualRecords(ticker) {
       return dashboardRecords(ticker, "annual")
         .map(record => ({ record, info: recordPeriodInfo(record) }))
@@ -1779,6 +1786,7 @@ HTML = """<!doctype html>
       const firstInfo = recordPeriodInfo(first);
       const lastInfo = recordPeriodInfo(last);
       const years = firstInfo && lastInfo ? lastInfo.year - firstInfo.year : 0;
+      const cagrPeriod = cagrPeriodSuffix(firstInfo, lastInfo);
       const market = DATA.indicators?.market_cap?.companies?.[ticker];
       const netDebt = latestByDate(DATA.indicators?.divida_liquida?.companies?.[ticker] || []);
       const latestEbitda = last?.ebitda;
@@ -1790,8 +1798,8 @@ HTML = """<!doctype html>
         ? ev / latestEbitda
         : null;
       const rows = [
-        ["CAGR receitas (%)", formatPercent(cagr(first?.receita_liquida, last?.receita_liquida, years))],
-        ["CAGR lucros (%)", formatPercent(cagr(first?.lucro_liquido, last?.lucro_liquido, years))],
+        [`CAGR receitas${cagrPeriod} (%)`, formatPercent(cagr(first?.receita_liquida, last?.receita_liquida, years))],
+        [`CAGR lucros${cagrPeriod} (%)`, formatPercent(cagr(first?.lucro_liquido, last?.lucro_liquido, years))],
         ["Dívida líquida (R$ mi)", formatMillions(netDebt?.value)],
         ["Capital de giro (R$ mi)", formatMillions(latestWorkingCapital?.capital_giro)],
         ["Capital de giro / receita (%)", formatPercent(latestWorkingCapital?.capital_giro_percentual_receita)],
@@ -2367,7 +2375,20 @@ HTML = """<!doctype html>
 
     function operationalRows(company, view) {
       const metricas = company?.metricas || {};
-      const defaultMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes"];
+      const defaultMetrics = [
+        "Ticket Médio",
+        "N. Atendimentos",
+        "N. Unidades",
+        "N. Médicos Relevantes",
+        "Concentração Clientes",
+        "N. Pacientes",
+        "Vidas/Beneficiários",
+        "Exames",
+        "Procedimentos",
+        "Leitos",
+        "Hospitais/Clínicas",
+        "Ocupação",
+      ];
       const selectedMetrics = defaultMetrics;
       return selectedMetrics.map(metric => {
         const items = metricas[metric] || [];
