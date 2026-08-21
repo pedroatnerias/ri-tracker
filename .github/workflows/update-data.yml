@@ -2,6 +2,15 @@ name: Atualizar dados Nerias
 
 on:
   workflow_dispatch:
+    inputs:
+      update_mode:
+        description: "Tipo de atualizacao"
+        required: true
+        default: incremental
+        type: choice
+        options:
+          - incremental
+          - full
 
 permissions:
   contents: read
@@ -30,80 +39,10 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Executar pipeline Nerias
-        run: python update_data.py --resultados resultados --diagnostico-ri
+        run: python update_data.py --resultados resultados --mode "${{ inputs.update_mode }}" --diagnostico-ri
 
       - name: Validar JSONs gerados
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import json
-
-          base = Path("resultados")
-          allowed_root_jsons = [
-              "DRE_ITR_CVM_ultimos_5_anos.json",
-              "DFC_ITR_CVM.json",
-              "divida_liquida.json",
-              "ciclo_financeiro.json",
-              "market_cap.json",
-              "market_cap_historico.json",
-              "indicadores.json",
-              "relatorio_reconciliacao.json",
-          ]
-
-          publish_paths = []
-          balancos = sorted(base.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime)
-          if not balancos:
-              raise SystemExit("Nenhum balancos_itr_cvm_*.json foi gerado.")
-          publish_paths.append(balancos[-1])
-
-          for name in allowed_root_jsons:
-              publish_paths.append(base / name)
-
-          op_dir = base / "dados_operacionais"
-          operational_jsons = sorted(op_dir.glob("*.json"))
-          if not operational_jsons:
-              raise SystemExit("Nenhum JSON operacional foi gerado em resultados/dados_operacionais/.")
-          publish_paths.extend(operational_jsons)
-
-          for path in publish_paths:
-              if not path.exists():
-                  raise SystemExit(f"Arquivo obrigatorio ausente: {path}")
-              if path.stat().st_size == 0:
-                  raise SystemExit(f"Arquivo JSON vazio: {path}")
-              with path.open("r", encoding="utf-8") as fh:
-                  json.load(fh)
-
-          blocked_terms = [
-              "DATA_REPO_TOKEN",
-              "Nerias Dropbox",
-              "A3 Capital",
-              "C:\\\\Users",
-              "/home/runner/work",
-              "ghp_",
-              "github_pat_",
-              "-----BEGIN",
-          ]
-          for path in publish_paths:
-              text = path.read_text(encoding="utf-8", errors="replace")
-              for term in blocked_terms:
-                  if term in text:
-                      raise SystemExit(f"Termo potencialmente privado encontrado em {path}: {term}")
-
-          manifest = {
-              "root_jsons": [str(path.relative_to(base)) for path in publish_paths if path.parent == base],
-              "operational_jsons": [
-                  str(path.relative_to(base))
-                  for path in publish_paths
-                  if path.parent == op_dir
-              ],
-          }
-          (base / "publish_manifest.json").write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8",
-          )
-
-          print(f"Validacao concluida: {len(publish_paths)} JSONs validos.")
-          PY
+        run: python -m data_publication validate resultados
 
       - name: Checkout ri-tracker-data
         uses: actions/checkout@v6
@@ -116,59 +55,7 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
-        run: |
-          python - <<'PY'
-          from datetime import datetime, timezone
-          from pathlib import Path
-          import json
-          import os
-          import shutil
-
-          source = Path("resultados")
-          target = Path("data-repo") / "data"
-          target_resolved = target.resolve()
-          repo_resolved = Path("data-repo").resolve()
-          if target_resolved != repo_resolved / "data":
-              raise SystemExit(f"Destino de publicacao inesperado: {target_resolved}")
-
-          if target.exists():
-              for child in target.iterdir():
-                  if child.is_dir():
-                      shutil.rmtree(child)
-                  else:
-                      child.unlink()
-          target.mkdir(parents=True, exist_ok=True)
-
-          manifest_path = source / "publish_manifest.json"
-          with manifest_path.open("r", encoding="utf-8") as fh:
-              manifest = json.load(fh)
-
-          copied = 0
-          for relative in manifest["root_jsons"]:
-              path = source / relative
-              shutil.copy2(path, target / path.name)
-              copied += 1
-
-          target_operational = target / "dados_operacionais"
-          target_operational.mkdir(parents=True, exist_ok=True)
-          for relative in manifest["operational_jsons"]:
-              path = source / relative
-              shutil.copy2(path, target_operational / path.name)
-              copied += 1
-
-          metadata = {
-              "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-              "source_commit": os.environ["SOURCE_COMMIT"],
-              "workflow_run_id": os.environ["WORKFLOW_RUN_ID"],
-              "status": "success",
-              "json_files_published": copied,
-          }
-          (target / "update_metadata.json").write_text(
-              json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8",
-          )
-          print(f"Publicacao preparada: {copied} JSONs copiados para data/.")
-          PY
+        run: python -m data_publication publish resultados data-repo/data
 
       - name: Commit e push se houver alteracoes
         working-directory: data-repo

@@ -6,10 +6,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from dashboard import run_full_update, resolve_app_path
+from dashboard import run_update, resolve_app_path
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--resultados",
@@ -28,13 +28,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Repassa --diagnostico-ri somente para a etapa app_parser_operacional.py.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--mode",
+        choices=("incremental", "full"),
+        default="incremental",
+        help="Modo de atualizacao do pipeline. Padrao: incremental.",
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     resultados = resolve_app_path(args.resultados)
-    run_full_update(resultados, args.anos, diagnostico_ri=args.diagnostico_ri)
+    run_update(resultados, args.anos, mode=args.mode, diagnostico_ri=args.diagnostico_ri)
     return 0
 
 

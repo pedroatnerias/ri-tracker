@@ -27,6 +27,7 @@ import pandas as pd
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8050
+UPDATE_MODES = {"incremental", "full"}
 
 
 def resolve_app_path(path: Path) -> Path:
@@ -82,6 +83,13 @@ def effective_update_years(anos: list[int] | None = None, quantidade: int = 5) -
     return list(range(ano_atual - quantidade + 1, ano_atual + 1))
 
 
+def validate_update_mode(mode: str) -> str:
+    normalized = (mode or "incremental").lower()
+    if normalized not in UPDATE_MODES:
+        raise ValueError(f"Modo de atualizacao invalido: {mode}")
+    return normalized
+
+
 def run_command(command: list[str]) -> None:
     print("Rodando:", " ".join(command))
     subprocess.run(command, cwd=BASE_DIR, check=True)
@@ -108,7 +116,7 @@ def append_update_log(message: str) -> None:
         UPDATE_STATE["logs"] = logs[-250:]
 
 
-def run_update_command(label: str, command: list[str]) -> None:
+def run_update_command(label: str, command: list[str], critical: bool = True) -> dict[str, object]:
     append_update_log(f"Iniciando: {label}")
     with UPDATE_LOCK:
         UPDATE_STATE["current_step"] = label
@@ -124,15 +132,38 @@ def run_update_command(label: str, command: list[str]) -> None:
     if output:
         append_update_log(output[-8000:])
     if result.returncode != 0:
-        raise RuntimeError(f"{label} falhou com codigo {result.returncode}")
+        message = f"{label} falhou com codigo {result.returncode}"
+        if critical:
+            raise RuntimeError(message)
+        append_update_log(f"[WARNING] {message}. O pipeline financeiro continuara.")
+        return {
+            "label": label,
+            "status": "failed",
+            "critical": critical,
+            "returncode": result.returncode,
+        }
     append_update_log(f"Concluido: {label}")
+    return {
+        "label": label,
+        "status": "ok",
+        "critical": critical,
+        "returncode": result.returncode,
+    }
 
 
-def run_full_update(
+def command_failed(result: dict[str, object] | None) -> bool:
+    return bool(result and result.get("status") == "failed")
+
+
+def run_update(
     resultados: Path,
     anos: list[int] | None = None,
+    mode: str = "incremental",
     diagnostico_ri: bool = False,
-) -> None:
+) -> dict[str, object]:
+    mode = validate_update_mode(mode)
+    full_mode = mode == "full"
+    full_suffix = " [FULL]" if full_mode else ""
     resultados = resultados.expanduser().resolve()
     resultados.mkdir(parents=True, exist_ok=True)
     operational_dir = resultados / "dados_operacionais"
@@ -147,69 +178,122 @@ def run_full_update(
     reconciliacao_path = resultados / "relatorio_reconciliacao.json"
     anos_efetivos = effective_update_years(anos)
     year_args = [str(ano) for ano in anos_efetivos]
+    step_results: list[dict[str, object]] = []
+    warnings: list[str] = []
+    append_update_log(f"Modo de atualizacao: {mode}")
     append_update_log(f"Anos da atualizacao CVM: {', '.join(year_args)}")
 
     balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados)]
     if year_args:
         balanco_cmd.extend(["--years", *year_args])
-    balanco_cmd.append("--force-download")
-    run_update_command("Balanço Patrimonial CVM", balanco_cmd)
+    if full_mode:
+        balanco_cmd.append("--force-download")
+    step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
     balanco_path = find_balanco_json(resultados)
 
     dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path)]
     if year_args:
         dre_cmd.extend(["--anos", *year_args])
-    dre_cmd.append("--sobrescrever-zips")
-    run_update_command("DRE CVM", dre_cmd)
+    if full_mode:
+        dre_cmd.append("--sobrescrever-zips")
+    step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
 
     dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path)]
     if year_args:
         dfc_cmd.extend(["--anos", *year_args])
-    dfc_cmd.append("--sobrescrever-downloads")
-    run_update_command("DFC CVM", dfc_cmd)
+    if full_mode:
+        dfc_cmd.append("--sobrescrever-downloads")
+    step_results.append(run_update_command(f"DFC CVM{full_suffix}", dfc_cmd))
 
     parser_cmd = [sys.executable, script_path("app_parser_operacional.py")]
+    if full_mode:
+        parser_cmd.append("--sobrescrever-downloads")
     if diagnostico_ri:
         parser_cmd.append("--diagnostico-ri")
-    run_update_command("Releases e relatorios operacionais", parser_cmd)
-    run_update_command(
-        "Dados operacionais",
-        [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],
+    parser_result = run_update_command(
+        f"Releases e relatorios operacionais{full_suffix}",
+        parser_cmd,
+        critical=False,
     )
-    run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)])
-    run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)])
-    run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path)])
-    run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path)])
-    run_update_command(
-        "Indicadores financeiros",
-        [
-            sys.executable,
-            script_path("app_indicadores.py"),
-            str(dre_path),
-            str(indicadores_path),
-            "--dfc",
-            str(dfc_path),
-            "--market-cap-historico",
-            str(market_hist_path),
-            "--divida-liquida",
-            str(divida_path),
-            "--balanco",
-            str(balanco_path),
-        ],
+    step_results.append(parser_result)
+    if command_failed(parser_result):
+        warnings.append("Releases e relatorios operacionais falhou; Dados operacionais foi pulado.")
+        skipped = {
+            "label": "Dados operacionais",
+            "status": "skipped",
+            "critical": False,
+            "reason": "parser operacional falhou nesta execucao",
+        }
+        step_results.append(skipped)
+        append_update_log("[SKIPPED] Dados operacionais. Motivo: parser operacional falhou nesta execucao.")
+    else:
+        extractor_result = run_update_command(
+            "Dados operacionais",
+            [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],
+            critical=False,
+        )
+        step_results.append(extractor_result)
+        if command_failed(extractor_result):
+            warnings.append("Dados operacionais falhou; pipeline financeiro continuou.")
+
+    step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
+    step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)]))
+    step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path)]))
+    step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path)]))
+    step_results.append(
+        run_update_command(
+            "Indicadores financeiros",
+            [
+                sys.executable,
+                script_path("app_indicadores.py"),
+                str(dre_path),
+                str(indicadores_path),
+                "--dfc",
+                str(dfc_path),
+                "--market-cap-historico",
+                str(market_hist_path),
+                "--divida-liquida",
+                str(divida_path),
+                "--balanco",
+                str(balanco_path),
+            ],
+        )
     )
-    run_update_command(
-        "Relatorio de reconciliacao",
-        [
-            sys.executable,
-            script_path("app_reconciliacao.py"),
-            "--indicadores",
-            str(indicadores_path),
-            "--divida-liquida",
-            str(divida_path),
-            "--saida",
-            str(reconciliacao_path),
-        ],
+    step_results.append(
+        run_update_command(
+            "Relatorio de reconciliacao",
+            [
+                sys.executable,
+                script_path("app_reconciliacao.py"),
+                "--indicadores",
+                str(indicadores_path),
+                "--divida-liquida",
+                str(divida_path),
+                "--saida",
+                str(reconciliacao_path),
+            ],
+        )
     )
+
+    global_status = "success_with_warnings" if warnings else "success"
+    step_results = [step for step in step_results if step]
+    for step in step_results:
+        status = str(step.get("status", "ok")).upper()
+        marker = "WARNING" if status == "FAILED" else status
+        append_update_log(f"[{marker}] {step.get('label')}")
+    if warnings:
+        append_update_log("Pipeline concluido com avisos.")
+    else:
+        append_update_log("Pipeline concluido com sucesso.")
+    return {"status": global_status, "warnings": warnings, "steps": step_results}
+
+
+def run_full_update(
+    resultados: Path,
+    anos: list[int] | None = None,
+    diagnostico_ri: bool = False,
+) -> dict[str, object]:
+    return run_update(resultados, anos, mode="full", diagnostico_ri=diagnostico_ri)
 
 
 def port_process_ids(port: int) -> set[int]:
@@ -2399,12 +2483,12 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
         def worker() -> None:
             try:
-                run_full_update(resultados, anos)
+                update_result = run_full_update(resultados, anos)
                 with UPDATE_LOCK:
                     UPDATE_STATE.update(
                         {
                             "running": False,
-                            "status": "success",
+                            "status": update_result.get("status", "success"),
                             "current_step": None,
                             "finished_at": datetime.now(timezone.utc).isoformat(),
                             "error": None,
