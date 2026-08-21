@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import dashboard
 
@@ -13,7 +14,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 class DashboardEmptyBootTests(unittest.TestCase):
     def test_empty_results_directory_returns_empty_payload(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "local"}, clear=False):
             resultados = Path(tmp)
             app = dashboard.create_app(resultados)
 
@@ -29,7 +30,7 @@ class DashboardEmptyBootTests(unittest.TestCase):
             self.assertFalse(payload["files"]["balanco"]["exists"])
 
     def test_minimal_valid_files_are_returned(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "local"}, clear=False):
             resultados = Path(tmp)
             write_json(resultados / "balancos_itr_cvm_2026.json", {"companies": {"AALR3": {"periods": []}}})
             write_json(resultados / "DRE_ITR_CVM_ultimos_5_anos.json", {"companies": {"AALR3": {"periods": []}}})
@@ -45,7 +46,7 @@ class DashboardEmptyBootTests(unittest.TestCase):
             self.assertTrue(payload["files"]["balanco"]["exists"])
 
     def test_existing_invalid_statement_json_is_an_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "local"}, clear=False):
             resultados = Path(tmp)
             (resultados / "DRE_ITR_CVM_ultimos_5_anos.json").write_text("{invalid", encoding="utf-8")
             app = dashboard.create_app(resultados)
@@ -56,7 +57,7 @@ class DashboardEmptyBootTests(unittest.TestCase):
             self.assertIn("error", response.get_json())
 
     def test_missing_results_directory_is_created(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "local"}, clear=False):
             resultados = Path(tmp) / "nao_existe"
             app = dashboard.create_app(resultados)
 

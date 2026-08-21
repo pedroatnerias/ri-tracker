@@ -13,8 +13,11 @@ import subprocess
 import sys
 import threading
 import traceback
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from flask import Flask, Response, jsonify, send_from_directory
 import matplotlib
@@ -28,6 +31,12 @@ TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8050
 UPDATE_MODES = {"incremental", "full"}
+DATA_SOURCE_MODES = {"local", "remote", "auto"}
+DEFAULT_REMOTE_DATA_BASE_URL = "https://raw.githubusercontent.com/pedroatnerias/ri-tracker-data/main/data"
+DEFAULT_REMOTE_CACHE_TTL_SECONDS = 600
+REMOTE_HTTP_TIMEOUT_SECONDS = 15
+REMOTE_CACHE: dict[str, dict[str, object]] = {}
+REMOTE_CACHE_LOCK = threading.Lock()
 
 
 def resolve_app_path(path: Path) -> Path:
@@ -67,6 +76,181 @@ def env_port(default: int) -> int:
 
 def script_path(filename: str) -> str:
     return str(BASE_DIR / filename)
+
+
+class RemoteDataError(RuntimeError):
+    pass
+
+
+def configured_data_source_mode() -> str:
+    mode = os.getenv("NERIAS_DATA_SOURCE", "auto").strip().lower()
+    return mode if mode in DATA_SOURCE_MODES else "auto"
+
+
+def remote_data_base_url() -> str:
+    return os.getenv("NERIAS_REMOTE_DATA_BASE_URL", DEFAULT_REMOTE_DATA_BASE_URL).rstrip("/")
+
+
+def remote_cache_ttl_seconds() -> int:
+    value = os.getenv("NERIAS_REMOTE_CACHE_TTL_SECONDS")
+    if not value:
+        return DEFAULT_REMOTE_CACHE_TTL_SECONDS
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return DEFAULT_REMOTE_CACHE_TTL_SECONDS
+
+
+def validate_remote_relative_path(relative_path: str) -> str:
+    normalized = str(relative_path).replace("\\", "/").lstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError(f"Caminho remoto invalido: {relative_path}")
+    if not parts[-1].endswith(".json"):
+        raise ValueError(f"Apenas JSON remoto e permitido: {relative_path}")
+    return "/".join(parts)
+
+
+def remote_url_for(relative_path: str) -> str:
+    safe_path = validate_remote_relative_path(relative_path)
+    encoded = "/".join(quote(part) for part in safe_path.split("/"))
+    return f"{remote_data_base_url()}/{encoded}"
+
+
+def remote_http_get_json(relative_path: str) -> dict:
+    url = remote_url_for(relative_path)
+    request = Request(url, headers={"User-Agent": "Nerias-RI-Tracker/1.0"})
+    try:
+        with urlopen(request, timeout=REMOTE_HTTP_TIMEOUT_SECONDS) as response:
+            body = response.read().decode("utf-8")
+    except Exception as exc:
+        raise RemoteDataError(f"Falha ao carregar JSON remoto: {relative_path}") from exc
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RemoteDataError(f"JSON remoto invalido: {relative_path}") from exc
+    if not isinstance(data, dict):
+        raise RemoteDataError(f"JSON remoto sem objeto raiz: {relative_path}")
+    return data
+
+
+def clear_remote_cache() -> None:
+    with REMOTE_CACHE_LOCK:
+        REMOTE_CACHE.clear()
+
+
+def cached_remote_json(relative_path: str, force_refresh: bool = False) -> tuple[dict | None, dict]:
+    safe_path = validate_remote_relative_path(relative_path)
+    now = time.time()
+    ttl = remote_cache_ttl_seconds()
+    with REMOTE_CACHE_LOCK:
+        cached = REMOTE_CACHE.get(safe_path)
+        if cached and not force_refresh and now - float(cached["fetched_at"]) <= ttl:
+            return cached["data"], {
+                "path": remote_url_for(safe_path),
+                "modified_at": cached["fetched_at"],
+                "exists": True,
+                "source": "remote_cache",
+                "warning": None,
+            }
+    try:
+        data = remote_http_get_json(safe_path)
+    except Exception as exc:
+        with REMOTE_CACHE_LOCK:
+            cached = REMOTE_CACHE.get(safe_path)
+        if cached:
+            return cached["data"], {
+                "path": remote_url_for(safe_path),
+                "modified_at": cached["fetched_at"],
+                "exists": True,
+                "source": "remote_cache_stale",
+                "warning": str(exc),
+            }
+        return None, {
+            "path": remote_url_for(safe_path),
+            "modified_at": None,
+            "exists": False,
+            "source": "remote",
+            "warning": str(exc),
+        }
+
+    meta = {
+        "path": remote_url_for(safe_path),
+        "modified_at": now,
+        "exists": True,
+        "source": "remote",
+        "warning": None,
+    }
+    with REMOTE_CACHE_LOCK:
+        REMOTE_CACHE[safe_path] = {"data": data, "fetched_at": now, "source": "remote"}
+    return data, meta
+
+
+class DashboardDataSource:
+    def __init__(self, resultados: Path, mode: str | None = None, force_remote_refresh: bool = False):
+        requested = (mode or configured_data_source_mode()).strip().lower()
+        self.mode = requested if requested in DATA_SOURCE_MODES else "auto"
+        self.resultados = resultados
+        self.force_remote_refresh = force_remote_refresh
+        self.files: dict[str, dict] = {}
+        self.remote_metadata: dict = {}
+        self.data_source = self.mode
+        self.remote_available = False
+        self._remote_manifest: dict = {}
+        if self.mode in {"remote", "auto"}:
+            self._load_remote_metadata()
+
+    def _load_remote_metadata(self) -> None:
+        metadata, meta = cached_remote_json("update_metadata.json", self.force_remote_refresh)
+        manifest, manifest_meta = cached_remote_json("data_manifest.json", self.force_remote_refresh)
+        self.files["update_metadata"] = meta
+        self.files["data_manifest"] = manifest_meta
+        if metadata:
+            self.remote_metadata = metadata
+        if manifest:
+            self._remote_manifest = manifest
+        self.remote_available = bool(metadata or manifest)
+
+    def remote_file_map(self) -> dict:
+        files = {}
+        if isinstance(self.remote_metadata.get("files"), dict):
+            files.update(self.remote_metadata["files"])
+        if isinstance(self._remote_manifest.get("files"), dict):
+            files.update({key: value for key, value in self._remote_manifest["files"].items() if value})
+        return files
+
+    def operational_paths(self) -> list[str]:
+        paths = self.remote_metadata.get("operational_jsons")
+        if not isinstance(paths, list):
+            paths = self._remote_manifest.get("operational_jsons")
+        return [validate_remote_relative_path(path) for path in (paths or []) if isinstance(path, str)]
+
+    def load_remote_optional(self, relative_path: str, key: str | None = None) -> dict | None:
+        data, meta = cached_remote_json(relative_path, self.force_remote_refresh)
+        self.files[key or relative_path] = meta
+        if data is None:
+            return None
+        self.data_source = meta.get("source") or "remote"
+        return data
+
+    def load_local_optional(self, path: Path | None, key: str | None = None, expected_path: Path | None = None) -> dict | None:
+        meta_key = key or str(path or expected_path or "")
+        self.files[meta_key] = file_metadata(path, expected_path)
+        if path is None or not path.exists():
+            return None
+        self.data_source = "local"
+        return load_json(path)
+
+    def load_optional(self, key: str, local_path: Path | None, remote_relative: str | None, expected_path: Path | None = None) -> dict | None:
+        if self.mode in {"remote", "auto"} and remote_relative:
+            data = self.load_remote_optional(remote_relative, key)
+            if data is not None:
+                return data
+            if self.mode == "remote":
+                return None
+        if self.mode in {"local", "auto"}:
+            return self.load_local_optional(local_path, key, expected_path)
+        return None
 
 
 def sanitize_log_message(message: str) -> str:
@@ -456,29 +640,57 @@ def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
     return {"companies": companies}, file_meta
 
 
-def dashboard_payload(resultados: Path) -> dict:
+def load_operational_data_from_source(source: DashboardDataSource, resultados: Path) -> tuple[dict, dict[str, dict]]:
+    if source.mode in {"remote", "auto"} and source.remote_available:
+        companies: dict[str, dict] = {}
+        file_meta: dict[str, dict] = {}
+        for relative in source.operational_paths():
+            data = source.load_remote_optional(relative, f"operacional_{Path(relative).stem.upper()}")
+            if not data:
+                continue
+            ticker = str(data.get("ticker") or "").upper()
+            if ticker in TICKERS and "metricas" in data:
+                companies[ticker] = data
+                file_meta[f"operacional_{ticker}"] = source.files.get(f"operacional_{Path(relative).stem.upper()}", {})
+        if companies or source.mode == "remote":
+            return {"companies": companies}, file_meta
+    return load_operational_data(resultados)
+
+
+def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> dict:
     resultados.mkdir(parents=True, exist_ok=True)
-    paths = {
+    source = DashboardDataSource(resultados, force_remote_refresh=force_remote_refresh)
+    remote_files = source.remote_file_map()
+    balanco_relative = remote_files.get("balanco")
+    local_paths = {
         "balanco": find_optional_balanco_json(resultados),
         "dre": resultados / "DRE_ITR_CVM_ultimos_5_anos.json",
         "dfc": resultados / "DFC_ITR_CVM.json",
-    }
-    expected_paths = {
-        "balanco": resultados / "balancos_itr_cvm_*.json",
-        "dre": paths["dre"],
-        "dfc": paths["dfc"],
-    }
-    indicator_paths = {
         "indicadores": resultados / "indicadores.json",
         "divida_liquida": resultados / "divida_liquida.json",
         "ciclo_financeiro": resultados / "ciclo_financeiro.json",
         "market_cap": resultados / "market_cap.json",
     }
-    operational_data, operational_files = load_operational_data(resultados)
+    expected_paths = {
+        "balanco": resultados / "balancos_itr_cvm_*.json",
+        "dre": local_paths["dre"],
+        "dfc": local_paths["dfc"],
+        "indicadores": local_paths["indicadores"],
+        "divida_liquida": local_paths["divida_liquida"],
+        "ciclo_financeiro": local_paths["ciclo_financeiro"],
+        "market_cap": local_paths["market_cap"],
+    }
     statements = {
-        "balanco": load_optional_statement(paths["balanco"]),
-        "dre": load_optional_statement(paths["dre"]),
-        "dfc": load_optional_statement(paths["dfc"]),
+        "balanco": source.load_optional("balanco", local_paths["balanco"], balanco_relative, expected_paths["balanco"]) or {},
+        "dre": source.load_optional("dre", local_paths["dre"], remote_files.get("dre", "DRE_ITR_CVM_ultimos_5_anos.json"), expected_paths["dre"]) or {},
+        "dfc": source.load_optional("dfc", local_paths["dfc"], remote_files.get("dfc", "DFC_ITR_CVM.json"), expected_paths["dfc"]) or {},
+    }
+    operational_data, operational_files = load_operational_data_from_source(source, resultados)
+    indicators = {
+        "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
+        "divida_liquida": source.load_optional("divida_liquida", local_paths["divida_liquida"], remote_files.get("divida_liquida", "divida_liquida.json"), expected_paths["divida_liquida"]),
+        "ciclo_financeiro": source.load_optional("ciclo_financeiro", local_paths["ciclo_financeiro"], remote_files.get("ciclo_financeiro", "ciclo_financeiro.json"), expected_paths["ciclo_financeiro"]),
+        "market_cap": source.load_optional("market_cap", local_paths["market_cap"], remote_files.get("market_cap", "market_cap.json"), expected_paths["market_cap"]),
     }
     # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
     # os tres demonstrativos financeiros minimos ja foram gerados.
@@ -486,25 +698,15 @@ def dashboard_payload(resultados: Path) -> dict:
     return {
         "tickers": TICKERS,
         "has_data": has_data,
+        "data_source": source.data_source,
+        "data_source_mode": source.mode,
+        "remote_metadata": source.remote_metadata,
         "statements": statements,
-        "indicators": {
-            key: load_optional_json(path)
-            for key, path in indicator_paths.items()
-        },
+        "indicators": indicators,
         "operational": operational_data,
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
-        "files": {
-            key: file_metadata(path, expected_paths.get(key))
-            for key, path in paths.items()
-        } | {
-            key: {
-                "path": str(path),
-                "modified_at": path.stat().st_mtime if path.exists() else None,
-                "exists": path.exists(),
-            }
-            for key, path in indicator_paths.items()
-        } | operational_files,
+        "files": source.files | operational_files,
     }
 
 
@@ -1107,6 +1309,10 @@ HTML = """<!doctype html>
         el.innerHTML = "<strong>Atualização concluída.</strong> Dados recarregados.";
         return;
       }
+      if (state.status === "success_with_warnings") {
+        el.innerHTML = "<strong>Atualizacao concluida com avisos.</strong> Dados recarregados.";
+        return;
+      }
       if (state.status === "error") {
         el.innerHTML = `<strong>Erro na atualização:</strong> ${escapeHtml(state.error || "verifique o terminal/logs")}`;
         return;
@@ -1124,7 +1330,7 @@ HTML = """<!doctype html>
       if (!state.running) {
         if (updatePolling) clearInterval(updatePolling);
         updatePolling = null;
-        if (state.status === "success") await loadData();
+        if (["success", "success_with_warnings"].includes(state.status)) await loadData();
       }
     }
 
@@ -1139,6 +1345,19 @@ HTML = """<!doctype html>
       }
       if (!updatePolling) updatePolling = setInterval(pollUpdateStatus, 2500);
       await pollUpdateStatus();
+    }
+
+    async function refreshRemoteData() {
+      const response = await fetch("/api/refresh-data", { method: "POST", cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Falha ao recarregar dados.");
+      await loadData();
+      const el = document.getElementById("update-status");
+      if (el) el.innerHTML = "<strong>Dados recarregados.</strong>";
+    }
+
+    function isRemoteConfigured() {
+      return DATA?.data_source_mode === "remote";
     }
 
     function formatNumber(value) {
@@ -1505,19 +1724,26 @@ HTML = """<!doctype html>
         }));
       });
       if (!window.__STATIC_DATA__) {
-        viewTabs.appendChild(button("Recarregar JSONs", false, loadData));
+        viewTabs.appendChild(button("Recarregar JSONs", false, isRemoteConfigured() ? refreshRemoteData : loadData));
         const exportButton = button("Exportar HTML", false, () => {
           window.location.href = "/export/dashboard.html";
         });
         viewTabs.appendChild(exportButton);
-        const updateButton = button("Atualizar tudo", false, () => {
+        const updateButton = button(isRemoteConfigured() ? "Recarregar dados" : "Atualizar tudo", false, () => {
+          if (isRemoteConfigured()) {
+            refreshRemoteData().catch(error => {
+              const el = document.getElementById("update-status");
+              if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
+            });
+            return;
+          }
           startFullUpdate().catch(error => {
             const el = document.getElementById("update-status");
             if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
           });
         });
         updateButton.classList.add("update-button");
-        updateButton.disabled = Boolean(DATA.update_status?.running);
+        updateButton.disabled = !isRemoteConfigured() && Boolean(DATA.update_status?.running);
         viewTabs.appendChild(updateButton);
       }
     }
@@ -2390,14 +2616,21 @@ HTML = """<!doctype html>
         viewTabs.innerHTML = "";
         viewTabs.style.display = "flex";
         if (!window.__STATIC_DATA__) {
-          const updateButton = button("Atualizar tudo", false, () => {
+          const updateButton = button(isRemoteConfigured() ? "Recarregar dados" : "Atualizar tudo", false, () => {
+            if (isRemoteConfigured()) {
+              refreshRemoteData().catch(error => {
+                const el = document.getElementById("update-status");
+                if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
+              });
+              return;
+            }
             startFullUpdate().catch(error => {
               const el = document.getElementById("update-status");
               if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
             });
           });
           updateButton.classList.add("update-button");
-          updateButton.disabled = Boolean(DATA.update_status?.running);
+          updateButton.disabled = !isRemoteConfigured() && Boolean(DATA.update_status?.running);
           viewTabs.appendChild(updateButton);
         }
         document.getElementById("meta").textContent = "Sem dados carregados";
@@ -2466,6 +2699,12 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
     @app.post("/api/update")
     def api_update() -> Response:
+        if configured_data_source_mode() == "remote":
+            return jsonify(
+                {
+                    "error": "Atualizacao ETL desabilitada em modo remoto. Os dados sao publicados pelo GitHub Actions.",
+                }
+            ), 409
         with UPDATE_LOCK:
             if UPDATE_STATE.get("running"):
                 return jsonify({"started": False, "status": UPDATE_STATE}), 409
@@ -2510,6 +2749,22 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
         threading.Thread(target=worker, daemon=True).start()
         return jsonify({"started": True, "status": UPDATE_STATE})
+
+    @app.post("/api/refresh-data")
+    def api_refresh_data() -> Response:
+        clear_remote_cache()
+        try:
+            payload = dashboard_payload(resultados, force_remote_refresh=True)
+            return jsonify(
+                {
+                    "refreshed": True,
+                    "has_data": payload.get("has_data", False),
+                    "data_source": payload.get("data_source"),
+                    "remote_metadata": payload.get("remote_metadata"),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"refreshed": False, "error": sanitize_log_message(str(exc))}), 500
 
     @app.get("/api/update-status")
     def api_update_status() -> Response:

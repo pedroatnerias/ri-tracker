@@ -104,6 +104,34 @@ Falhas na coleta operacional de RI nao bloqueiam a atualizacao financeira. Se o 
 
 Falhas financeiras continuam bloqueantes: BP, DRE, DFC, divida liquida, ciclo financeiro, market cap, indicadores e reconciliacao precisam concluir com sucesso para permitir publicacao.
 
+## Arquitetura de dados em producao
+
+Em producao, a separacao recomendada e:
+
+```text
+GitHub Actions -> gera JSONs
+ri-tracker-data -> publica JSONs em data/
+Render -> consome JSONs publicados via HTTPS
+```
+
+O dashboard aceita tres modos de fonte pela variavel `NERIAS_DATA_SOURCE`:
+
+- `local`: le os JSONs em `resultados/`.
+- `remote`: le os JSONs publicos de `ri-tracker-data`.
+- `auto`: tenta remoto, usa cache remoto anterior se houver falha, depois tenta local e, por fim, exibe estado sem dados.
+
+Default: `auto`.
+
+Variaveis uteis para Render:
+
+```text
+NERIAS_DATA_SOURCE=remote
+NERIAS_REMOTE_DATA_BASE_URL=https://raw.githubusercontent.com/pedroatnerias/ri-tracker-data/main/data
+NERIAS_REMOTE_CACHE_TTL_SECONDS=600
+```
+
+O cache remoto fica em memoria no processo Flask/Gunicorn. O endpoint `POST /api/refresh-data` invalida esse cache e recarrega os JSONs publicados, sem executar ETL e sem usar token GitHub.
+
 ## Atualizacao de dados via GitHub Actions
 
 O pipeline pesado deve ser executado manualmente no GitHub Actions, nao no Render Free.

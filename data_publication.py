@@ -242,9 +242,30 @@ def publish_validated_data(
             },
         },
         "json_files_published": copied,
+        "files": {
+            "balanco": next((name for name in manifest["root_jsons"] if name.startswith("balancos_itr_cvm_")), ""),
+            "dre": "DRE_ITR_CVM_ultimos_5_anos.json",
+            "dfc": "DFC_ITR_CVM.json",
+            "divida_liquida": "divida_liquida.json",
+            "ciclo_financeiro": "ciclo_financeiro.json",
+            "market_cap": "market_cap.json",
+            "market_cap_historico": "market_cap_historico.json",
+            "indicadores": "indicadores.json",
+            "reconciliacao": "relatorio_reconciliacao.json",
+        },
+        "operational_jsons": manifest["operational_jsons"],
     }
     (target / "update_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    data_manifest = {
+        "updated_at_utc": metadata["updated_at_utc"],
+        "files": metadata["files"],
+        "operational_jsons": manifest["operational_jsons"],
+    }
+    (target / "data_manifest.json").write_text(
+        json.dumps(data_manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     print(f"Publicacao preparada: {copied} JSONs copiados para data/.")
