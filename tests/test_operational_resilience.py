@@ -91,6 +91,10 @@ class OperationalResilienceTests(unittest.TestCase):
             self.assertEqual(metadata["status"], "success_with_warnings")
             self.assertEqual(metadata["components"]["operational"]["status"], "skipped")
             self.assertEqual(json.loads((target / "dados_operacionais" / "AALR3.json").read_text()), {"ticker": "AALR3", "old": True})
+            data_manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(data_manifest["files"]["balanco"], "balancos_itr_cvm_2026.json")
+            self.assertEqual(data_manifest["files"]["dre"], "DRE_ITR_CVM_ultimos_5_anos.json")
+            self.assertEqual(data_manifest["operational_jsons"], [])
 
     def test_publication_replaces_operational_when_new_snapshot_exists(self):
         with tempfile.TemporaryDirectory() as tmp:

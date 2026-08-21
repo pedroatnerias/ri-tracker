@@ -129,13 +129,30 @@ def write_sanitized_copy(source_path: Path, source_root: Path, staging: Path) ->
 def build_publication_staging(base: Path, manifest: dict[str, object]) -> Path:
     staging = publication_staging_dir(base)
     reset_staging(staging)
-    publish_relatives = list(manifest["root_jsons"]) + list(manifest["operational_jsons"])
+    publish_relatives = list(manifest["root_jsons"]) + list(manifest["operational_jsons"]) + ["data_manifest.json"]
     staged_paths = [
         write_sanitized_copy(base / relative, base, staging)
         for relative in publish_relatives
     ]
     validate_blocked_terms(staged_paths)
     return staging
+
+
+def data_manifest_payload(manifest: dict[str, object]) -> dict[str, object]:
+    return {
+        "files": {
+            "balanco": next((name for name in manifest["root_jsons"] if name.startswith("balancos_itr_cvm_")), ""),
+            "dre": "DRE_ITR_CVM_ultimos_5_anos.json",
+            "dfc": "DFC_ITR_CVM.json",
+            "divida_liquida": "divida_liquida.json",
+            "ciclo_financeiro": "ciclo_financeiro.json",
+            "market_cap": "market_cap.json",
+            "market_cap_historico": "market_cap_historico.json",
+            "indicadores": "indicadores.json",
+            "reconciliacao": "relatorio_reconciliacao.json",
+        },
+        "operational_jsons": manifest["operational_jsons"],
+    }
 
 
 def build_publish_manifest(base: Path) -> dict[str, object]:
@@ -164,6 +181,10 @@ def build_publish_manifest(base: Path) -> dict[str, object]:
     }
     (base / "publish_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (base / "data_manifest.json").write_text(
+        json.dumps(data_manifest_payload(manifest), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     build_publication_staging(base, manifest)
@@ -203,6 +224,12 @@ def publish_validated_data(
         raise SystemExit(f"Destino de publicacao inesperado: {target}")
 
     manifest = read_json(source / "publish_manifest.json")
+    data_manifest_path = source / "data_manifest.json"
+    if not data_manifest_path.exists():
+        data_manifest_path.write_text(
+            json.dumps(data_manifest_payload(manifest), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     staging = publication_staging_dir(source)
     if not staging.exists():
         build_publication_staging(source, manifest)
@@ -213,6 +240,9 @@ def publish_validated_data(
         path = staging / relative
         shutil.copy2(path, target / path.name)
         copied += 1
+
+    shutil.copy2(staging / "data_manifest.json", target / "data_manifest.json")
+    copied += 1
 
     target_operational = target / "dados_operacionais"
     operational_updated = bool(manifest["operational_jsons"])
@@ -242,30 +272,11 @@ def publish_validated_data(
             },
         },
         "json_files_published": copied,
-        "files": {
-            "balanco": next((name for name in manifest["root_jsons"] if name.startswith("balancos_itr_cvm_")), ""),
-            "dre": "DRE_ITR_CVM_ultimos_5_anos.json",
-            "dfc": "DFC_ITR_CVM.json",
-            "divida_liquida": "divida_liquida.json",
-            "ciclo_financeiro": "ciclo_financeiro.json",
-            "market_cap": "market_cap.json",
-            "market_cap_historico": "market_cap_historico.json",
-            "indicadores": "indicadores.json",
-            "reconciliacao": "relatorio_reconciliacao.json",
-        },
+        "files": read_json(staging / "data_manifest.json")["files"],
         "operational_jsons": manifest["operational_jsons"],
     }
     (target / "update_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    data_manifest = {
-        "updated_at_utc": metadata["updated_at_utc"],
-        "files": metadata["files"],
-        "operational_jsons": manifest["operational_jsons"],
-    }
-    (target / "data_manifest.json").write_text(
-        json.dumps(data_manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     print(f"Publicacao preparada: {copied} JSONs copiados para data/.")

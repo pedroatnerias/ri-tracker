@@ -23,12 +23,11 @@ def write_local_financials(base: Path) -> None:
     write_json(base / "DFC_ITR_CVM.json", statement_payload())
 
 
-def remote_mapping() -> dict[str, dict]:
+def remote_mapping(balance_name: str = "balancos_itr_cvm_2022_2026.json") -> dict[str, dict]:
     metadata = {
         "updated_at_utc": "2026-08-21T00:00:00+00:00",
         "status": "success",
         "files": {
-            "balanco": "balancos_itr_cvm_2022_2026.json",
             "dre": "DRE_ITR_CVM_ultimos_5_anos.json",
             "dfc": "DFC_ITR_CVM.json",
             "indicadores": "indicadores.json",
@@ -41,10 +40,10 @@ def remote_mapping() -> dict[str, dict]:
     data = {
         "update_metadata.json": metadata,
         "data_manifest.json": {
-            "files": metadata["files"],
+            "files": {"balanco": balance_name, **metadata["files"]},
             "operational_jsons": metadata["operational_jsons"],
         },
-        "balancos_itr_cvm_2022_2026.json": statement_payload(),
+        balance_name: statement_payload(),
         "DRE_ITR_CVM_ultimos_5_anos.json": statement_payload(),
         "DFC_ITR_CVM.json": statement_payload(),
         "indicadores.json": {"companies": {"AALR3": {"periodos": []}}},
@@ -139,13 +138,28 @@ class RemoteDataSourceTests(unittest.TestCase):
 
     def test_dynamic_balance_filename_is_resolved_from_metadata(self):
         mapping = remote_mapping()
+        calls = []
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
             "dashboard.remote_http_get_json",
-            side_effect=lambda relative: mapping[relative],
+            side_effect=lambda relative: calls.append(relative) or mapping[relative],
         ):
             payload = dashboard.dashboard_payload(Path(tmp))
 
         self.assertTrue(payload["files"]["balanco"]["path"].endswith("balancos_itr_cvm_2022_2026.json"))
+        self.assertIn("balancos_itr_cvm_2022_2026.json", calls)
+
+    def test_future_dynamic_balance_filename_requires_no_code_change(self):
+        mapping = remote_mapping("balancos_itr_cvm_2023_2027.json")
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
+            "dashboard.remote_http_get_json",
+            side_effect=lambda relative: calls.append(relative) or mapping[relative],
+        ):
+            payload = dashboard.dashboard_payload(Path(tmp))
+
+        self.assertTrue(payload["has_data"])
+        self.assertIn("balancos_itr_cvm_2023_2027.json", calls)
+        self.assertTrue(payload["files"]["balanco"]["path"].endswith("balancos_itr_cvm_2023_2027.json"))
 
     def test_operational_files_listed_in_metadata_are_loaded(self):
         mapping = remote_mapping()
