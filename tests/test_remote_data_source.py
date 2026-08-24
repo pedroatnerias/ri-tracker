@@ -173,39 +173,39 @@ class RemoteDataSourceTests(unittest.TestCase):
 
     def test_api_update_is_disabled_in_remote_mode(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
-            "dashboard.run_full_update",
-        ) as run_full_update:
+            "dashboard.run_update",
+        ) as run_update:
             app = dashboard.create_app(Path(tmp))
             response = app.test_client().post("/api/update")
 
         self.assertEqual(response.status_code, 409)
-        run_full_update.assert_not_called()
+        run_update.assert_not_called()
 
     def test_refresh_data_invalidates_cache_without_running_etl(self):
         mapping = remote_mapping()
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
             "dashboard.remote_http_get_json",
             side_effect=lambda relative: mapping[relative],
-        ), patch("dashboard.run_full_update") as run_full_update:
+        ), patch("dashboard.run_update") as run_update:
             dashboard.cached_remote_json("indicadores.json")
             app = dashboard.create_app(Path(tmp))
             response = app.test_client().post("/api/refresh-data")
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["has_data"])
-        run_full_update.assert_not_called()
+        run_update.assert_not_called()
 
     def test_local_mode_preserves_update_endpoint_behavior(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "local"}, clear=False), patch(
-            "dashboard.run_full_update",
-            return_value={"status": "success", "warnings": [], "steps": []},
-        ) as run_full_update:
+            "dashboard.run_update",
+            return_value={"status": "success", "warnings": [], "steps": [], "scope": "financial", "mode": "incremental"},
+        ) as run_update:
             app = dashboard.create_app(Path(tmp))
-            response = app.test_client().post("/api/update")
+            response = app.test_client().post("/api/update", json={"scope": "financial", "mode": "incremental"})
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["started"])
-        self.assertTrue(run_full_update.called)
+        self.assertTrue(run_update.called)
 
 
 if __name__ == "__main__":

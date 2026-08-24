@@ -89,6 +89,16 @@ class ChartAssetTests(unittest.TestCase):
         self.assertIn('loading="lazy"', dashboard.HTML)
         self.assertNotIn("Date.now()", dashboard.HTML)
 
+    def test_frontend_has_scoped_update_buttons_and_no_github_secret(self):
+        self.assertIn("Atualizar Financeiro", dashboard.HTML)
+        self.assertIn("Atualizar Operacional", dashboard.HTML)
+        self.assertIn("Atualizar Tudo", dashboard.HTML)
+        self.assertIn("updateScopeLabel", dashboard.HTML)
+        self.assertIn("Última atualização financeira", dashboard.HTML)
+        self.assertIn("Última atualização operacional", dashboard.HTML)
+        self.assertNotIn("DATA_REPO_TOKEN", dashboard.HTML)
+        self.assertNotIn("github_pat_", dashboard.HTML)
+
     def test_comparison_chart_catalog_has_five_pngs_and_y_axis_labels(self):
         self.assertEqual(
             list(chart_generation.COMPARISON_CHARTS),

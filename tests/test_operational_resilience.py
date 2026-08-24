@@ -89,12 +89,84 @@ class OperationalResilienceTests(unittest.TestCase):
 
             self.assertEqual(manifest["operational_jsons"], [])
             self.assertEqual(metadata["status"], "success_with_warnings")
-            self.assertEqual(metadata["components"]["operational"]["status"], "skipped")
+            self.assertEqual(metadata["components"]["operational"]["status"], "skipped_no_change")
             self.assertEqual(json.loads((target / "dados_operacionais" / "AALR3.json").read_text()), {"ticker": "AALR3", "old": True})
             data_manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(data_manifest["files"]["balanco"], "balancos_itr_cvm_2026.json")
             self.assertEqual(data_manifest["files"]["dre"], "DRE_ITR_CVM_ultimos_5_anos.json")
             self.assertEqual(data_manifest["operational_jsons"], [])
+
+    def test_financial_publication_preserves_existing_operational_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "resultados"
+            target = root / "data-repo" / "data"
+            write_required_financial_outputs(source)
+            write_json(target / "dados_operacionais" / "AALR3.json", {"ticker": "AALR3", "old": True})
+            write_json(
+                target / "data_manifest.json",
+                {
+                    "files": {"balanco": "old_balanco.json"},
+                    "operational_jsons": ["dados_operacionais/AALR3.json"],
+                    "charts": {"comparison": {"margem_bruta": "charts/comparison/margem_bruta.png"}},
+                },
+            )
+            write_json(
+                target / "update_metadata.json",
+                {
+                    "components": {
+                        "operational": {"last_update": "2026-08-24T10:00:00+00:00", "status": "success", "updated": True}
+                    }
+                },
+            )
+
+            data_publication.validate_results(source, scope="financial")
+            metadata = data_publication.publish_validated_data(source, target, "commit", "run", scope="financial")
+
+            self.assertEqual(json.loads((target / "dados_operacionais" / "AALR3.json").read_text()), {"ticker": "AALR3", "old": True})
+            data_manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(data_manifest["operational_jsons"], ["dados_operacionais/AALR3.json"])
+            self.assertEqual(metadata["components"]["financial"]["status"], "success")
+            self.assertEqual(metadata["components"]["operational"]["status"], "skipped_by_scope")
+            self.assertEqual(metadata["components"]["operational"]["last_update"], "2026-08-24T10:00:00+00:00")
+
+    def test_operational_publication_preserves_existing_financial_manifest_and_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "resultados"
+            target = root / "data-repo" / "data"
+            write_json(source / "dados_operacionais" / "AALR3.json", {"ticker": "AALR3", "new": True})
+            write_json(target / "DRE_ITR_CVM_ultimos_5_anos.json", {"old_financial": True})
+            write_json(
+                target / "data_manifest.json",
+                {
+                    "files": {"dre": "DRE_ITR_CVM_ultimos_5_anos.json"},
+                    "operational_jsons": ["dados_operacionais/OLD.json"],
+                    "charts": {"comparison": {"margem_bruta": "charts/comparison/margem_bruta.png"}},
+                },
+            )
+            write_json(
+                target / "update_metadata.json",
+                {
+                    "components": {
+                        "financial": {"last_update": "2026-08-24T09:00:00+00:00", "status": "success", "updated": True}
+                    }
+                },
+            )
+
+            manifest = data_publication.validate_results(source, scope="operational")
+            metadata = data_publication.publish_validated_data(source, target, "commit", "run", scope="operational")
+
+            self.assertEqual(manifest["root_jsons"], [])
+            self.assertEqual(json.loads((target / "DRE_ITR_CVM_ultimos_5_anos.json").read_text()), {"old_financial": True})
+            self.assertEqual(json.loads((target / "dados_operacionais" / "AALR3.json").read_text()), {"ticker": "AALR3", "new": True})
+            data_manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(data_manifest["files"], {"dre": "DRE_ITR_CVM_ultimos_5_anos.json"})
+            self.assertEqual(data_manifest["charts"], {"comparison": {"margem_bruta": "charts/comparison/margem_bruta.png"}})
+            self.assertEqual(data_manifest["operational_jsons"], ["dados_operacionais/AALR3.json"])
+            self.assertEqual(metadata["components"]["financial"]["status"], "skipped_by_scope")
+            self.assertEqual(metadata["components"]["financial"]["last_update"], "2026-08-24T09:00:00+00:00")
+            self.assertEqual(metadata["components"]["operational"]["status"], "success")
 
     def test_publication_replaces_operational_when_new_snapshot_exists(self):
         with tempfile.TemporaryDirectory() as tmp:

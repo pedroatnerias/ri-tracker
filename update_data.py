@@ -34,13 +34,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="incremental",
         help="Modo de atualizacao do pipeline. Padrao: incremental.",
     )
+    parser.add_argument(
+        "--scope",
+        choices=("all", "financial", "operational"),
+        default="all",
+        help="Escopo independente da atualizacao. Padrao: all.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     resultados = resolve_app_path(args.resultados)
-    run_update(resultados, args.anos, mode=args.mode, diagnostico_ri=args.diagnostico_ri)
+    run_update(resultados, args.anos, mode=args.mode, scope=args.scope, diagnostico_ri=args.diagnostico_ri)
     return 0
 
 

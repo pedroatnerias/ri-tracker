@@ -3,6 +3,15 @@ name: Atualizar dados Nerias
 on:
   workflow_dispatch:
     inputs:
+      update_scope:
+        description: "Escopo de atualizacao"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - financial
+          - operational
       update_mode:
         description: "Tipo de atualizacao"
         required: true
@@ -39,13 +48,14 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Executar pipeline Nerias
-        run: python update_data.py --resultados resultados --mode "${{ inputs.update_mode }}" --diagnostico-ri
+        run: python update_data.py --resultados resultados --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" --diagnostico-ri
 
       - name: Gerar graficos Matplotlib
+        if: ${{ inputs.update_scope != 'operational' }}
         run: python -m chart_generation --resultados resultados --output-dir resultados/charts
 
       - name: Validar JSONs gerados
-        run: python -m data_publication validate resultados
+        run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}"
 
       - name: Checkout ri-tracker-data
         uses: actions/checkout@v6
@@ -58,7 +68,8 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
-        run: python -m data_publication publish resultados data-repo/data
+          UPDATE_MODE: ${{ inputs.update_mode }}
+        run: python -m data_publication publish resultados data-repo/data --scope "${{ inputs.update_scope }}"
 
       - name: Commit e push se houver alteracoes
         working-directory: data-repo

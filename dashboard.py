@@ -19,24 +19,43 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, Response, jsonify, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from manual_operational import (
+    MANUAL_OVERRIDES_FILENAME,
+    delete_manual_override,
+    empty_manual_payload,
+    load_manual_overrides_file,
+    load_remote_manual_overrides,
+    manual_admin_token_configured,
+    normalize_manual_payload,
+    resolve_operational_data_with_manual,
+    save_remote_manual_overrides,
+    upsert_manual_override,
+    validate_manual_record,
+    write_manual_overrides_file,
+)
+from operational_dictionary import TARGET_METRICS
+
 
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8050
 UPDATE_MODES = {"incremental", "full"}
+UPDATE_SCOPES = {"all", "financial", "operational"}
 DATA_SOURCE_MODES = {"local", "remote", "auto"}
 DEFAULT_REMOTE_DATA_BASE_URL = "https://raw.githubusercontent.com/pedroatnerias/ri-tracker-data/main/data"
 DEFAULT_REMOTE_CACHE_TTL_SECONDS = 600
 REMOTE_HTTP_TIMEOUT_SECONDS = 15
 REMOTE_CACHE: dict[str, dict[str, object]] = {}
 REMOTE_CACHE_LOCK = threading.Lock()
+DEFAULT_DATA_REPO = "pedroatnerias/ri-tracker-data"
+DEFAULT_DATA_REPO_BRANCH = "main"
 
 
 def resolve_app_path(path: Path) -> Path:
@@ -52,6 +71,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--atualizar", action="store_true", help="Roda os apps antes de iniciar o servidor.")
+    parser.add_argument("--update-scope", choices=tuple(sorted(UPDATE_SCOPES)), default="all", help="Escopo usado com --atualizar.")
+    parser.add_argument("--update-mode", choices=tuple(sorted(UPDATE_MODES)), default="full", help="Modo usado com --atualizar.")
     parser.add_argument("--export-html", type=Path, help="Exporta uma versao HTML estatica e encerra.")
     parser.add_argument(
         "--nao-liberar-porta",
@@ -263,6 +284,13 @@ class DashboardDataSource:
             paths = self._remote_manifest.get("operational_jsons")
         return [validate_remote_relative_path(path) for path in (paths or []) if isinstance(path, str)]
 
+    def manual_operational_path(self) -> str | None:
+        files = self.remote_file_map()
+        path = files.get("manual_operational_overrides")
+        if isinstance(path, str) and path:
+            return validate_remote_relative_path(path)
+        return None
+
     def load_remote_optional(self, relative_path: str, key: str | None = None) -> dict | None:
         data, meta = cached_remote_json(relative_path, self.force_remote_refresh)
         self.files[key or relative_path] = meta
@@ -312,6 +340,13 @@ def validate_update_mode(mode: str) -> str:
     return normalized
 
 
+def validate_update_scope(scope: str) -> str:
+    normalized = (scope or "all").lower()
+    if normalized not in UPDATE_SCOPES:
+        raise ValueError(f"Escopo de atualizacao invalido: {scope}")
+    return normalized
+
+
 def run_command(command: list[str]) -> None:
     print("Rodando:", " ".join(command))
     subprocess.run(command, cwd=BASE_DIR, check=True)
@@ -321,6 +356,8 @@ UPDATE_STATE: dict[str, object] = {
     "running": False,
     "status": "idle",
     "current_step": None,
+    "scope": None,
+    "mode": None,
     "started_at": None,
     "finished_at": None,
     "logs": [],
@@ -342,6 +379,7 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
     append_update_log(f"Iniciando: {label}")
     with UPDATE_LOCK:
         UPDATE_STATE["current_step"] = label
+    started = time.monotonic()
     result = subprocess.run(
         command,
         cwd=BASE_DIR,
@@ -363,6 +401,7 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
             "status": "failed",
             "critical": critical,
             "returncode": result.returncode,
+            "duration_seconds": round(time.monotonic() - started, 3),
         }
     append_update_log(f"Concluido: {label}")
     return {
@@ -370,6 +409,7 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
         "status": "ok",
         "critical": critical,
         "returncode": result.returncode,
+        "duration_seconds": round(time.monotonic() - started, 3),
     }
 
 
@@ -381,9 +421,11 @@ def run_update(
     resultados: Path,
     anos: list[int] | None = None,
     mode: str = "incremental",
+    scope: str = "all",
     diagnostico_ri: bool = False,
 ) -> dict[str, object]:
     mode = validate_update_mode(mode)
+    scope = validate_update_scope(scope)
     full_mode = mode == "full"
     full_suffix = " [FULL]" if full_mode else ""
     resultados = resultados.expanduser().resolve()
@@ -402,100 +444,136 @@ def run_update(
     year_args = [str(ano) for ano in anos_efetivos]
     step_results: list[dict[str, object]] = []
     warnings: list[str] = []
+    started_total = time.monotonic()
+    run_financial = scope in {"all", "financial"}
+    run_operational = scope in {"all", "operational"}
+
+    def skipped_step(label: str) -> dict[str, object]:
+        append_update_log(f"[SKIP] {label} - scope={scope}")
+        return {
+            "label": label,
+            "status": "skipped",
+            "reason": "SKIPPED_BY_SCOPE",
+            "scope": scope,
+            "duration_seconds": 0,
+        }
+
+    append_update_log(f"Scope de atualizacao: {scope}")
     append_update_log(f"Modo de atualizacao: {mode}")
     append_update_log(f"Anos da atualizacao CVM: {', '.join(year_args)}")
 
-    balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados)]
-    if year_args:
-        balanco_cmd.extend(["--years", *year_args])
-    if full_mode:
-        balanco_cmd.append("--force-download")
-    step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
-    balanco_path = find_balanco_json(resultados)
+    balanco_path: Path | None = None
+    if run_financial:
+        balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados)]
+        if year_args:
+            balanco_cmd.extend(["--years", *year_args])
+        if full_mode:
+            balanco_cmd.append("--force-download")
+        step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
+        balanco_path = find_balanco_json(resultados)
 
-    dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path)]
-    if year_args:
-        dre_cmd.extend(["--anos", *year_args])
-    if full_mode:
-        dre_cmd.append("--sobrescrever-zips")
-    step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
+        dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path)]
+        if year_args:
+            dre_cmd.extend(["--anos", *year_args])
+        if full_mode:
+            dre_cmd.append("--sobrescrever-zips")
+        step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
 
-    dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path)]
-    if year_args:
-        dfc_cmd.extend(["--anos", *year_args])
-    if full_mode:
-        dfc_cmd.append("--sobrescrever-downloads")
-    step_results.append(run_update_command(f"DFC CVM{full_suffix}", dfc_cmd))
-
-    parser_cmd = [sys.executable, script_path("app_parser_operacional.py")]
-    if full_mode:
-        parser_cmd.append("--sobrescrever-downloads")
-    if diagnostico_ri:
-        parser_cmd.append("--diagnostico-ri")
-    parser_result = run_update_command(
-        f"Releases e relatorios operacionais{full_suffix}",
-        parser_cmd,
-        critical=False,
-    )
-    step_results.append(parser_result)
-    if command_failed(parser_result):
-        warnings.append("Releases e relatorios operacionais falhou; Dados operacionais foi pulado.")
-        skipped = {
-            "label": "Dados operacionais",
-            "status": "skipped",
-            "critical": False,
-            "reason": "parser operacional falhou nesta execucao",
-        }
-        step_results.append(skipped)
-        append_update_log("[SKIPPED] Dados operacionais. Motivo: parser operacional falhou nesta execucao.")
+        dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path)]
+        if year_args:
+            dfc_cmd.extend(["--anos", *year_args])
+        if full_mode:
+            dfc_cmd.append("--sobrescrever-downloads")
+        step_results.append(run_update_command(f"DFC CVM{full_suffix}", dfc_cmd))
     else:
-        extractor_result = run_update_command(
-            "Dados operacionais",
-            [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],
+        step_results.extend([skipped_step("Balanço Patrimonial CVM"), skipped_step("DRE CVM"), skipped_step("DFC CVM")])
+
+    if run_operational:
+        parser_cmd = [sys.executable, script_path("app_parser_operacional.py")]
+        if full_mode:
+            parser_cmd.append("--sobrescrever-downloads")
+        if diagnostico_ri:
+            parser_cmd.append("--diagnostico-ri")
+        parser_result = run_update_command(
+            f"Releases e relatorios operacionais{full_suffix}",
+            parser_cmd,
             critical=False,
         )
-        step_results.append(extractor_result)
-        if command_failed(extractor_result):
-            warnings.append("Dados operacionais falhou; pipeline financeiro continuou.")
+        step_results.append(parser_result)
+        if command_failed(parser_result):
+            warnings.append("Releases e relatorios operacionais falhou; Dados operacionais foi pulado.")
+            skipped = {
+                "label": "Dados operacionais",
+                "status": "skipped",
+                "critical": False,
+                "reason": "parser operacional falhou nesta execucao",
+                "duration_seconds": 0,
+            }
+            step_results.append(skipped)
+            append_update_log("[SKIPPED] Dados operacionais. Motivo: parser operacional falhou nesta execucao.")
+        else:
+            extractor_result = run_update_command(
+                "Dados operacionais",
+                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],
+                critical=False,
+            )
+            step_results.append(extractor_result)
+            if command_failed(extractor_result):
+                warnings.append("Dados operacionais falhou; pipeline continuou.")
+    else:
+        step_results.extend([skipped_step("Releases e relatorios operacionais"), skipped_step("Dados operacionais")])
 
-    step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
-    step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)]))
-    step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path)]))
-    step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path)]))
-    step_results.append(
-        run_update_command(
-            "Indicadores financeiros",
-            [
-                sys.executable,
-                script_path("app_indicadores.py"),
-                str(dre_path),
-                str(indicadores_path),
-                "--dfc",
-                str(dfc_path),
-                "--market-cap-historico",
-                str(market_hist_path),
-                "--divida-liquida",
-                str(divida_path),
-                "--balanco",
-                str(balanco_path),
-            ],
+    if run_financial:
+        assert balanco_path is not None
+        step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
+        step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)]))
+        step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path)]))
+        step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path)]))
+        step_results.append(
+            run_update_command(
+                "Indicadores financeiros",
+                [
+                    sys.executable,
+                    script_path("app_indicadores.py"),
+                    str(dre_path),
+                    str(indicadores_path),
+                    "--dfc",
+                    str(dfc_path),
+                    "--market-cap-historico",
+                    str(market_hist_path),
+                    "--divida-liquida",
+                    str(divida_path),
+                    "--balanco",
+                    str(balanco_path),
+                ],
+            )
         )
-    )
-    step_results.append(
-        run_update_command(
-            "Relatorio de reconciliacao",
-            [
-                sys.executable,
-                script_path("app_reconciliacao.py"),
-                "--indicadores",
-                str(indicadores_path),
-                "--divida-liquida",
-                str(divida_path),
-                "--saida",
-                str(reconciliacao_path),
-            ],
+        step_results.append(
+            run_update_command(
+                "Relatorio de reconciliacao",
+                [
+                    sys.executable,
+                    script_path("app_reconciliacao.py"),
+                    "--indicadores",
+                    str(indicadores_path),
+                    "--divida-liquida",
+                    str(divida_path),
+                    "--saida",
+                    str(reconciliacao_path),
+                ],
+            )
         )
-    )
+    else:
+        step_results.extend(
+            [
+                skipped_step("Divida liquida"),
+                skipped_step("Ciclo financeiro"),
+                skipped_step("Market cap atual"),
+                skipped_step("Market cap historico"),
+                skipped_step("Indicadores financeiros"),
+                skipped_step("Relatorio de reconciliacao"),
+            ]
+        )
 
     global_status = "success_with_warnings" if warnings else "success"
     step_results = [step for step in step_results if step]
@@ -507,15 +585,17 @@ def run_update(
         append_update_log("Pipeline concluido com avisos.")
     else:
         append_update_log("Pipeline concluido com sucesso.")
-    return {"status": global_status, "warnings": warnings, "steps": step_results}
+    append_update_log(f"TOTAL {round(time.monotonic() - started_total, 3)}s")
+    return {"status": global_status, "warnings": warnings, "steps": step_results, "scope": scope, "mode": mode}
 
 
 def run_full_update(
     resultados: Path,
     anos: list[int] | None = None,
     diagnostico_ri: bool = False,
+    scope: str = "all",
 ) -> dict[str, object]:
-    return run_update(resultados, anos, mode="full", diagnostico_ri=diagnostico_ri)
+    return run_update(resultados, anos, mode="full", scope=scope, diagnostico_ri=diagnostico_ri)
 
 
 def port_process_ids(port: int) -> set[int]:
@@ -695,6 +775,25 @@ def load_operational_data_from_source(source: DashboardDataSource, resultados: P
     return load_operational_data(resultados)
 
 
+def local_manual_overrides_path(resultados: Path) -> Path:
+    return resultados / MANUAL_OVERRIDES_FILENAME
+
+
+def load_manual_overrides_from_source(source: DashboardDataSource, resultados: Path) -> tuple[dict, dict[str, dict]]:
+    remote_relative = source.manual_operational_path()
+    expected = local_manual_overrides_path(resultados)
+    if source.mode in {"remote", "auto"} and source.remote_available and remote_relative:
+        data = source.load_remote_optional(remote_relative, "manual_operational")
+        if data is not None:
+            return normalize_manual_payload(data), {"manual_operational": source.files.get("manual_operational", {})}
+        if source.mode == "remote":
+            return empty_manual_payload(), {"manual_operational": source.files.get("manual_operational", {})}
+    if source.mode in {"local", "auto"}:
+        source.files["manual_operational"] = file_metadata(expected if expected.exists() else None, expected)
+        return load_manual_overrides_file(expected), {"manual_operational": source.files["manual_operational"]}
+    return empty_manual_payload(), {}
+
+
 def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> dict:
     resultados.mkdir(parents=True, exist_ok=True)
     source = DashboardDataSource(resultados, force_remote_refresh=force_remote_refresh)
@@ -724,6 +823,8 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
         "dfc": source.load_optional("dfc", local_paths["dfc"], remote_files.get("dfc", "DFC_ITR_CVM.json"), expected_paths["dfc"]) or {},
     }
     operational_data, operational_files = load_operational_data_from_source(source, resultados)
+    manual_overrides, manual_files = load_manual_overrides_from_source(source, resultados)
+    operational_data, manual_overrides_resolved = resolve_operational_data_with_manual(operational_data, manual_overrides)
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
         "divida_liquida": source.load_optional("divida_liquida", local_paths["divida_liquida"], remote_files.get("divida_liquida", "divida_liquida.json"), expected_paths["divida_liquida"]),
@@ -744,11 +845,15 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
         "statements": statements,
         "indicators": indicators,
         "operational": operational_data,
+        "manual_operational": {
+            **manual_overrides_resolved,
+            "write_enabled": manual_admin_token_configured(),
+        },
         "comparison": comparison,
         "chart_assets": chart_assets,
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
-        "files": source.files | operational_files,
+        "files": source.files | operational_files | manual_files,
     }
 
 
@@ -1230,6 +1335,40 @@ def static_export_html(resultados: Path) -> str:
     return HTML.replace("<script>\n    let DATA = null;", static_script + "<script>\n    let DATA = null;", 1)
 
 
+def manual_auth_ok() -> bool:
+    expected = os.getenv("NERIAS_MANUAL_ADMIN_TOKEN")
+    if not expected:
+        return False
+    provided = request.headers.get("X-Nerias-Admin-Token") or ""
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        provided = auth.split(" ", 1)[1].strip()
+    return bool(provided) and provided == expected
+
+
+def current_manual_payload_for_write(resultados: Path) -> dict:
+    token = os.getenv("DATA_REPO_TOKEN")
+    if configured_data_source_mode() in {"remote", "auto"} and token:
+        repo = os.getenv("NERIAS_DATA_REPO", DEFAULT_DATA_REPO)
+        branch = os.getenv("NERIAS_DATA_REPO_BRANCH", DEFAULT_DATA_REPO_BRANCH)
+        payload, _sha = load_remote_manual_overrides(repo, branch, token)
+        return payload
+    return load_manual_overrides_file(local_manual_overrides_path(resultados))
+
+
+def persist_manual_payload(resultados: Path, payload: dict, message: str) -> dict:
+    token = os.getenv("DATA_REPO_TOKEN")
+    if configured_data_source_mode() in {"remote", "auto"} and token:
+        repo = os.getenv("NERIAS_DATA_REPO", DEFAULT_DATA_REPO)
+        branch = os.getenv("NERIAS_DATA_REPO_BRANCH", DEFAULT_DATA_REPO_BRANCH)
+        save_remote_manual_overrides(repo, branch, token, payload, message)
+        clear_remote_cache()
+        return {"storage": "github_data_repo", "repo": repo, "branch": branch}
+    path = local_manual_overrides_path(resultados)
+    write_manual_overrides_file(path, payload)
+    return {"storage": "local_file", "path": str(path)}
+
+
 HTML = """<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -1532,6 +1671,78 @@ HTML = """<!doctype html>
       font-size: 13px;
       line-height: 1.45;
     }
+    .manual-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin: 0 0 12px;
+    }
+    .manual-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #b42318;
+      color: #fffaf0;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    td.manual-value {
+      color: #b42318;
+      font-weight: 700;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(10,22,17,0.42);
+      z-index: 20;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(520px, 100%);
+      padding: 20px;
+      border-radius: 14px;
+      border: 1px solid var(--nerias-line);
+      background: var(--nerias-surface);
+      box-shadow: 0 20px 50px rgba(10,22,17,0.22);
+    }
+    .modal h2 { margin: 0 0 14px; }
+    .form-grid {
+      display: grid;
+      gap: 10px;
+    }
+    .form-grid label {
+      display: grid;
+      gap: 4px;
+      color: var(--nerias-green-deep);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .form-grid input,
+    .form-grid select {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--nerias-line);
+      border-radius: 8px;
+      font: inherit;
+      color: var(--nerias-ink);
+      background: #fbfaf8;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .manual-error {
+      min-height: 18px;
+      color: #b42318;
+      font-size: 13px;
+    }
     .methodology-content {
       max-width: 1180px;
       padding-bottom: 40px;
@@ -1591,6 +1802,23 @@ HTML = """<!doctype html>
   <div id="update-status" class="update-status"></div>
   <div id="meta" class="meta">Carregando...</div>
   <div id="content"></div>
+  <div id="manual-modal" class="modal-backdrop">
+    <div class="modal">
+      <h2>Adicionar dado manual</h2>
+      <div class="form-grid">
+        <label>Empresa<select id="manual-ticker"></select></label>
+        <label>Indicador<select id="manual-metric"></select></label>
+        <label>Período<input id="manual-period" placeholder="2T26 ou 2025"></label>
+        <label>Valor<input id="manual-value" placeholder="1.234,56"></label>
+        <label>Token admin<input id="manual-token" type="password" autocomplete="off"></label>
+      </div>
+      <div id="manual-error" class="manual-error"></div>
+      <div class="modal-actions">
+        <button onclick="closeManualModal()">Cancelar</button>
+        <button class="update-button" onclick="saveManualOverride()">Salvar</button>
+      </div>
+    </div>
+  </div>
   <script>
     let DATA = null;
     let currentTicker = "AALR3";
@@ -1598,10 +1826,13 @@ HTML = """<!doctype html>
     let currentStatement = "dashboard";
     let currentView = "annual";
     let updatePolling = null;
+    let currentManualEditingId = null;
     const expandedRows = new Set();
     const labels = { dashboard: "Dashboard", operacional: "Dados Operacionais", balanco: "Balanço", dre: "DRE", dfc: "DFC" };
     const mainLabels = { dados: "Dados", comparativo: "Comparativo", metodologia: "Metodologia", auditoria: "Auditoria" };
     const viewLabels = { annual: "Anual", quarterly: "Trimestral" };
+    const operationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
+    const workflowUrl = "https://github.com/pedroatnerias/ri-tracker/actions/workflows/update-data.yml";
 
     async function loadData() {
       if (window.__STATIC_DATA__) {
@@ -1626,7 +1857,8 @@ HTML = """<!doctype html>
       const el = document.getElementById("update-status");
       if (!el || !state) return;
       if (state.running) {
-        el.innerHTML = `<strong>Atualizando tudo...</strong> ${escapeHtml(state.current_step || "")}`;
+        const scope = state.scope ? ` ${escapeHtml(updateScopeLabel(state.scope))}` : "";
+        el.innerHTML = `<strong>Atualizando${scope}...</strong> ${escapeHtml(state.current_step || "")}`;
         return;
       }
       if (state.status === "success") {
@@ -1641,7 +1873,22 @@ HTML = """<!doctype html>
         el.innerHTML = `<strong>Erro na atualização:</strong> ${escapeHtml(state.error || "verifique o terminal/logs")}`;
         return;
       }
-      el.textContent = "";
+      el.innerHTML = updateFreshnessHtml();
+    }
+
+    function formatTimestamp(value) {
+      if (!value) return "N/D";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+    }
+
+    function updateFreshnessHtml() {
+      const components = DATA?.remote_metadata?.components || {};
+      const financial = components.financial?.last_update;
+      const operational = components.operational?.last_update;
+      if (!financial && !operational) return "";
+      return `<span><strong>Última atualização financeira:</strong> ${escapeHtml(formatTimestamp(financial))}</span> <span><strong>Última atualização operacional:</strong> ${escapeHtml(formatTimestamp(operational))}</span>`;
     }
 
     async function pollUpdateStatus() {
@@ -1658,10 +1905,39 @@ HTML = """<!doctype html>
       }
     }
 
-    async function startFullUpdate() {
-      const confirmed = window.confirm("Atualizar tudo do zero? Isso pode demorar alguns minutos e fará downloads/CVM/Yahoo/parser.");
+    function updateScopeLabel(scope) {
+      if (scope === "financial") return "Financeiro";
+      if (scope === "operational") return "Operacional";
+      return "Tudo";
+    }
+
+    function updateScopeDescription(scope) {
+      if (scope === "financial") return "BP, DRE, DFC, dívida, ciclo, market cap, indicadores, reconciliação e gráficos financeiros.";
+      if (scope === "operational") return "documentos RI, planilhas, parser, extrator e seis métricas operacionais.";
+      return "blocos financeiro e operacional.";
+    }
+
+    function openWorkflowForScope(scope) {
+      const el = document.getElementById("update-status");
+      if (el) {
+        el.innerHTML = `<strong>Atualização remota:</strong> o Render não executa o pipeline pesado. Abrindo o GitHub Actions; selecione update_scope=${escapeHtml(scope)} e update_mode conforme necessário.`;
+      }
+      window.open(workflowUrl, "_blank", "noopener");
+    }
+
+    async function startUpdate(scope = "all", mode = "full") {
+      if (isRemoteConfigured()) {
+        openWorkflowForScope(scope);
+        return;
+      }
+      const confirmed = window.confirm(`Atualizar ${updateScopeLabel(scope)}? Escopo: ${updateScopeDescription(scope)}`);
       if (!confirmed) return;
-      const response = await fetch("/api/update", { method: "POST", cache: "no-store" });
+      const response = await fetch("/api/update", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, mode }),
+      });
       const payload = await response.json().catch(() => ({}));
       updateStatusText(payload.status);
       if (!response.ok && response.status !== 409) {
@@ -1669,6 +1945,10 @@ HTML = """<!doctype html>
       }
       if (!updatePolling) updatePolling = setInterval(pollUpdateStatus, 2500);
       await pollUpdateStatus();
+    }
+
+    async function startFullUpdate() {
+      return startUpdate("all", "full");
     }
 
     async function refreshRemoteData() {
@@ -1681,7 +1961,30 @@ HTML = """<!doctype html>
     }
 
     function isRemoteConfigured() {
-      return DATA?.data_source_mode === "remote";
+      return DATA?.data_source_mode === "remote" || DATA?.data_source === "remote_cache";
+    }
+
+    function renderUpdateButtons() {
+      if (window.__STATIC_DATA__) return [];
+      const scopes = [
+        ["financial", "Atualizar Financeiro"],
+        ["operational", "Atualizar Operacional"],
+        ["all", "Atualizar Tudo"],
+      ];
+      return scopes.map(([scope, label]) => {
+        const btn = button(label, false, () => {
+          startUpdate(scope, scope === "all" ? "full" : "incremental").catch(error => {
+            const el = document.getElementById("update-status");
+            if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
+          });
+        });
+        btn.classList.add("update-button");
+        btn.title = isRemoteConfigured()
+          ? `Abrir GitHub Actions. Selecione update_scope=${scope}.`
+          : updateScopeDescription(scope);
+        btn.disabled = !isRemoteConfigured() && Boolean(DATA.update_status?.running);
+        return btn;
+      });
     }
 
     function formatNumber(value) {
@@ -1717,6 +2020,79 @@ HTML = """<!doctype html>
       el.className = active ? "active" : "";
       el.onclick = onClick;
       return el;
+    }
+
+    function openManualModal(record = null) {
+      currentManualEditingId = record?.id || null;
+      const modal = document.getElementById("manual-modal");
+      const tickerSelect = document.getElementById("manual-ticker");
+      const metricSelect = document.getElementById("manual-metric");
+      tickerSelect.innerHTML = (DATA.tickers || []).map(ticker => `<option value="${escapeHtml(ticker)}">${escapeHtml(ticker)}</option>`).join("");
+      metricSelect.innerHTML = operationalMetrics.map(metric => `<option value="${escapeHtml(metric)}">${escapeHtml(metric)}</option>`).join("");
+      tickerSelect.value = record?.ticker || currentTicker;
+      metricSelect.value = record?.metric || operationalMetrics[0];
+      document.getElementById("manual-period").value = record?.period || "";
+      document.getElementById("manual-value").value = record?.value ?? "";
+      document.getElementById("manual-error").textContent = "";
+      modal.classList.add("open");
+    }
+
+    function closeManualModal() {
+      currentManualEditingId = null;
+      document.getElementById("manual-modal").classList.remove("open");
+    }
+
+    async function saveManualOverride() {
+      const error = document.getElementById("manual-error");
+      const payload = {
+        ticker: document.getElementById("manual-ticker").value,
+        metric: document.getElementById("manual-metric").value,
+        period: document.getElementById("manual-period").value,
+        value: document.getElementById("manual-value").value,
+      };
+      const token = document.getElementById("manual-token").value;
+      if (!payload.ticker || !payload.metric || !payload.period || !payload.value) {
+        error.textContent = "Empresa, indicador, período e valor são obrigatórios.";
+        return;
+      }
+      if (!token) {
+        error.textContent = "Token admin obrigatório para gravar dados manuais.";
+        return;
+      }
+      const url = currentManualEditingId ? `/api/operational/manual/${encodeURIComponent(currentManualEditingId)}` : "/api/operational/manual";
+      const response = await fetch(url, {
+        method: currentManualEditingId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json", "X-Nerias-Admin-Token": token },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        error.textContent = result.error || "Erro ao salvar dado manual.";
+        return;
+      }
+      closeManualModal();
+      await loadData();
+    }
+
+    function editManualOverride(id) {
+      const record = (DATA.manual_operational?.overrides || []).find(item => item.id === id);
+      if (record && record.status === "active") openManualModal(record);
+    }
+
+    async function deleteManualOverride(id) {
+      if (!confirm("Excluir este dado manual?")) return;
+      const token = prompt("Token admin");
+      if (!token) return;
+      const response = await fetch(`/api/operational/manual/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "X-Nerias-Admin-Token": token },
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        alert(result.error || "Erro ao excluir dado manual.");
+        return;
+      }
+      await loadData();
     }
 
     function expansionKey(statementKey, ticker, code) {
@@ -2053,22 +2429,7 @@ HTML = """<!doctype html>
           window.location.href = "/export/dashboard.html";
         });
         viewTabs.appendChild(exportButton);
-        const updateButton = button(isRemoteConfigured() ? "Recarregar dados" : "Atualizar tudo", false, () => {
-          if (isRemoteConfigured()) {
-            refreshRemoteData().catch(error => {
-              const el = document.getElementById("update-status");
-              if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
-            });
-            return;
-          }
-          startFullUpdate().catch(error => {
-            const el = document.getElementById("update-status");
-            if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
-          });
-        });
-        updateButton.classList.add("update-button");
-        updateButton.disabled = !isRemoteConfigured() && Boolean(DATA.update_status?.running);
-        viewTabs.appendChild(updateButton);
+        renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
       }
     }
 
@@ -2742,8 +3103,7 @@ HTML = """<!doctype html>
       Object.values(DATA.operational?.companies || {}).forEach(company => {
         const metricas = company?.metricas || {};
         Object.entries(metricas).forEach(([metric, items]) => {
-          if (["Receita Bruta", "Glosa/PCLD"].includes(metric)) return;
-        (items || []).filter(item => item?.confidence !== "low").forEach((item, index) => {
+        (items || []).filter(item => String(item?.confidence || "").toLowerCase() !== "low").forEach((item, index) => {
           const serie = item?.serie || {};
           Object.entries(serie).forEach(([period, value]) => {
             const info = operationalPeriodInfo(period);
@@ -2768,6 +3128,45 @@ HTML = """<!doctype html>
       });
     }
 
+    function operationalRowsResolved(company, view) {
+      const metricas = company?.metricas || {};
+      return operationalMetrics.map(metric => {
+        const items = metricas[metric] || [];
+        const values = {};
+        const meta = {};
+        const priority = item => {
+          const confidence = String(item?.confidence || "").toLowerCase();
+          if (confidence === "high") return 3;
+          if (confidence === "medium") return 2;
+          if (item?.manual || item?.confidence === "MANUAL") return 1;
+          return 0;
+        };
+        const validItems = (items || []).filter(candidate => String(candidate?.confidence || "").toLowerCase() !== "low");
+        validItems.forEach(item => {
+          Object.entries(item?.serie || {}).forEach(([period, value]) => {
+            const info = operationalPeriodInfo(period);
+            if (view === "annual" && !info.annual) return;
+            if (view === "quarterly" && info.annual) return;
+            const existing = meta[period];
+            if (!existing || priority(item) > priority(existing.item)) {
+              values[period] = value;
+              meta[period] = { item };
+            }
+          });
+        });
+        const item = validItems.find(candidate => candidate?.serie && Object.keys(candidate.serie).length) || validItems[0] || null;
+        return {
+          metric,
+          source: item?.escopo || item?.fonte_linha || "",
+          unit: item?.unidade || "",
+          calculated: Boolean(item?.calculado),
+          manualByPeriod: Object.fromEntries(Object.entries(meta).map(([period, entry]) => [period, Boolean(entry.item?.manual || entry.item?.confidence === "MANUAL")])),
+          values,
+          order: 0,
+        };
+      });
+    }
+
     function formatOperationalValue(value, unit) {
       if (value === null || value === undefined || value === "") return "";
       if (typeof value !== "number") return value;
@@ -2785,22 +3184,27 @@ HTML = """<!doctype html>
     function renderOperationalTable(ticker, view) {
       let company = DATA.operational?.companies?.[ticker];
       if (!company) company = { metricas: {} };
-      const rows = operationalRows(company, view);
+      const rows = operationalRowsResolved(company, view);
       const periods = fixedOperationalPeriods(company, view);
       const labelsByPeriod = Object.fromEntries(periods.map(period => [period, operationalPeriodInfo(period).label]));
       const headers = ["Indicador", "Escopo / fonte", "Unidade", ...periods.map(period => labelsByPeriod[period])]
         .map(value => `<th>${escapeHtml(value)}</th>`)
         .join("");
       const body = rows.map(row => {
-        const values = periods.map(period =>
-          `<td class="num">${escapeHtml(formatOperationalValue(row.values[period], row.unit))}</td>`
-        ).join("");
+        const values = periods.map(period => {
+          const isManual = row.manualByPeriod?.[period];
+          const title = isManual ? ' title="Valor inserido manualmente. Será substituído automaticamente caso o extrator encontre esta métrica/período com confiança média ou alta."' : "";
+          const badge = isManual ? '<span class="manual-badge">Manual</span>' : "";
+          const cls = isManual ? "num manual-value" : "num";
+          return `<td class="${cls}"${title}>${escapeHtml(formatOperationalValue(row.values[period], row.unit))}${badge}</td>`;
+        }).join("");
         const source = row.calculated ? `${row.source} (calculado)` : row.source;
         return `<tr><td class="desc">${escapeHtml(row.metric)}</td><td class="desc">${escapeHtml(source)}</td><td>${escapeHtml(row.unit)}</td>${values}</tr>`;
       }).join("");
       const colgroup = `<colgroup><col style="width:220px"><col style="width:300px"><col style="width:150px">${periods.map(() => '<col style="width:130px">').join("")}</colgroup>`;
       const disclaimer = '<div class="disclaimer"><strong>Aviso:</strong> os dados operacionais são capturados de forma experimental a partir de planilhas de fundamentos, releases e documentos convertidos para Markdown. Eles podem estar incompletos, classificados incorretamente ou conter erros de leitura. Use estes dados como apoio exploratório e valide contra os documentos originais antes de qualquer decisão.</div>';
-      return `<h2>Dados Operacionais</h2>${disclaimer}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}`;
+      const manualToolbar = window.__STATIC_DATA__ ? "" : '<div class="manual-toolbar"><button class="update-button" onclick="openManualModal()">Adicionar dado manual</button></div>';
+      return `<h2>Dados Operacionais</h2>${disclaimer}${manualToolbar}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}${renderManualAudit(company)}`;
     }
 
     function renderOperationalWarnings(company) {
@@ -2811,6 +3215,21 @@ HTML = """<!doctype html>
         return `<tr><td class="desc">${escapeHtml(item.metric || "")}</td><td>${escapeHtml(status)}</td><td class="desc">${escapeHtml(item.message || "")}</td></tr>`;
       }).join("");
       return `<h3>Avisos sobre os dados operacionais</h3><div class="table-wrap"><table class="fixed-layout operational-table"><colgroup><col style="width:220px"><col style="width:160px"><col style="width:620px"></colgroup><thead><tr><th>Indicador</th><th>Status</th><th>Mensagem</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function renderManualAudit(company) {
+      const ticker = company?.ticker || currentTicker;
+      const overrides = (DATA.manual_operational?.overrides || []).filter(item => item.ticker === ticker);
+      if (!overrides.length) return "";
+      const rows = overrides.map(item => {
+        const status = item.status === "active" ? "MANUAL_ACTIVE" : item.status === "superseded" ? "MANUAL_SUPERSEDED" : item.status;
+        const auto = item.automatic_confidence ? `${item.automatic_confidence}: ${formatOperationalValue(item.automatic_value, item.unit)}` : "";
+        const actions = !window.__STATIC_DATA__ && item.status === "active"
+          ? `<button onclick="editManualOverride('${escapeHtml(item.id)}')">Editar</button> <button onclick="deleteManualOverride('${escapeHtml(item.id)}')">Excluir</button>`
+          : "";
+        return `<tr><td>${escapeHtml(item.metric)}</td><td>${escapeHtml(item.period)}</td><td class="num">${escapeHtml(formatOperationalValue(item.value, item.unit))}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(item.updated_at || "")}</td><td>${escapeHtml(auto)}</td><td>${actions}</td></tr>`;
+      }).join("");
+      return `<h3>Auditoria manual operacional</h3><div class="table-wrap"><table class="fixed-layout operational-table"><colgroup><col style="width:220px"><col style="width:120px"><col style="width:150px"><col style="width:170px"><col style="width:240px"><col style="width:180px"><col style="width:170px"></colgroup><thead><tr><th>Indicador</th><th>Período</th><th>Valor</th><th>Status</th><th>Atualizado em</th><th>Automático</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
     function formatComparisonValue(value, format) {
@@ -2827,6 +3246,7 @@ HTML = """<!doctype html>
       const value = formatComparisonValue(cell?.value, format);
       const period = cell?.period && cell.period !== predominantPeriod ? `<div class="muted">${escapeHtml(cell.period)}</div>` : "";
       const confidence = cell?.confidence === "medium" ? '<div class="muted">Confiança média</div>' : "";
+      const manual = cell?.confidence === "MANUAL" ? '<div class="manual-badge">Manual</div>' : "";
       const quality = cell?.quality?.status && !["validated", "ok"].includes(cell.quality.status)
         ? `<div class="muted">${escapeHtml(cell.quality.status)}</div>`
         : "";
@@ -2835,7 +3255,7 @@ HTML = """<!doctype html>
         ...(cell?.quality?.warnings || []),
         cell?.source ? `Fonte: ${cell.source}` : "",
       ].filter(Boolean).join(" | ");
-      return `<td class="num" title="${escapeHtml(title)}"><strong>${escapeHtml(value)}</strong>${period}${confidence}${quality}</td>`;
+      return `<td class="num" title="${escapeHtml(title)}"><strong>${escapeHtml(value)}</strong>${period}${confidence}${manual}${quality}</td>`;
     }
 
     function renderComparisonTable() {
@@ -3060,22 +3480,7 @@ HTML = """<!doctype html>
         viewTabs.innerHTML = "";
         viewTabs.style.display = "flex";
         if (!window.__STATIC_DATA__) {
-          const updateButton = button(isRemoteConfigured() ? "Recarregar dados" : "Atualizar tudo", false, () => {
-            if (isRemoteConfigured()) {
-              refreshRemoteData().catch(error => {
-                const el = document.getElementById("update-status");
-                if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
-              });
-              return;
-            }
-            startFullUpdate().catch(error => {
-              const el = document.getElementById("update-status");
-              if (el) el.innerHTML = `<strong>Erro:</strong> ${escapeHtml(error.message)}`;
-            });
-          });
-          updateButton.classList.add("update-button");
-          updateButton.disabled = !isRemoteConfigured() && Boolean(DATA.update_status?.running);
-          viewTabs.appendChild(updateButton);
+          renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
         }
         document.getElementById("meta").textContent = "Sem dados carregados";
         document.getElementById("content").innerHTML = '<div class="empty">Nenhum dado carregado. Execute a atualização para gerar os dados.</div>';
@@ -3149,6 +3554,12 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
                     "error": "Atualizacao ETL desabilitada em modo remoto. Os dados sao publicados pelo GitHub Actions.",
                 }
             ), 409
+        payload = request.get_json(silent=True) or {}
+        try:
+            update_scope = validate_update_scope(str(payload.get("scope") or "all"))
+            update_mode = validate_update_mode(str(payload.get("mode") or "full"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         with UPDATE_LOCK:
             if UPDATE_STATE.get("running"):
                 return jsonify({"started": False, "status": UPDATE_STATE}), 409
@@ -3157,6 +3568,8 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
                     "running": True,
                     "status": "running",
                     "current_step": "Preparando atualização",
+                    "scope": update_scope,
+                    "mode": update_mode,
                     "started_at": datetime.now(timezone.utc).isoformat(),
                     "finished_at": None,
                     "logs": [],
@@ -3166,18 +3579,20 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
         def worker() -> None:
             try:
-                update_result = run_full_update(resultados, anos)
+                update_result = run_update(resultados, anos, mode=update_mode, scope=update_scope)
                 with UPDATE_LOCK:
                     UPDATE_STATE.update(
                         {
                             "running": False,
                             "status": update_result.get("status", "success"),
                             "current_step": None,
+                            "scope": update_result.get("scope", update_scope),
+                            "mode": update_result.get("mode", update_mode),
                             "finished_at": datetime.now(timezone.utc).isoformat(),
                             "error": None,
                         }
                     )
-                append_update_log("Atualização completa concluída.")
+                append_update_log(f"Atualização {update_scope} concluída.")
             except Exception as exc:
                 append_update_log(traceback.format_exc()[-8000:])
                 with UPDATE_LOCK:
@@ -3214,6 +3629,71 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
     def api_update_status() -> Response:
         with UPDATE_LOCK:
             return jsonify(dict(UPDATE_STATE))
+
+    @app.get("/api/operational/manual")
+    def api_manual_operational_get() -> Response:
+        try:
+            source = DashboardDataSource(resultados)
+            payload, _files = load_manual_overrides_from_source(source, resultados)
+            return jsonify({**payload, "write_enabled": manual_admin_token_configured()})
+        except Exception as exc:
+            return jsonify({"error": sanitize_log_message(str(exc))}), 500
+
+    @app.post("/api/operational/manual")
+    def api_manual_operational_post() -> Response:
+        if not manual_auth_ok():
+            return jsonify({"error": "Escrita manual desabilitada ou token admin invalido."}), 403
+        try:
+            payload = request.get_json(silent=True) or {}
+            record = validate_manual_record(payload)
+            current = current_manual_payload_for_write(resultados)
+            updated = upsert_manual_override(current, record)
+            storage = persist_manual_payload(
+                resultados,
+                updated,
+                f"Update manual operational override: {record['ticker']} {record['metric']} {record['period']}",
+            )
+            return jsonify({"saved": True, "record": record, "storage": storage})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": sanitize_log_message(str(exc))}), 500
+
+    @app.put("/api/operational/manual/<record_id>")
+    def api_manual_operational_put(record_id: str) -> Response:
+        if not manual_auth_ok():
+            return jsonify({"error": "Escrita manual desabilitada ou token admin invalido."}), 403
+        try:
+            payload = request.get_json(silent=True) or {}
+            current = current_manual_payload_for_write(resultados)
+            existing = next((item for item in current.get("overrides", []) if str(item.get("id")) == str(record_id)), {})
+            merged = {**existing, **payload, "id": record_id, "created_at": existing.get("created_at")}
+            record = validate_manual_record(merged, existing_id=record_id)
+            updated = upsert_manual_override(current, record)
+            storage = persist_manual_payload(
+                resultados,
+                updated,
+                f"Update manual operational override: {record['ticker']} {record['metric']} {record['period']}",
+            )
+            return jsonify({"saved": True, "record": record, "storage": storage})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": sanitize_log_message(str(exc))}), 500
+
+    @app.delete("/api/operational/manual/<record_id>")
+    def api_manual_operational_delete(record_id: str) -> Response:
+        if not manual_auth_ok():
+            return jsonify({"error": "Escrita manual desabilitada ou token admin invalido."}), 403
+        try:
+            current = current_manual_payload_for_write(resultados)
+            updated = delete_manual_override(current, record_id)
+            storage = persist_manual_payload(resultados, updated, f"Delete manual operational override: {record_id}")
+            return jsonify({"deleted": True, "storage": storage})
+        except KeyError:
+            return jsonify({"error": "Override manual nao encontrado."}), 404
+        except Exception as exc:
+            return jsonify({"error": sanitize_log_message(str(exc))}), 500
 
     @app.get("/export/dashboard.html")
     def export_dashboard() -> Response:
@@ -3258,7 +3738,7 @@ def main() -> int:
     }
 
     if args.atualizar:
-        run_full_update(args.resultados, args.anos)
+        run_update(args.resultados, args.anos, mode=args.update_mode, scope=args.update_scope)
 
     if args.export_html:
         html = static_export_html(args.resultados)

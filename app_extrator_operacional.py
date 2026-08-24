@@ -15,9 +15,11 @@ Por padrão os JSONs são gravados no diretório atual. Use --output-dir para mu
 
 Princípio importante: o programa busca apenas Ticket Médio, N. Atendimentos,
 N. Unidades, N. Pacientes, Receita Bruta e Glosa/PCLD. Ele não converte
-métricas diferentes em equivalentes. Por exemplo, "Pacientes-Dia" não é
-tratado como "N. Pacientes". Quando o indicador solicitado não é divulgado na
-planilha, a saída contém uma lista vazia para aquele indicador.
+métricas diferentes em equivalentes, salvo proxies explicitamente definidos no
+dicionário operacional. Quando "Pacientes-Dia" alimenta N. Atendimentos ou
+N. Pacientes em MATD3/RDOR3, a saída preserva natureza de proxy e confiança
+média. Quando o indicador solicitado não é divulgado na planilha, a saída
+contém uma lista vazia para aquele indicador.
 """
 
 from __future__ import annotations
@@ -216,7 +218,7 @@ COMPANY_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
     "RDOR3": {
         "N. Unidades": (r"^numero de hospitais proprios em operacao", r"^hospitais proprios"),
         "N. Atendimentos": (r"^pacientes[- ]dia$", r"^oncologia - infusoes", r"^infusoes"),
-        "N. Pacientes": (r"^pacientes[- ]dia$"),
+        "N. Pacientes": (r"^pacientes[- ]dia$",),
         "Ticket Médio": (r"^ticket medio$",),
         "Glosa/PCLD": (r"^glosas?$",),
     },
@@ -390,11 +392,14 @@ def classify_operational_observation(
     calculated: bool = False,
     formula: str | None = None,
     inputs: dict[str, Any] | None = None,
+    source_type: str | None = None,
+    sheet: str | None = None,
 ) -> dict[str, Any]:
     rejection = forbidden_operational_context(company, metric, label, context)
     nature, proxy = infer_observation_nature(company, metric, label, context, calculated=calculated)
     mapping_type = "exact_label" if nature == "reported" else nature
-    score = 90 if extraction_method.startswith("spreadsheet") else 76
+    source_score = 90 if extraction_method.startswith("spreadsheet") else 86 if extraction_method == "release_table" else 76
+    score = source_score
     if calculated:
         score = 82
     if nature == "proxy":
@@ -423,12 +428,20 @@ def classify_operational_observation(
         "measurement_basis": "period_value",
         "scope": scope,
         "document": document,
+        "sheet": sheet,
         "page": page,
         "source_context": context[:500],
+        "original_metric": proxy.title() if proxy else label,
+        "original_unit": unit,
+        "normalized_unit": unit,
         "mapping_type": mapping_type,
         "proxy_for": proxy,
         "formula": formula,
         "inputs": inputs or {},
+        "source_type": source_type or extraction_method,
+        "source_confidence": confidence_label(source_score),
+        "source_confidence_score": source_score,
+        "warning": operational_warning_message(company, metric, {"fonte_linha": label}) if nature == "proxy" else None,
         "confidence": confidence,
         "confidence_score": score,
         "requires_review": requires_review,
@@ -462,10 +475,13 @@ def enrich_metric_item(
             scope=scope,
             context=f"{scope} {context}",
             document=item.get("fonte_documento"),
+            page=item.get("page"),
             extraction_method=method,
             calculated=calculated,
             formula=item.get("formula"),
             inputs=item.get("inputs"),
+            source_type=item.get("source_type"),
+            sheet=item.get("sheet"),
         )
         for period, value in series.items()
     ]
@@ -491,7 +507,8 @@ def enrich_metric_item(
 def metric_item_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
     confidence_rank = {"high": 0, "medium": 1, "low": 9}.get(str(item.get("confidence")), 5)
     nature_rank = {"reported": 0, "calculated": 1, "proxy": 2}.get(str(item.get("nature")), 5)
-    source_rank = 0 if str(item.get("extraction_method", "")).startswith("spreadsheet") else 1
+    method = str(item.get("extraction_method", ""))
+    source_rank = 0 if method.startswith("spreadsheet") else 1 if method == "release_table" else 2
     label = normalise_text(item.get("fonte_linha"))
     return confidence_rank, nature_rank, source_rank, label
 
@@ -603,6 +620,37 @@ def has_context_above(ws: Any, row: int, pattern: str, lookback: int = 8) -> boo
     return False
 
 
+def context_above_text(ws: Any, row: int, lookback: int = 12) -> str:
+    values: list[str] = []
+    for candidate_row in range(row - 1, max(0, row - lookback), -1):
+        for col in range(1, min(ws.max_column, 8) + 1):
+            raw = ws.cell(candidate_row, col).value
+            if raw is not None:
+                values.append(str(raw))
+    return normalise_text(" ".join(values))
+
+
+def rdor_hospital_scope_for_row(ws: Any, row: int) -> str | None:
+    context = context_above_text(ws, row, lookback=18)
+    if any(term in context for term in ("sulamerica", "sul america", "seguros e previdencia")):
+        return None
+    if all(term in context for term in ("hospitais", "oncologia")) or "hospitais, oncologia e outros" in context:
+        return "Hospitais, oncologia e outros"
+    return None
+
+
+def plausible_operational_value(label: str, value: Any) -> bool:
+    if not is_number(value):
+        return False
+    number = float(value)
+    normalized_label = normalise_text(label)
+    if "pacientes-dia" in normalized_label or "paciente-dia" in normalized_label:
+        if number <= 0:
+            return False
+        return number > 100 and int(number) not in {2025, 2026}
+    return True
+
+
 def metric_patterns(ticker: str, metric: str) -> tuple[str, ...]:
     configured = tuple(rf"^{re.escape(alias)}(?:\b|\s|\(|$)" for alias in metric_aliases(ticker, metric))
     patterns = COMPANY_PATTERNS.get(ticker, {}).get(metric, GENERIC_PATTERNS[metric])
@@ -653,14 +701,24 @@ def extract_metric(company: Company, workbook: Any, metric: str) -> list[dict[st
             if company.ticker == "RDOR3" and metric == "Glosa/PCLD":
                 if not has_context_above(ws, row, r"^consolidado$", lookback=12):
                     continue
+            rdor_scope = None
+            if company.ticker == "RDOR3" and metric in {"N. Atendimentos", "N. Pacientes", "Ticket Médio"}:
+                rdor_scope = rdor_hospital_scope_for_row(ws, row)
+                if rdor_scope is None:
+                    continue
 
-            series = row_series(ws, row)
+            series = {
+                period: value
+                for period, value in row_series(ws, row).items()
+                if plausible_operational_value(source_label, value)
+            }
             if not series:
                 continue
-            scope = company.sheet_aliases.get(ws.title, ws.title)
+            scope = rdor_scope or company.sheet_aliases.get(ws.title, ws.title)
             item = {
                 "escopo": scope,
                 "fonte_linha": source_label,
+                "sheet": ws.title,
                 "unidade": metric_unit(company, metric, source_label),
                 "calculado": False,
                 "confidence": "high",
@@ -772,14 +830,18 @@ def operational_warning_message(company: Company, metric: str, item: dict[str, A
         return "Volume total de exames utilizado como proxy de atendimentos, refletindo a natureza predominantemente diagnóstica da operação."
     if company.ticker == "FLRY3" and metric == "N. Pacientes" and "atendimentos" in label:
         return "Atendimentos utilizados como proxy; não representa pacientes únicos."
-    if company.ticker == "MATD3" and metric in {"N. Atendimentos", "N. Pacientes"} and "pacientes-dia" in label:
-        return "Pacientes-dia utilizado como proxy; não representa pacientes únicos."
+    if company.ticker == "MATD3" and metric == "N. Atendimentos" and "pacientes-dia" in label:
+        return "Pacientes-dia utilizado como proxy de atendimentos."
+    if company.ticker == "MATD3" and metric == "N. Pacientes" and "pacientes-dia" in label:
+        return "Pacientes-dia utilizado como proxy de pacientes; não representa pacientes únicos."
     if company.ticker == "ONCO3" and metric in {"N. Atendimentos", "N. Pacientes"}:
         return "Procedimentos utilizados como proxy; não representa pacientes únicos."
     if company.ticker == "RDOR3" and metric == "N. Unidades":
         return "Hospitais próprios utilizados como proxy de unidades."
-    if company.ticker == "RDOR3" and metric in {"N. Atendimentos", "N. Pacientes"}:
-        return "Pacientes-dia utilizado como proxy; não representa pacientes únicos."
+    if company.ticker == "RDOR3" and metric == "N. Atendimentos":
+        return "Pacientes-dia utilizado como proxy de atendimentos."
+    if company.ticker == "RDOR3" and metric == "N. Pacientes":
+        return "Pacientes-dia utilizado como proxy de pacientes; não representa pacientes únicos."
     return "Indicador exibido com confiança média por depender de proxy ou contexto menos estruturado."
 
 
@@ -839,6 +901,8 @@ def parse_markdown_number(raw: str) -> int | float | None:
         return None
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", text):
+        text = text.replace(".", "")
     elif "," in text:
         text = text.replace(",", ".")
     try:
@@ -909,6 +973,128 @@ def markdown_line_text(line: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", line)
     cleaned = re.sub(r"[*_`#|]", " ", cleaned)
     return normalise_text(cleaned)
+
+
+def markdown_table_cells(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return None
+    cells = [re.sub(r"<[^>]+>", " ", cell).strip() for cell in stripped.strip("|").split("|")]
+    if len(cells) < 2:
+        return None
+    if all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in cells):
+        return None
+    return cells
+
+
+def markdown_page_for_line(lines: list[str], index: int) -> int | None:
+    for candidate in range(index, max(-1, index - 80), -1):
+        text = normalise_text(lines[candidate])
+        match = re.search(r"(?:pagina|page)\s*[:#-]?\s*(\d{1,3})", text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def markdown_table_unit(lines: list[str], index: int) -> str | None:
+    context = normalise_text(" ".join(lines[max(0, index - 6): index + 1]))
+    if "mil pacientes-dia" in context or re.search(r"\bem milhares\b", context):
+        return "mil pacientes-dia"
+    if "milhares" in context:
+        return "milhares"
+    if "pacientes-dia" in context:
+        return "pacientes-dia"
+    return None
+
+
+def normalize_markdown_table_value(value: int | float, unit: str | None) -> int | float:
+    normalized_unit = normalise_text(unit)
+    if normalized_unit in {"mil pacientes-dia", "milhares"}:
+        return serialisable_number(float(value) * 1_000)
+    return value
+
+
+def extract_metric_from_markdown_tables(company: Company, markdown_paths: list[Path], metric: str) -> list[dict[str, Any]]:
+    if company.ticker not in {"MATD3", "RDOR3"} or metric not in {"N. Atendimentos", "N. Pacientes"}:
+        return []
+
+    patterns = [re.compile(pattern) for pattern in metric_patterns(company.ticker, metric)]
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for path in markdown_paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not markdown_matches_company(company, path, text):
+            continue
+
+        lines = text.splitlines()
+        last_header: tuple[int, list[str], list[str]] | None = None
+        for index, line in enumerate(lines):
+            cells = markdown_table_cells(line)
+            if not cells:
+                continue
+            periods = [normalise_period(cell) for cell in cells]
+            valid_periods = [period for period in periods if period]
+            if len(valid_periods) >= 2:
+                last_header = (index, cells, [period or "" for period in periods])
+                continue
+            if last_header is None:
+                continue
+            label = cells[0]
+            full_line = " | ".join(cells)
+            if not any(rx.search(normalise_text(label)) or rx.search(normalise_text(full_line)) for rx in patterns):
+                continue
+            if forbidden_operational_context(company, metric, label, full_line):
+                continue
+            _header_index, header_cells, period_by_col = last_header
+            rdor_markdown_scope = None
+            if company.ticker == "RDOR3":
+                if not markdown_line_allowed_for_company(company, metric, " ".join(header_cells), lines, index):
+                    continue
+                rdor_markdown_scope = "Hospitais, oncologia e outros"
+            unit = markdown_table_unit(lines, index) or metric_unit(company, metric, label)
+            series: dict[str, int | float] = {}
+            for col_index, cell in enumerate(cells):
+                if col_index >= len(period_by_col):
+                    continue
+                period = period_by_col[col_index]
+                if not period:
+                    continue
+                value = parse_markdown_number(cell)
+                if value is None:
+                    continue
+                normalized_value = normalize_markdown_table_value(value, unit)
+                if plausible_operational_value(label, normalized_value):
+                    series[period] = normalized_value
+            if not series:
+                continue
+            series = dict(sorted(series.items(), key=lambda item: period_sort_key(item[0])))
+            signature = json.dumps({"metric": metric, "series": series}, ensure_ascii=False, sort_keys=True)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            page = markdown_page_for_line(lines, index)
+            scope = rdor_markdown_scope or "Release/relatório"
+            item = {
+                "escopo": scope,
+                "fonte_linha": label,
+                "fonte_documento": str(path),
+                "page": page,
+                "unidade": unit,
+                "calculado": False,
+                "confidence": "high",
+                "extraction_method": "release_table",
+                "source_type": "release_table",
+                "requires_review": False,
+                "serie": series,
+            }
+            enriched = enrich_metric_item(company, metric, item, context=f"{scope} {full_line}")
+            if enriched is not None and enriched.get("confidence_score", 0) >= CONFIDENCE_MEDIUM:
+                results.append(enriched)
+    return sorted(results, key=metric_item_rank)
 
 
 def markdown_context_is_temporal(context: str) -> bool:
@@ -1008,6 +1194,10 @@ def ensure_operational_markdowns(markdown_dir: Path, force_parser: bool = False)
 
 
 def extract_metric_from_markdown(company: Company, markdown_paths: list[Path], metric: str) -> list[dict[str, Any]]:
+    table_results = extract_metric_from_markdown_tables(company, markdown_paths, metric)
+    if table_results:
+        return table_results
+
     patterns = [re.compile(pattern) for pattern in metric_patterns(company.ticker, metric)]
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1039,12 +1229,21 @@ def extract_metric_from_markdown(company: Company, markdown_paths: list[Path], m
             if periods and markdown_line_allowed_for_company(company, metric, header, lines, index) and values:
                 useful_values = values[:len(periods)] if len(values) >= len(periods) else values
                 useful_periods = periods[-len(useful_values):]
-                series = dict(sorted(zip(useful_periods, useful_values), key=lambda item: period_sort_key(item[0])))
+                series = dict(
+                    sorted(
+                        (
+                            (period, value)
+                            for period, value in zip(useful_periods, useful_values)
+                            if plausible_operational_value(line, value)
+                        ),
+                        key=lambda item: period_sort_key(item[0]),
+                    )
+                )
             else:
                 nearby = " ".join(lines[max(0, index - 2): index + 3])
                 nearby_periods = markdown_periods(nearby)
                 value = markdown_value_with_scale(line)
-                if not nearby_periods or value is None:
+                if not nearby_periods or value is None or not plausible_operational_value(line, value):
                     continue
                 period = nearby_periods[-1]
                 series = {period: value}

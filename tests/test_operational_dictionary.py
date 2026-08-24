@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from app_extrator_operacional import (
     COMPANIES,
@@ -7,6 +9,7 @@ from app_extrator_operacional import (
     build_operational_warnings,
     classify_operational_observation,
     extract_metric,
+    extract_metric_from_markdown,
 )
 from operational_dictionary import CONFIDENCE_MEDIUM, all_metric_names
 
@@ -155,6 +158,88 @@ class OperationalDictionaryTests(unittest.TestCase):
             ]
         )
         self.assertEqual(extract_metric(COMPANIES["MATD3"], workbook, "Glosa/PCLD"), [])
+
+    def test_matd_markdown_table_extracts_patient_days_by_period_as_medium_proxies(self):
+        markdown = """
+        Rede Mater Dei Release de Resultados
+        Página 2
+        | Indicador | 1T 26 | 2Q26 |
+        | --- | ---: | ---: |
+        | Pacientes-Dia | 82.575 | 91.250 |
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MATD3_release_2T26.md"
+            path.write_text(markdown, encoding="utf-8")
+
+            atendimentos = extract_metric_from_markdown(COMPANIES["MATD3"], [path], "N. Atendimentos")
+            pacientes = extract_metric_from_markdown(COMPANIES["MATD3"], [path], "N. Pacientes")
+
+        for items, metric, warning in (
+            (atendimentos, "N. Atendimentos", "Pacientes-dia utilizado como proxy de atendimentos."),
+            (pacientes, "N. Pacientes", "Pacientes-dia utilizado como proxy de pacientes; não representa pacientes únicos."),
+        ):
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["serie"], {"1T26": 82575, "2T26": 91250})
+            self.assertEqual(items[0]["nature"], "proxy")
+            self.assertEqual(items[0]["confidence"], "medium")
+            self.assertEqual(items[0]["observations"][0]["metric"], metric)
+            self.assertEqual(items[0]["observations"][0]["page"], 2)
+            self.assertEqual(items[0]["observations"][0]["source_confidence"], "high")
+            self.assertEqual(items[0]["observations"][0]["confidence"], "medium")
+            self.assertEqual(items[0]["observations"][0]["source_type"], "release_table")
+            self.assertEqual(items[0]["observations"][0]["warning"], warning)
+
+    def test_matd_markdown_table_rejects_quarter_or_page_as_patient_day_value(self):
+        markdown = """
+        Mater Dei
+        Page 2
+        | Indicador | 1T26 | 2T26 |
+        | Pacientes-Dia | 1 | 2 |
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MATD3_release_2T26.md"
+            path.write_text(markdown, encoding="utf-8")
+            self.assertEqual(extract_metric_from_markdown(COMPANIES["MATD3"], [path], "N. Atendimentos"), [])
+
+    def test_rdor_spreadsheet_patient_days_preserves_hospital_scope_and_all_periods(self):
+        workbook = WorkbookSnapshot(
+            [
+                SheetSnapshot(
+                    "Português",
+                    [
+                        ("Hospitais, oncologia e outros", None, None, None, None, None, None),
+                        ("", "1T25", "2T25", "3T25", "4T25", "1T26", "2T26"),
+                        ("Pacientes-Dia", 701000, 722000, 735000, 748000, 760000, 777000),
+                        ("SulAmérica", None, None, None, None, None, None),
+                        ("", "1T25", "2T25", "3T25", "4T25", "1T26", "2T26"),
+                        ("Pacientes-Dia", 1, 2, 3, 4, 5, 6),
+                    ],
+                )
+            ]
+        )
+
+        atendimentos = extract_metric(COMPANIES["RDOR3"], workbook, "N. Atendimentos")
+        pacientes = extract_metric(COMPANIES["RDOR3"], workbook, "N. Pacientes")
+
+        for items in (atendimentos, pacientes):
+            self.assertEqual(len(items), 1)
+            self.assertEqual(
+                items[0]["serie"],
+                {
+                    "1T25": 701000,
+                    "2T25": 722000,
+                    "3T25": 735000,
+                    "4T25": 748000,
+                    "1T26": 760000,
+                    "2T26": 777000,
+                },
+            )
+            self.assertEqual(items[0]["escopo"], "Hospitais, oncologia e outros")
+            self.assertEqual(items[0]["confidence"], "medium")
+            self.assertEqual(items[0]["nature"], "proxy")
+            self.assertEqual(items[0]["observations"][0]["source_confidence"], "high")
+            self.assertEqual(items[0]["observations"][0]["confidence"], "medium")
+            self.assertEqual(items[0]["observations"][0]["sheet"], "Português")
 
 
 if __name__ == "__main__":

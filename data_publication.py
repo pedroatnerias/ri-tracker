@@ -10,7 +10,11 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from manual_operational import MANUAL_OVERRIDES_FILENAME
+from manual_operational import normalize_manual_payload, resolve_operational_data_with_manual
+
 BASE_DIR = Path(__file__).resolve().parent
+PUBLICATION_SCOPES = {"all", "financial", "operational"}
 
 REQUIRED_ROOT_JSONS = [
     "DRE_ITR_CVM_ultimos_5_anos.json",
@@ -136,10 +140,19 @@ def write_sanitized_copy(source_path: Path, source_root: Path, staging: Path) ->
     return target
 
 
+def validate_scope(scope: str) -> str:
+    normalized = (scope or "all").lower()
+    if normalized not in PUBLICATION_SCOPES:
+        raise SystemExit(f"Scope de publicacao invalido: {scope}")
+    return normalized
+
+
 def build_publication_staging(base: Path, manifest: dict[str, object]) -> Path:
     staging = publication_staging_dir(base)
     reset_staging(staging)
     publish_relatives = list(manifest["root_jsons"]) + list(manifest["operational_jsons"]) + ["data_manifest.json"]
+    if manifest.get("manual_operational_overrides"):
+        publish_relatives.append(MANUAL_OVERRIDES_FILENAME)
     staged_paths = [
         write_sanitized_copy(base / relative, base, staging)
         for relative in publish_relatives
@@ -167,8 +180,7 @@ def data_manifest_payload(manifest: dict[str, object], data_version: str | None 
             individual.setdefault(ticker, {})[key] = Path(*parts).as_posix()
         if len(parts) == 3 and parts[0] == "charts" and parts[1] == "comparison":
             comparison[path.stem] = Path(*parts).as_posix()
-    return {
-        "files": {
+    files = {
             "balanco": next((name for name in manifest["root_jsons"] if name.startswith("balancos_itr_cvm_")), ""),
             "dre": "DRE_ITR_CVM_ultimos_5_anos.json",
             "dfc": "DFC_ITR_CVM.json",
@@ -178,7 +190,11 @@ def data_manifest_payload(manifest: dict[str, object], data_version: str | None 
             "market_cap_historico": "market_cap_historico.json",
             "indicadores": "indicadores.json",
             "reconciliacao": "relatorio_reconciliacao.json",
-        },
+    }
+    if manifest.get("manual_operational_overrides"):
+        files["manual_operational_overrides"] = MANUAL_OVERRIDES_FILENAME
+    return {
+        "files": files,
         "operational_jsons": manifest["operational_jsons"],
         "charts": {
             "individual": individual,
@@ -188,25 +204,81 @@ def data_manifest_payload(manifest: dict[str, object], data_version: str | None 
     }
 
 
-def build_publish_manifest(base: Path) -> dict[str, object]:
+def merge_data_manifest(previous: dict[str, object] | None, current: dict[str, object], scope: str) -> dict[str, object]:
+    if not previous:
+        return current
+    if scope == "all":
+        merged = dict(current)
+        if isinstance(previous.get("files"), dict) and previous["files"].get("manual_operational_overrides"):
+            files = dict(merged.get("files") or {})
+            files.setdefault("manual_operational_overrides", previous["files"]["manual_operational_overrides"])
+            merged["files"] = files
+        return merged
+    merged = dict(previous)
+    merged["data_version"] = current.get("data_version", previous.get("data_version", ""))
+    if scope == "financial":
+        merged["files"] = current.get("files", previous.get("files", {}))
+        if isinstance(previous.get("files"), dict) and previous["files"].get("manual_operational_overrides"):
+            merged["files"]["manual_operational_overrides"] = previous["files"]["manual_operational_overrides"]
+        merged["charts"] = current.get("charts", previous.get("charts", {}))
+        merged["operational_jsons"] = previous.get("operational_jsons", [])
+    elif scope == "operational":
+        previous_files = previous.get("files", {})
+        merged["files"] = dict(previous_files) if isinstance(previous_files, dict) else {}
+        current_files = current.get("files", {})
+        if isinstance(current_files, dict) and current_files.get("manual_operational_overrides"):
+            merged["files"]["manual_operational_overrides"] = current_files["manual_operational_overrides"]
+        merged["charts"] = previous.get("charts", {})
+        merged["operational_jsons"] = current.get("operational_jsons", previous.get("operational_jsons", []))
+    return merged
+
+
+def read_existing_json(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    payload = read_json(path)
+    return payload if isinstance(payload, dict) else None
+
+
+def resolve_manual_for_publication(manual_payload: dict[str, object], staging: Path, manifest: dict[str, object]) -> dict[str, object]:
+    companies: dict[str, object] = {}
+    for relative in manifest.get("operational_jsons", []):
+        payload = read_json(staging / relative)
+        if isinstance(payload, dict):
+            ticker = str(payload.get("ticker") or "").upper()
+            if ticker:
+                companies[ticker] = payload
+    _operational, resolved_manual = resolve_operational_data_with_manual({"companies": companies}, manual_payload)
+    return normalize_manual_payload(resolved_manual)
+
+
+def build_publish_manifest(base: Path, scope: str = "all") -> dict[str, object]:
+    scope = validate_scope(scope)
     base = base.resolve()
     financial_paths: list[Path] = []
-    balancos = sorted(base.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime)
-    if not balancos:
-        raise SystemExit("Nenhum balancos_itr_cvm_*.json foi gerado.")
-    financial_paths.append(balancos[-1])
-    financial_paths.extend(base / name for name in REQUIRED_ROOT_JSONS)
+    if scope in {"all", "financial"}:
+        balancos = sorted(base.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime)
+        if not balancos:
+            raise SystemExit("Nenhum balancos_itr_cvm_*.json foi gerado.")
+        financial_paths.append(balancos[-1])
+        financial_paths.extend(base / name for name in REQUIRED_ROOT_JSONS)
 
-    for path in financial_paths:
-        validate_json_file(path, "financeiro obrigatorio")
+        for path in financial_paths:
+            validate_json_file(path, "financeiro obrigatorio")
 
     op_dir = base / "dados_operacionais"
-    operational_jsons = sorted(op_dir.glob("*.json")) if op_dir.exists() else []
+    operational_jsons = sorted(op_dir.glob("*.json")) if scope in {"all", "operational"} and op_dir.exists() else []
+    if scope == "operational" and not operational_jsons:
+        raise SystemExit("Nenhum JSON operacional foi gerado.")
     for path in operational_jsons:
         validate_json_file(path, "operacional")
+    manual_path = base / MANUAL_OVERRIDES_FILENAME
+    manual_exists = manual_path.exists()
+    if manual_exists:
+        validate_json_file(manual_path, "override operacional manual")
 
     chart_dir = base / "charts"
-    chart_pngs = sorted(chart_dir.rglob("*.png")) if chart_dir.exists() else []
+    chart_pngs = sorted(chart_dir.rglob("*.png")) if scope in {"all", "financial"} and chart_dir.exists() else []
     chart_pngs = [
         path for path in chart_pngs
         if (
@@ -221,8 +293,10 @@ def build_publish_manifest(base: Path) -> dict[str, object]:
     manifest = {
         "root_jsons": [path.relative_to(base).as_posix() for path in financial_paths],
         "operational_jsons": [path.relative_to(base).as_posix() for path in operational_jsons],
+        "manual_operational_overrides": manual_exists,
         "chart_pngs": [path.relative_to(base).as_posix() for path in chart_pngs],
-        "warnings": [] if operational_jsons else [
+        "scope": scope,
+        "warnings": [] if operational_jsons or scope == "financial" else [
             "Nenhum JSON operacional novo validado; snapshot operacional anterior sera preservado."
         ],
     }
@@ -238,8 +312,8 @@ def build_publish_manifest(base: Path) -> dict[str, object]:
     return manifest
 
 
-def validate_results(base: Path) -> dict[str, object]:
-    manifest = build_publish_manifest(base)
+def validate_results(base: Path, scope: str = "all") -> dict[str, object]:
+    manifest = build_publish_manifest(base, scope)
     print(
         "Validacao concluida: "
         f"{len(manifest['root_jsons'])} JSONs financeiros validos; "
@@ -251,7 +325,7 @@ def validate_results(base: Path) -> dict[str, object]:
 def clear_financial_component(target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for child in target.iterdir():
-        if child.name == "dados_operacionais":
+        if child.name in {"dados_operacionais", MANUAL_OVERRIDES_FILENAME}:
             continue
         if child.is_dir():
             shutil.rmtree(child)
@@ -264,13 +338,18 @@ def publish_validated_data(
     target: Path,
     source_commit: str = "",
     workflow_run_id: str = "",
+    scope: str = "all",
 ) -> dict[str, object]:
+    scope = validate_scope(scope)
     source = source.resolve()
     target = target.resolve()
     if target.name != "data":
         raise SystemExit(f"Destino de publicacao inesperado: {target}")
 
     manifest = read_json(source / "publish_manifest.json")
+    manifest_scope = str(manifest.get("scope") or scope)
+    if manifest_scope != scope:
+        raise SystemExit(f"Scope do manifest ({manifest_scope}) difere do publish ({scope})")
     data_version = source_commit or os.environ.get("SOURCE_COMMIT") or os.environ.get("GITHUB_SHA") or ""
     data_manifest_path = source / "data_manifest.json"
     data_manifest_path.write_text(
@@ -278,25 +357,36 @@ def publish_validated_data(
         encoding="utf-8",
     )
     staging = build_publication_staging(source, manifest)
-    staged_manifest = read_json(staging / "data_manifest.json")
-    clear_financial_component(target)
-    chart_target = target.parent / "charts"
-    if chart_target.exists():
-        shutil.rmtree(chart_target)
-    chart_target.mkdir(parents=True, exist_ok=True)
+    current_manifest = read_json(staging / "data_manifest.json")
+    previous_manifest = read_existing_json(target / "data_manifest.json")
+    previous_metadata = read_existing_json(target / "update_metadata.json") or {}
+    previous_manual = read_existing_json(target / MANUAL_OVERRIDES_FILENAME)
+    staged_manifest = merge_data_manifest(previous_manifest, current_manifest, scope)
+    target.mkdir(parents=True, exist_ok=True)
+    if scope in {"all", "financial"}:
+        clear_financial_component(target)
+        chart_target = target.parent / "charts"
+        if chart_target.exists():
+            shutil.rmtree(chart_target)
+        chart_target.mkdir(parents=True, exist_ok=True)
 
     copied = 0
-    for relative in manifest["root_jsons"]:
-        path = staging / relative
-        shutil.copy2(path, target / path.name)
-        copied += 1
+    if scope in {"all", "financial"}:
+        for relative in manifest["root_jsons"]:
+            path = staging / relative
+            shutil.copy2(path, target / path.name)
+            copied += 1
 
-    shutil.copy2(staging / "data_manifest.json", target / "data_manifest.json")
+    (target / "data_manifest.json").write_text(
+        json.dumps(staged_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     copied += 1
 
     target_operational = target / "dados_operacionais"
-    operational_updated = bool(manifest["operational_jsons"])
-    if operational_updated:
+    financial_updated = scope in {"all", "financial"} and bool(manifest["root_jsons"])
+    operational_updated = scope in {"all", "operational"} and bool(manifest["operational_jsons"])
+    if scope in {"all", "operational"} and operational_updated:
         if target_operational.exists():
             shutil.rmtree(target_operational)
         target_operational.mkdir(parents=True, exist_ok=True)
@@ -305,21 +395,68 @@ def publish_validated_data(
             shutil.copy2(path, target_operational / path.name)
             copied += 1
 
-    metadata = {
-        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source_commit": source_commit,
-        "workflow_run_id": workflow_run_id,
-        "status": "success" if operational_updated else "success_with_warnings",
-        "warnings": manifest.get("warnings", []),
-        "components": {
-            "financial": {
+    manual_source = staging / MANUAL_OVERRIDES_FILENAME
+    manual_updated = bool(manifest.get("manual_operational_overrides")) and manual_source.exists()
+    if manual_updated:
+        manual_payload = read_json(manual_source)
+        if scope in {"all", "operational"}:
+            manual_payload = resolve_manual_for_publication(manual_payload, staging, manifest)
+            manual_source.write_text(json.dumps(manual_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        shutil.copy2(manual_source, target / MANUAL_OVERRIDES_FILENAME)
+        staged_manifest.setdefault("files", {})["manual_operational_overrides"] = MANUAL_OVERRIDES_FILENAME
+        copied += 1
+    elif previous_manual:
+        manual_payload = previous_manual
+        if scope in {"all", "operational"}:
+            manual_payload = resolve_manual_for_publication(previous_manual, staging, manifest)
+        (target / MANUAL_OVERRIDES_FILENAME).write_text(
+            json.dumps(manual_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        staged_manifest.setdefault("files", {})["manual_operational_overrides"] = MANUAL_OVERRIDES_FILENAME
+        copied += 1
+
+    (target / "data_manifest.json").write_text(
+        json.dumps(staged_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    previous_components = previous_metadata.get("components") if isinstance(previous_metadata.get("components"), dict) else {}
+
+    def component_metadata(name: str, updated: bool, skipped_status: str = "skipped_by_scope") -> dict[str, object]:
+        previous = previous_components.get(name) if isinstance(previous_components, dict) else None
+        if not isinstance(previous, dict):
+            previous = {}
+        if updated:
+            return {
+                "last_update": now,
+                "mode": os.environ.get("UPDATE_MODE", ""),
                 "status": "success",
                 "updated": True,
-            },
-            "operational": {
-                "status": "success" if operational_updated else "skipped",
-                "updated": operational_updated,
-            },
+            }
+        preserved = dict(previous)
+        preserved.setdefault("last_update", None)
+        preserved.setdefault("mode", "")
+        preserved["status"] = skipped_status
+        preserved["updated"] = False
+        return preserved
+
+    financial_skipped_status = "skipped_by_scope" if scope == "operational" else "skipped_no_change"
+    operational_skipped_status = "skipped_by_scope" if scope == "financial" else "skipped_no_change"
+
+    metadata = {
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "last_update": now,
+        "source_commit": source_commit,
+        "workflow_run_id": workflow_run_id,
+        "scope": scope,
+        "mode": os.environ.get("UPDATE_MODE", ""),
+        "status": "success_with_warnings" if manifest.get("warnings") else "success",
+        "warnings": manifest.get("warnings", []),
+        "components": {
+            "financial": component_metadata("financial", financial_updated, financial_skipped_status),
+            "operational": component_metadata("operational", operational_updated, operational_skipped_status),
         },
         "json_files_published": copied,
         "chart_pngs_published": 0,
@@ -329,14 +466,15 @@ def publish_validated_data(
         "data_version": staged_manifest.get("data_version", data_version),
     }
     chart_copied = 0
-    for relative in manifest.get("chart_pngs", []):
-        source_path = staging / relative
-        if not source_path.exists():
-            continue
-        target_path = target.parent / relative
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, target_path)
-        chart_copied += 1
+    if scope in {"all", "financial"}:
+        for relative in manifest.get("chart_pngs", []):
+            source_path = staging / relative
+            if not source_path.exists():
+                continue
+            target_path = target.parent / relative
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            chart_copied += 1
     metadata["chart_pngs_published"] = chart_copied
     (target / "update_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
@@ -352,17 +490,19 @@ def parse_args() -> argparse.Namespace:
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("source", type=Path)
+    validate.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
 
     publish = subparsers.add_parser("publish")
     publish.add_argument("source", type=Path)
     publish.add_argument("target", type=Path)
+    publish.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.command == "validate":
-        validate_results(args.source)
+        validate_results(args.source, scope=args.scope)
         return 0
     if args.command == "publish":
         publish_validated_data(
@@ -370,6 +510,7 @@ def main() -> int:
             args.target,
             source_commit=os.environ.get("SOURCE_COMMIT", ""),
             workflow_run_id=os.environ.get("WORKFLOW_RUN_ID", ""),
+            scope=args.scope,
         )
         return 0
     raise SystemExit(f"Comando desconhecido: {args.command}")
