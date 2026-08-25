@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 import argparse
-from company_registry import financial_companies
+from company_registry import Company, financial_companies
 import json
 from pathlib import Path
 
@@ -125,19 +125,30 @@ def obter_acoes_em_circulacao(
     return int(round(float(quantidade))), None, "fast_info/info"
 
 
-def processar_ticker(ticker_b3: str) -> dict[str, Any]:
+def processar_ticker(company: Company) -> dict[str, Any]:
     """Consulta um ticker e calcula preco x acoes em circulacao."""
-    ticker_yahoo = f"{ticker_b3}.SA"
-    acao = yf.Ticker(ticker_yahoo)
+    ultimo_erro: Exception | None = None
+    for ticker_yahoo in company.yahoo_tickers:
+        acao = yf.Ticker(ticker_yahoo)
+        try:
+            preco, fonte_preco = obter_preco(acao)
+            variacoes = obter_variacoes_preco(acao, preco)
+            acoes, data_acoes, fonte_acoes = obter_acoes_em_circulacao(acao)
+            break
+        except Exception as erro:
+            ultimo_erro = erro
+    else:
+        raise ValueError(
+            "O Yahoo Finance nao retornou dados para "
+            f"{', '.join(company.yahoo_tickers)}"
+        ) from ultimo_erro
 
-    preco, fonte_preco = obter_preco(acao)
-    variacoes = obter_variacoes_preco(acao, preco)
-    acoes, data_acoes, fonte_acoes = obter_acoes_em_circulacao(acao)
     instante_extracao = datetime.now(timezone.utc)
 
     return {
-        "ticker_b3": ticker_b3,
+        "ticker_b3": company.ticker,
         "ticker_yahoo": ticker_yahoo,
+        "ticker_yahoo_alternativos": list(company.yahoo_tickers),
         "moeda": "BRL",
         "ultimo_preco": preco,
         "acoes_em_circulacao": acoes,
@@ -165,13 +176,14 @@ def main() -> None:
     for company in financial_companies(args.sector):
         ticker = company.ticker
         try:
-            resultados.append(processar_ticker(ticker))
+            resultados.append(processar_ticker(company))
         except Exception as erro:
             instante_extracao = datetime.now(timezone.utc)
             resultados.append(
                 {
                     "ticker_b3": ticker,
-                    "ticker_yahoo": f"{ticker}.SA",
+                    "ticker_yahoo": company.yahoo_ticker or f"{ticker}.SA",
+                    "ticker_yahoo_alternativos": list(company.yahoo_tickers),
                     "moeda": "BRL",
                     "ultimo_preco": None,
                     "acoes_em_circulacao": None,

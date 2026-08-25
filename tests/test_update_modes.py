@@ -52,9 +52,22 @@ class UpdateModeTests(unittest.TestCase):
 
         self.assertTrue(any("[FULL]" in label for label in labels))
         self.assertIn("--force-download", command_for(commands, "app_balancos.py"))
-        self.assertIn("--sobrescrever-zips", command_for(commands, "app_dre.py"))
-        self.assertIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
+        self.assertNotIn("--sobrescrever-zips", command_for(commands, "app_dre.py"))
+        self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
         self.assertIn("--sobrescrever-downloads", command_for(commands, "app_parser_operacional.py"))
+
+    def test_financial_extractors_share_cvm_zip_cache(self):
+        _labels, commands, _ = self.capture_commands(mode="full", scope="financial")
+        bp = command_for(commands, "app_balancos.py")
+        dre = command_for(commands, "app_dre.py")
+        dfc = command_for(commands, "app_dfc.py")
+        bp_output = Path(bp[bp.index("--output-dir") + 1])
+        expected_itr = str(bp_output / "downloads" / "itr")
+        expected_dfp = str(bp_output / "downloads" / "dfp")
+        self.assertEqual(dre[dre.index("--pasta-zips") + 1], expected_itr)
+        self.assertEqual(dfc[dfc.index("--pasta-zips") + 1], expected_itr)
+        self.assertEqual(dre[dre.index("--pasta-zips-dfp") + 1], expected_dfp)
+        self.assertEqual(dfc[dfc.index("--pasta-zips-dfp") + 1], expected_dfp)
 
     def test_diagnostico_ri_is_only_passed_when_requested(self):
         _, commands, _ = self.capture_commands(mode="incremental", diagnostico_ri=False)

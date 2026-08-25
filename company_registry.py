@@ -23,17 +23,28 @@ class Company:
     yahoo_ticker: str | None = None
     configuration_status: str = "validated"
     configuration_note: str | None = None
+    legacy_tickers: tuple[str, ...] = ()
 
     @property
     def scope_label(self) -> str:
         return "Consolidado" if self.statement_scope == "con" else "Individual"
 
+    @property
+    def yahoo_tickers(self) -> tuple[str, ...]:
+        tickers = tuple(
+            ticker if ticker.endswith(".SA") else f"{ticker}.SA"
+            for ticker in (self.ticker, *self.legacy_tickers)
+        )
+        configured = () if self.yahoo_ticker is None else (self.yahoo_ticker,)
+        return tuple(dict.fromkeys((*configured, *tickers)))
+
 
 def _c(ticker: str, sector: str, cd: str, cnpj: str, name: str, aliases: tuple[str, ...] = (),
        scope: str = "con", operational: bool = False, yahoo: str | None = None,
-       status: str = "validated", note: str | None = None) -> Company:
+       status: str = "validated", note: str | None = None,
+       legacy_tickers: tuple[str, ...] = ()) -> Company:
     return Company(ticker, sector, cd.zfill(6), cnpj, name, aliases or (name,), scope, True,
-                   operational, yahoo if yahoo is not None else f"{ticker}.SA", status, note)
+                   operational, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers)
 
 
 _COMPANIES = (
@@ -54,7 +65,7 @@ _COMPANIES = (
     _c("FIEI3", "construcao_civil", "20630", "07.820.907/0001-46", "FICA EMPREENDIMENTOS IMOBILIARIOS S.A.", ("FICA EMPREENDIMENTOS IMOBILIARIOS S.A.", "CR2 EMPREENDIMENTOS IMOBILIARIOS S.A.")),
     _c("GFSA3", "construcao_civil", "16101", "01.545.826/0001-07", "GAFISA S.A."),
     _c("HBOR3", "construcao_civil", "20877", "49.263.189/0001-02", "HELBOR EMPREENDIMENTOS S.A."),
-    _c("INNT3", "construcao_civil", "24279", "09.611.768/0001-76", "INTER CONSTRUTORA E INCORPORADORA S.A.", ("INTER CONSTRUTORA E INCORPORADORA S.A.", "INC EMPREENDIMENTOS IMOBILIARIOS S.A.", "INNC3")),
+    _c("INNC3", "construcao_civil", "24279", "09.611.768/0001-76", "INC EMPREENDIMENTOS IMOBILIARIOS S.A.", ("INTER CONSTRUTORA E INCORPORADORA S.A.", "INC EMPREENDIMENTOS IMOBILIARIOS S.A."), legacy_tickers=("INNT3",)),
     _c("JFEN3", "construcao_civil", "7811", "33.035.536/0001-00", "JOAO FORTES ENGENHARIA S.A.", ("JOAO FORTES ENGENHARIA S.A.", "JOAO FORTES ENGENHARIA S.A. - EM RECUPERACAO JUDICIAL")),
     _c("JHSF3", "construcao_civil", "20605", "08.294.224/0001-65", "JHSF PARTICIPACOES S.A."),
     _c("LAVV3", "construcao_civil", "25062", "26.462.693/0001-28", "LAVVI EMPREENDIMENTOS IMOBILIARIOS S.A."),
@@ -75,6 +86,7 @@ _COMPANIES = (
 _BY_TICKER = {company.ticker: company for company in _COMPANIES}
 if len(_BY_TICKER) != len(_COMPANIES):
     raise RuntimeError("Ticker duplicado no cadastro central")
+_BY_LEGACY_TICKER = {ticker: company for company in _COMPANIES for ticker in company.legacy_tickers}
 
 
 def validate_sector(sector: str) -> str:
@@ -106,7 +118,12 @@ def tickers_for_sector(sector: str = "saude") -> tuple[str, ...]:
 
 
 def company_by_ticker(ticker: str) -> Company:
+    normalized = ticker.strip().upper()
     try:
-        return _BY_TICKER[ticker.strip().upper()]
+        return _BY_TICKER.get(normalized) or _BY_LEGACY_TICKER[normalized]
     except KeyError as exc:
         raise ValueError(f"Ticker desconhecido: {ticker}") from exc
+
+
+def canonical_ticker(ticker: str) -> str:
+    return company_by_ticker(ticker).ticker

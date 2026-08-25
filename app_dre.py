@@ -22,12 +22,12 @@ import unicodedata
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
-from company_registry import financial_companies
+from company_registry import Company, financial_companies
+from company_identity import normalize_cd_cvm, select_company_rows
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -52,24 +52,6 @@ FATORES_ESCALA = {
     "MILHOES": 1_000_000,
 }
 
-
-@dataclass(frozen=True)
-class Companhia:
-    ticker: str
-    tipo: str
-    # Nomes históricos/atuais normalizados. O primeiro ano encontrado fixa o CD_CVM.
-    nomes: tuple[str, ...]
-
-
-COMPANHIAS = (
-    Companhia("AALR3", "consolidado", ("CENTRO DE IMAGEM DIAGNOSTICOS SA", "ALLIANCA SAUDE E PARTICIPACOES SA")),
-    Companhia("DASA3", "consolidado", ("DIAGNOSTICOS DA AMERICA SA",)),
-    Companhia("FLRY3", "consolidado", ("FLEURY SA",)),
-    Companhia("HAPV3", "consolidado", ("HAPVIDA PARTICIPACOES E INVESTIMENTOS SA",)),
-    Companhia("MATD3", "consolidado", ("HOSPITAL MATER DEI SA",)),
-    Companhia("ONCO3", "consolidado", ("ONCOCLINICAS DO BRASIL SERVICOS MEDICOS SA",)),
-    Companhia("RDOR3", "individual", ("REDE DOR SAO LUIZ SA", "REDE DOR SA")),
-)
 
 COLUNAS_NECESSARIAS = {
     "CNPJ_CIA", "DT_REFER", "VERSAO", "DENOM_CIA", "CD_CVM", "GRUPO_DFP",
@@ -188,21 +170,12 @@ def ler_csv_dre(caminho_zip: Path, ano: int, tipo: str, doc: str = "itr") -> pd.
     return df
 
 
-def resolver_cd_cvm(base: pd.DataFrame, companhia: Companhia) -> str:
-    nomes_alvo = {normalizar(n) for n in companhia.nomes}
-    candidatos = base.loc[base["DENOM_CIA"].map(normalizar).isin(nomes_alvo), ["CD_CVM", "DENOM_CIA"]].drop_duplicates()
-    codigos = candidatos["CD_CVM"].dropna().unique().tolist()
-    if len(codigos) != 1:
-        exemplos = candidatos.to_dict("records")
-        raise RuntimeError(f"{companhia.ticker}: esperado um único CD_CVM; encontrados {codigos}. Correspondências: {exemplos}")
-    return str(codigos[0])
+def company_statement_type(company: Company) -> str:
+    return "consolidado" if company.statement_scope == "con" else "individual"
 
 
-def preparar_dre(base: pd.DataFrame, companhia: Companhia) -> pd.DataFrame:
-    cd_cvm = resolver_cd_cvm(base, companhia)
-    dre = base.loc[base["CD_CVM"].astype(str) == cd_cvm].copy()
-    if dre.empty:
-        raise RuntimeError(f"{companhia.ticker}: nenhuma linha após filtrar CD_CVM {cd_cvm}")
+def preparar_dre(base: pd.DataFrame, companhia: Company) -> pd.DataFrame:
+    dre = select_company_rows(base, companhia, "DRE")
 
     # ÚLTIMO = exercício corrente apresentado no formulário; PENÚLTIMO é comparativo.
     ordem = dre["ORDEM_EXERC"].map(normalizar)
@@ -240,7 +213,7 @@ def preparar_dre(base: pd.DataFrame, companhia: Companhia) -> pd.DataFrame:
     dre = dre.sort_values(chaves + ["DT_REFER", "VERSAO_NUM", "ANO_ARQUIVO"])
     dre = dre.drop_duplicates(chaves, keep="last")
     dre["TICKER"] = companhia.ticker
-    dre["TIPO_DRE"] = companhia.tipo
+    dre["TIPO_DRE"] = company_statement_type(companhia)
     fixas = dre["ST_CONTA_FIXA"].map(normalizar).eq("S")
     dre["CONTA_CHAVE"] = dre["CD_CONTA"].astype(str) + "|" + fixas.map({True: "FIXA", False: "NAO_FIXA"})
     dre.loc[~fixas, "CONTA_CHAVE"] = (
@@ -324,7 +297,8 @@ def formatar_excel(caminho: Path, tickers: Iterable[str]) -> None:
     wb.save(caminho)
 
 
-def exportar_excel(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int]) -> None:
+def exportar_excel(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int], companies: tuple[Company, ...] | None = None) -> None:
+    companies = companies or tuple(financial_companies("saude"))
     caminho.parent.mkdir(parents=True, exist_ok=True)
     auditoria = pd.concat(dres.values(), ignore_index=True)
     estrutura_mestra = construir_estrutura_mestra(dres)
@@ -341,7 +315,7 @@ def exportar_excel(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int]
         PAGINA_CVM,
         ", ".join(map(str, anos)),
         "Demonstração do Resultado (DRE), linhas fixas e não fixas da CVM.",
-        "; ".join(f"{c.ticker}: {c.tipo}" for c in COMPANHIAS),
+        "; ".join(f"{c.ticker}: {company_statement_type(c)}" for c in companies),
         "Para a mesma conta e período, foi mantida a linha de maior DT_REFER e VERSAO.",
         "Somente ORDEM_EXERC = ÚLTIMO; datas de início e fim são as informadas pela companhia.",
         "Todas as abas usam a mesma lista mestra, formada pela união dos códigos de conta encontrados nas sete companhias, em ordem hierárquica da CVM.",
@@ -464,7 +438,8 @@ def montar_empresa_json(ticker: str, dre: pd.DataFrame, estrutura_mestra: pd.Ser
     }
 
 
-def exportar_json(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int]) -> None:
+def exportar_json(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int], companies: tuple[Company, ...] | None = None) -> None:
+    companies = companies or tuple(financial_companies("saude"))
     caminho.parent.mkdir(parents=True, exist_ok=True)
     auditoria = pd.concat(dres.values(), ignore_index=True)
     estrutura_mestra = construir_estrutura_mestra(dres)
@@ -490,7 +465,7 @@ def exportar_json(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int])
             {"item": "Fonte", "description": PAGINA_CVM},
             {"item": "Anos dos arquivos", "description": ", ".join(map(str, anos))},
             {"item": "Escopo", "description": "Demonstracao do Resultado (DRE), linhas fixas e nao fixas da CVM."},
-            {"item": "Tipo por companhia", "description": "; ".join(f"{c.ticker}: {c.tipo}" for c in COMPANHIAS)},
+            {"item": "Tipo por companhia", "description": "; ".join(f"{c.ticker}: {company_statement_type(c)}" for c in companies)},
             {"item": "Celulas vazias", "description": "Conta nao divulgada para a companhia/periodo; nao representa valor zero."},
         ],
     }
@@ -526,9 +501,8 @@ def analisar_argumentos() -> argparse.Namespace:
 
 
 def main() -> int:
-    global COMPANHIAS
     args = analisar_argumentos()
-    COMPANHIAS = tuple(Companhia(c.ticker, "consolidado" if c.statement_scope == "con" else "individual", c.aliases) for c in financial_companies(args.sector))
+    companies = tuple(financial_companies(args.sector))
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
     if args.anos:
         anos = sorted(set(args.anos))
@@ -549,6 +523,9 @@ def main() -> int:
             por_tipo[tipo].append(ler_csv_dre(caminho_zip, ano, tipo, "itr"))
     if not args.sem_dfp:
         for ano in anos:
+            if ano >= pd.Timestamp.today().year:
+                logging.warning("DFP %s ainda não é esperada para o exercício corrente; ITR mantido normalmente.", ano)
+                continue
             try:
                 caminho_zip = baixar_zip(ano, args.pasta_zips_dfp, args.sobrescrever_zips, "dfp")
             except Exception as erro:
@@ -559,10 +536,10 @@ def main() -> int:
     bases = {tipo: pd.concat(partes, ignore_index=True) for tipo, partes in por_tipo.items()}
 
     dres: dict[str, pd.DataFrame] = {}
-    for companhia in COMPANHIAS:
-        dres[companhia.ticker] = preparar_dre(bases[companhia.tipo], companhia)
+    for companhia in companies:
+        dres[companhia.ticker] = preparar_dre(bases[company_statement_type(companhia)], companhia)
         logging.info("%s: %d linhas selecionadas.", companhia.ticker, len(dres[companhia.ticker]))
-    exportar_json(dres, args.saida, anos)
+    exportar_json(dres, args.saida, anos, companies)
     verificar_json(args.saida, dres)
     logging.info("Concluído: %s", args.saida.resolve())
     return 0

@@ -5,9 +5,11 @@
 O Nerias RI Tracker V2, ou Acompanhador de Mercado, consolida demonstrativos financeiros CVM, cotacoes de mercado e dados operacionais de RI para acompanhar AALR3, DASA3, FLRY3, HAPV3, MATD3, ONCO3 e RDOR3.
 
 O tracker também atende construção civil: AVLL3, CALI3, CURY3, CYRE3, DIRR3,
-EVEN3, EZTC3, FIEI3, GFSA3, HBOR3, INNT3, JFEN3, JHSF3, LAVV3, MDNE3,
+EVEN3, EZTC3, FIEI3, GFSA3, HBOR3, INNC3, JFEN3, JHSF3, LAVV3, MDNE3,
 MELK3, MRVE3, MTRE3, PDGR3, PLPL3, RDNI3, RSID3, TCSA3, TEND3, TRIS3 e
 VIVR3. O cadastro auditável está centralizado em `company_registry.py`.
+INNC3 e o ticker atual da INC Empreendimentos; INNT3 e mantido como ticker
+historico/compatibilidade para consultas e leitura de dados legados.
 Construção civil usa somente dados financeiros; não há indicadores ou
 overrides operacionais nesse setor.
 

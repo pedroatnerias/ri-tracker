@@ -13,12 +13,12 @@ import re
 import sys
 import unicodedata
 import zipfile
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from company_registry import financial_companies
+from company_registry import Company, financial_companies
+from company_identity import CompanyNotFoundError, select_company_rows
 import requests
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -38,24 +38,6 @@ FATORES_ESCALA = {
     "MILHAO": 1_000_000,
     "MILHOES": 1_000_000,
 }
-
-
-@dataclass(frozen=True)
-class Companhia:
-    ticker: str
-    aliases: tuple[str, ...]
-    escopo: str  # con ou ind
-
-
-COMPANHIAS = (
-    Companhia("AALR3", ("ALLIANCA SAUDE E PARTICIPACOES", "CENTRO DE IMAGEM DIAGNOSTICOS", "ALLIAR"), "con"),
-    Companhia("DASA3", ("DIAGNOSTICOS DA AMERICA",), "con"),
-    Companhia("FLRY3", ("FLEURY",), "con"),
-    Companhia("HAPV3", ("HAPVIDA PARTICIPACOES E INVESTIMENTOS", "HAPVIDA"), "con"),
-    Companhia("MATD3", ("MATER DEI",), "con"),
-    Companhia("ONCO3", ("ONCOCLINICAS DO BRASIL SERVICOS MEDICOS", "ONCOCLINICAS"), "con"),
-    Companhia("RDOR3", ("REDE D'OR SAO LUIZ", "REDE DOR SAO LUIZ"), "ind"),
-)
 
 
 def sem_acentos(valor: object) -> str:
@@ -140,27 +122,18 @@ def ler_csv_do_zip(zf: zipfile.ZipFile, membro: str) -> pd.DataFrame:
             sep=";",
             encoding="latin1",
             decimal=",",
-            dtype={"CNPJ_CIA": "string", "CD_CONTA": "string"},
+            dtype={"CNPJ_CIA": "string", "CD_CVM": "string", "CD_CONTA": "string"},
             low_memory=False,
         )
 
 
-def localizar_companhia(df: pd.DataFrame, companhia: Companhia) -> tuple[str, str] | None:
-    if df.empty or not {"CNPJ_CIA", "DENOM_CIA"}.issubset(df.columns):
+def localizar_companhia(df: pd.DataFrame, companhia: Company) -> pd.DataFrame | None:
+    if df.empty:
         return None
-    cadastro = df[["CNPJ_CIA", "DENOM_CIA"]].drop_duplicates().copy()
-    cadastro["_nome"] = cadastro["DENOM_CIA"].map(sem_acentos)
-    aliases = tuple(sem_acentos(x) for x in companhia.aliases)
-    achados = cadastro[cadastro["_nome"].map(lambda n: any(a in n for a in aliases))]
-    pares = achados[["CNPJ_CIA", "DENOM_CIA"]].drop_duplicates()
-    if len(pares) == 0:
+    try:
+        return select_company_rows(df, companhia, "DFC")
+    except CompanyNotFoundError:
         return None
-    if len(pares) > 1:
-        raise RuntimeError(
-            f"{companhia.ticker}: identificação ambígua. Candidatos: {pares.to_dict('records')}"
-        )
-    linha = pares.iloc[0]
-    return str(linha["CNPJ_CIA"]), str(linha["DENOM_CIA"])
 
 
 def selecionar_ultima_versao(df: pd.DataFrame) -> pd.DataFrame:
@@ -192,8 +165,9 @@ def selecionar_ultima_versao(df: pd.DataFrame) -> pd.DataFrame:
     return dados[dados["VERSAO"].eq(max_versao)].copy()
 
 
-def extrair(zips: list[Path]) -> tuple[dict[str, list[pd.DataFrame]], list[dict[str, object]]]:
-    blocos: dict[str, list[pd.DataFrame]] = {c.ticker: [] for c in COMPANHIAS}
+def extrair(zips: list[Path], companies: tuple[Company, ...] | None = None) -> tuple[dict[str, list[pd.DataFrame]], list[dict[str, object]]]:
+    companies = companies or tuple(financial_companies("saude"))
+    blocos: dict[str, list[pd.DataFrame]] = {c.ticker: [] for c in companies}
     auditoria: list[dict[str, object]] = []
 
     for caminho in zips:
@@ -210,25 +184,25 @@ def extrair(zips: list[Path]) -> tuple[dict[str, list[pd.DataFrame]], list[dict[
                 _, metodo, escopo = DFC_RE.search(Path(membro).name).groups()
                 por_escopo[escopo.lower()].append((metodo.upper(), ler_csv_do_zip(zf, membro)))
 
-            for companhia in COMPANHIAS:
+            for companhia in companies:
                 encontrados: list[tuple[str, pd.DataFrame, str, str]] = []
-                for metodo, df in por_escopo[companhia.escopo]:
-                    identidade = localizar_companhia(df, companhia)
-                    if identidade is None:
+                for metodo, df in por_escopo[companhia.statement_scope]:
+                    parte = localizar_companhia(df, companhia)
+                    if parte is None:
                         continue
-                    cnpj, nome = identidade
-                    parte = df[df["CNPJ_CIA"].astype(str).eq(cnpj)].copy()
+                    cnpj = companhia.cnpj
+                    nome = ", ".join(sorted(parte["DENOM_CIA"].dropna().astype(str).unique()))
                     if not parte.empty:
                         encontrados.append((metodo, parte, cnpj, nome))
 
                 if not encontrados:
-                    logging.warning("%s: DFC %s não localizada em %s; ano mantido como ausente.", companhia.ticker, companhia.escopo, ano)
+                    logging.warning("%s: DFC %s não localizada em %s; ano mantido como ausente.", companhia.ticker, companhia.statement_scope, ano)
                     auditoria.append({
                         "ticker": companhia.ticker,
                         "ano_arquivo": ano,
                         "cnpj": None,
                         "denominacao_cvm": None,
-                        "escopo": "Consolidado" if companhia.escopo == "con" else "Individual",
+                        "escopo": "Consolidado" if companhia.statement_scope == "con" else "Individual",
                         "metodo_dfc": None,
                         "linhas": 0,
                         "datas_referencia": None,
@@ -243,7 +217,7 @@ def extrair(zips: list[Path]) -> tuple[dict[str, list[pd.DataFrame]], list[dict[
                 metodo, parte, cnpj, nome = encontrados[0]
                 parte = selecionar_ultima_versao(parte)
                 parte["METODO_DFC"] = metodo
-                parte["ESCOPO"] = "Consolidado" if companhia.escopo == "con" else "Individual"
+                parte["ESCOPO"] = "Consolidado" if companhia.statement_scope == "con" else "Individual"
                 parte["TICKER"] = companhia.ticker
                 parte["ANO_ARQUIVO"] = ano
                 parte["DOCUMENTO_CVM"] = documento
@@ -326,14 +300,15 @@ def preparar_planilha(df: pd.DataFrame, estrutura_mestre: pd.Index) -> pd.DataFr
     return tabela
 
 
-def salvar_excel(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str, object]], saida: Path) -> None:
+def salvar_excel(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str, object]], saida: Path, companies: tuple[Company, ...] | None = None) -> None:
+    companies = companies or tuple(financial_companies("saude"))
     saida.parent.mkdir(parents=True, exist_ok=True)
     azul = "1F4E78"
     azul_claro = "D9EAF7"
     estrutura_mestre = criar_estrutura_mestre(blocos)
     with pd.ExcelWriter(saida, engine="openpyxl") as writer:
         pd.DataFrame(auditoria).to_excel(writer, sheet_name="Auditoria", index=False)
-        for companhia in COMPANHIAS:
+        for companhia in companies:
             if not blocos[companhia.ticker]:
                 continue
             dados = pd.concat(blocos[companhia.ticker], ignore_index=True)
@@ -478,15 +453,16 @@ def montar_empresa_json(ticker: str, dados: pd.DataFrame, estrutura_mestre: pd.I
     }
 
 
-def salvar_json(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str, object]], saida: Path, anos: list[int]) -> None:
+def salvar_json(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str, object]], saida: Path, anos: list[int], companies: tuple[Company, ...] | None = None) -> None:
+    companies = companies or tuple(financial_companies("saude"))
     saida.parent.mkdir(parents=True, exist_ok=True)
     estrutura_mestre = criar_estrutura_mestre(blocos)
-    companies = {}
-    for companhia in COMPANHIAS:
+    output_companies = {}
+    for companhia in companies:
         if not blocos[companhia.ticker]:
             continue
         dados = pd.concat(blocos[companhia.ticker], ignore_index=True)
-        companies[companhia.ticker] = montar_empresa_json(companhia.ticker, dados, estrutura_mestre)
+        output_companies[companhia.ticker] = montar_empresa_json(companhia.ticker, dados, estrutura_mestre)
 
     payload = {
         "kind": "dfc_itr_cvm",
@@ -496,7 +472,7 @@ def salvar_json(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str,
         "criteria": "Somente ORDEM_EXERC = ULTIMO e a maior VERSAO de cada data sao usadas.",
         "unit_note": "Valores em reais integrais; VL_CONTA = VL_CONTA_CVM x FATOR_ESCALA.",
         "method_note": "MD = metodo direto; MI = metodo indireto.",
-        "companies": companies,
+        "companies": output_companies,
         "audit": registros_json(auditoria),
         "methodology": [
             {"item": "Fonte", "description": BASE_URL},
@@ -510,9 +486,10 @@ def salvar_json(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str,
     temporario.replace(saida)
 
 
-def verificar_json(saida: Path) -> None:
+def verificar_json(saida: Path, companies: tuple[Company, ...] | None = None) -> None:
+    companies = companies or tuple(financial_companies("saude"))
     payload = json.loads(saida.read_text(encoding="utf-8"))
-    esperado = {c.ticker for c in COMPANHIAS}
+    esperado = {c.ticker for c in companies}
     encontrado = set(payload.get("companies", {}))
     faltantes = esperado.difference(encontrado)
     if faltantes:
@@ -529,6 +506,8 @@ def analisar_argumentos() -> argparse.Namespace:
     parser.add_argument("--quantidade-anos", type=int, default=5, help="Anos anuais mais recentes disponíveis (padrão: 5).")
     parser.add_argument("--anos", nargs="+", type=int, help="Anos explícitos; substitui --quantidade-anos.")
     parser.add_argument("--diretorio", type=Path, default=Path("dados_cvm_itr"), help="Pasta de ZIPs e resultados.")
+    parser.add_argument("--pasta-zips", type=Path, help="Cache compartilhado de ZIPs ITR.")
+    parser.add_argument("--pasta-zips-dfp", type=Path, help="Cache compartilhado de ZIPs DFP.")
     parser.add_argument("--saida", type=Path, help="Arquivo JSON; padrão: <diretorio>/DFC_ITR_CVM.json.")
     parser.add_argument("--sobrescrever-downloads", action="store_true")
     parser.add_argument("--sem-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
@@ -537,12 +516,11 @@ def analisar_argumentos() -> argparse.Namespace:
 
 
 def main() -> int:
-    global COMPANHIAS
     args = analisar_argumentos()
-    COMPANHIAS = tuple(Companhia(c.ticker, c.aliases, c.statement_scope) for c in financial_companies(args.sector))
+    companies = tuple(financial_companies(args.sector))
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     sessao = criar_sessao()
-    pasta_zips = args.diretorio / "zips"
+    pasta_zips = args.pasta_zips or args.diretorio / "zips"
     try:
         disponiveis = anos_disponiveis(sessao, "itr")
     except requests.RequestException as erro:
@@ -558,22 +536,28 @@ def main() -> int:
 
     zips = [baixar(sessao, ano, pasta_zips, args.sobrescrever_downloads, "itr") for ano in anos]
     if not args.sem_dfp:
-        pasta_zips_dfp = args.diretorio / "zips_dfp"
+        pasta_zips_dfp = args.pasta_zips_dfp or args.diretorio / "zips_dfp"
         for ano in anos:
+            if ano >= date.today().year:
+                logging.warning("DFP %s ainda não é esperada para o exercício corrente; ITR mantido normalmente.", ano)
+                continue
             try:
                 zips.append(baixar(sessao, ano, pasta_zips_dfp, args.sobrescrever_downloads, "dfp"))
             except Exception as erro:
                 logging.warning("DFP %s nao incorporado (%s).", ano, erro)
-    blocos, auditoria = extrair(zips)
+    blocos, auditoria = extrair(zips, companies)
     saida = args.saida or args.diretorio / "DFC_ITR_CVM.json"
-    salvar_json(blocos, auditoria, saida, anos)
-    verificar_json(saida)
+    salvar_json(blocos, auditoria, saida, anos, companies)
+    verificar_json(saida, companies)
     manifesto = args.diretorio / "execucao.json"
     manifesto.write_text(json.dumps({
         "data_execucao": date.today().isoformat(),
         "anos": anos,
         "arquivo_saida": str(saida),
-        "companhias": [c.__dict__ for c in COMPANHIAS],
+        "companhias": [
+            {field: getattr(c, field) for field in c.__dataclass_fields__}
+            for c in companies
+        ],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     logging.info("Concluído: %s", saida.resolve())
     return 0

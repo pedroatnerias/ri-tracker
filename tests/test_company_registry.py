@@ -11,13 +11,22 @@ class CompanyRegistryTests(unittest.TestCase):
         self.assertFalse(set(c.ticker for c in companies_for_sector("saude")) & set(c.ticker for c in companies_for_sector("construcao_civil")))
 
     def test_requested_construction_universe_and_flags(self):
-        expected = {"AVLL3","CALI3","CURY3","CYRE3","DIRR3","EVEN3","EZTC3","FIEI3","GFSA3","HBOR3","INNT3","JFEN3","JHSF3","LAVV3","MDNE3","MELK3","MRVE3","MTRE3","PDGR3","PLPL3","RDNI3","RSID3","TCSA3","TEND3","TRIS3","VIVR3"}
+        expected = {"AVLL3","CALI3","CURY3","CYRE3","DIRR3","EVEN3","EZTC3","FIEI3","GFSA3","HBOR3","INNC3","JFEN3","JHSF3","LAVV3","MDNE3","MELK3","MRVE3","MTRE3","PDGR3","PLPL3","RDNI3","RSID3","TCSA3","TEND3","TRIS3","VIVR3"}
         companies = companies_for_sector("construcao_civil")
         self.assertEqual({c.ticker for c in companies}, expected)
         self.assertTrue(all(c.financial_enabled and not c.operational_enabled for c in companies))
         self.assertEqual(company_by_ticker("RDOR3").statement_scope, "ind")
 
+    def test_inc_current_and_legacy_tickers(self):
+        current = company_by_ticker("INNC3")
+        self.assertEqual(current.yahoo_ticker, "INNC3.SA")
+        self.assertEqual(current.legacy_tickers, ("INNT3",))
+        self.assertEqual(current.yahoo_tickers, ("INNC3.SA", "INNT3.SA"))
+        self.assertEqual(company_by_ticker("INNT3").ticker, "INNC3")
+        self.assertNotIn("INNT3", {c.ticker for c in all_companies()})
+        with self.assertRaises(ValueError):
+            company_by_ticker("INTT3")
+
     def test_unknown_ticker_is_rejected(self):
         with self.assertRaises(ValueError):
             company_by_ticker("XXXX3")
-

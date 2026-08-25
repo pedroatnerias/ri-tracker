@@ -11,7 +11,7 @@ Dependencia externa: yfinance (pip install yfinance).
 from __future__ import annotations
 
 import argparse
-from company_registry import financial_companies
+from company_registry import company_by_ticker, financial_companies
 import csv
 import io
 import json
@@ -222,24 +222,30 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
         ) from exc
 
     for ticker, empresa in resultado["empresas"].items():
-        yahoo_ticker = f"{ticker}.SA"
+        yahoo_tickers = company_by_ticker(ticker).yahoo_tickers
         for periodo in empresa["periodos"]:
             # So existe uma data-base identificada quando a CVM trouxe o total de acoes.
             if periodo["quantidade_acoes_total"] is None:
                 continue
             referencia = date.fromisoformat(periodo["data_referencia"])
-            print(
-                f"Buscando {yahoo_ticker} para {referencia.isoformat()} no Yahoo Finance...",
-                file=sys.stderr,
-            )
-            try:
-                preco, data_preco = buscar_preco_yfinance(yf, yahoo_ticker, referencia)
-            except Exception as exc:  # falha externa nao invalida os dados da CVM
+            preco = None
+            data_preco = None
+            for yahoo_ticker in yahoo_tickers:
                 print(
-                    f"Aviso: falha ao buscar {yahoo_ticker} em {referencia.isoformat()}: {exc}",
+                    f"Buscando {yahoo_ticker} para {referencia.isoformat()} no Yahoo Finance...",
                     file=sys.stderr,
                 )
-                continue
+                try:
+                    preco, data_preco = buscar_preco_yfinance(yf, yahoo_ticker, referencia)
+                except Exception as exc:  # falha externa nao invalida os dados da CVM
+                    print(
+                        f"Aviso: falha ao buscar {yahoo_ticker} em {referencia.isoformat()}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if preco is not None:
+                    periodo["ticker_yahoo"] = yahoo_ticker
+                    break
             periodo["preco_acao"] = preco
             periodo["data_preco"] = data_preco
 

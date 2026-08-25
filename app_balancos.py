@@ -837,6 +837,9 @@ def main() -> int:
         ]
         if not args.no_dfp:
             for year in args.years:
+                if year >= date.today().year:
+                    logging.warning("DFP %s ainda não é esperada para o exercício corrente; ITR mantido normalmente.", year)
+                    continue
                 try:
                     zip_paths.append(
                         ("dfp", year, download_zip(year, downloads / "dfp", args.force_download, args.offline, "dfp"))

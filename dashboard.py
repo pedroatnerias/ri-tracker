@@ -382,7 +382,9 @@ UPDATE_LOCK = threading.Lock()
 
 def append_update_log(message: str) -> None:
     message = sanitize_log_message(message)
-    print(message, flush=True)
+    console_encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    console_message = message.encode(console_encoding, errors="replace").decode(console_encoding, errors="replace")
+    print(console_message, flush=True)
     with UPDATE_LOCK:
         logs = list(UPDATE_STATE.get("logs") or [])
         logs.append(message)
@@ -516,18 +518,16 @@ def run_update(
         step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
         balanco_path = find_balanco_json(resultados)
 
-        dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path), "--sector", sector]
+        shared_itr_cache = resultados / "downloads" / "itr"
+        shared_dfp_cache = resultados / "downloads" / "dfp"
+        dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path), "--sector", sector, "--pasta-zips", str(shared_itr_cache), "--pasta-zips-dfp", str(shared_dfp_cache)]
         if year_args:
             dre_cmd.extend(["--anos", *year_args])
-        if full_mode:
-            dre_cmd.append("--sobrescrever-zips")
         step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
 
-        dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path), "--sector", sector]
+        dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path), "--sector", sector, "--pasta-zips", str(shared_itr_cache), "--pasta-zips-dfp", str(shared_dfp_cache)]
         if year_args:
             dfc_cmd.extend(["--anos", *year_args])
-        if full_mode:
-            dfc_cmd.append("--sobrescrever-downloads")
         step_results.append(run_update_command(f"DFC CVM{full_suffix}", dfc_cmd))
     else:
         step_results.extend([skipped_step("Balanço Patrimonial CVM"), skipped_step("DRE CVM"), skipped_step("DFC CVM")])
@@ -769,6 +769,27 @@ def load_methodology_markdown() -> str:
     return path.read_text(encoding="utf-8")
 
 
+def migrate_legacy_company_tickers(payload: dict | None) -> dict | None:
+    """Migra somente na leitura chaves publicadas sob tickers históricos."""
+    if not isinstance(payload, dict):
+        return payload
+    companies = payload.get("companies")
+    if isinstance(companies, dict) and "INNT3" in companies and "INNC3" not in companies:
+        companies = dict(companies)
+        company = companies.pop("INNT3")
+        if isinstance(company, dict):
+            company = dict(company)
+            for key in ("ticker", "ticker_b3"):
+                if company.get(key) == "INNT3":
+                    company[key] = "INNC3"
+            if company.get("ticker_yahoo") == "INNT3.SA":
+                company["ticker_yahoo"] = "INNC3.SA"
+        companies["INNC3"] = company
+        payload = dict(payload)
+        payload["companies"] = companies
+    return payload
+
+
 def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
     candidate_files = [
         resultados / "dados_operacionais.json",
@@ -875,6 +896,8 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "dre": source.load_optional("dre", local_paths["dre"], remote_files.get("dre", "DRE_ITR_CVM_ultimos_5_anos.json"), expected_paths["dre"]) or {},
         "dfc": source.load_optional("dfc", local_paths["dfc"], remote_files.get("dfc", "DFC_ITR_CVM.json"), expected_paths["dfc"]) or {},
     }
+    if sector == "construcao_civil":
+        statements = {key: migrate_legacy_company_tickers(value) or {} for key, value in statements.items()}
     operational_data, operational_files = load_operational_data_from_source(source, data_dir) if sector == "saude" else ({"companies": {}}, {})
     manual_overrides, manual_files = load_manual_overrides_from_source(source, data_dir) if sector == "saude" else (empty_manual_payload(), {})
     operational_data, manual_overrides_resolved = resolve_operational_data_with_manual(operational_data, manual_overrides)
@@ -884,6 +907,8 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "ciclo_financeiro": source.load_optional("ciclo_financeiro", local_paths["ciclo_financeiro"], remote_files.get("ciclo_financeiro", "ciclo_financeiro.json"), expected_paths["ciclo_financeiro"]),
         "market_cap": source.load_optional("market_cap", local_paths["market_cap"], remote_files.get("market_cap", "market_cap.json"), expected_paths["market_cap"]),
     }
+    if sector == "construcao_civil":
+        indicators = {key: migrate_legacy_company_tickers(value) for key, value in indicators.items()}
     # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
     # os tres demonstrativos financeiros minimos ja foram gerados.
     has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))

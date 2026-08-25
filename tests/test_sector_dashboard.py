@@ -8,6 +8,12 @@ import dashboard
 
 
 class SectorDashboardTests(unittest.TestCase):
+    def test_legacy_innt3_is_migrated_only_on_read(self):
+        migrated = dashboard.migrate_legacy_company_tickers({"companies": {"INNT3": {"ticker": "INNT3", "ticker_yahoo": "INNT3.SA"}}})
+        self.assertNotIn("INNT3", migrated["companies"])
+        self.assertEqual(migrated["companies"]["INNC3"]["ticker"], "INNC3")
+        self.assertEqual(migrated["companies"]["INNC3"]["ticker_yahoo"], "INNC3.SA")
+
     def test_sector_endpoints_and_selector(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE":"local"}, clear=False):
             root = Path(tmp)
@@ -23,4 +29,3 @@ class SectorDashboardTests(unittest.TestCase):
             self.assertEqual(health["sector"],"saude")
             self.assertFalse(construction["operational_enabled"])
             self.assertNotIn("AALR3", construction["tickers"])
-
