@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 import argparse
+from company_registry import financial_companies
 import json
 from pathlib import Path
 
@@ -156,11 +157,13 @@ def processar_ticker(ticker_b3: str) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Calcula market cap e historico de precos via Yahoo Finance.")
     parser.add_argument("--saida", "-o", type=Path, help="Arquivo JSON de saida.")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
     args = parser.parse_args()
 
     resultados: list[dict[str, Any]] = []
 
-    for ticker in TICKERS:
+    for company in financial_companies(args.sector):
+        ticker = company.ticker
         try:
             resultados.append(processar_ticker(ticker))
         except Exception as erro:

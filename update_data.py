@@ -7,10 +7,17 @@ import argparse
 from pathlib import Path
 
 from dashboard import run_update, resolve_app_path
+from company_registry import SECTORS
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--sector",
+        choices=tuple(sorted(SECTORS)),
+        default="saude",
+        help="Setor processado. Padrao retrocompativel: saude.",
+    )
     parser.add_argument(
         "--resultados",
         type=Path,
@@ -46,7 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     resultados = resolve_app_path(args.resultados)
-    run_update(resultados, args.anos, mode=args.mode, scope=args.scope, diagnostico_ri=args.diagnostico_ri)
+    run_update(resultados, args.anos, mode=args.mode, scope=args.scope, sector=args.sector, diagnostico_ri=args.diagnostico_ri)
     return 0
 
 

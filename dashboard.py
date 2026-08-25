@@ -41,6 +41,7 @@ from manual_operational import (
     write_manual_overrides_file,
 )
 from operational_dictionary import TARGET_METRICS
+from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 
 
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
@@ -72,6 +73,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--atualizar", action="store_true", help="Roda os apps antes de iniciar o servidor.")
     parser.add_argument("--update-scope", choices=tuple(sorted(UPDATE_SCOPES)), default="all", help="Escopo usado com --atualizar.")
+    parser.add_argument("--update-sector", choices=("saude", "construcao_civil", "all"), default="saude", help="Setor usado com --atualizar.")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude", help="Setor usado na exportacao HTML.")
     parser.add_argument("--update-mode", choices=tuple(sorted(UPDATE_MODES)), default="full", help="Modo usado com --atualizar.")
     parser.add_argument("--export-html", type=Path, help="Exporta uma versao HTML estatica e encerra.")
     parser.add_argument(
@@ -229,16 +232,18 @@ def cached_remote_json(relative_path: str, force_refresh: bool = False) -> tuple
 
 
 class DashboardDataSource:
-    def __init__(self, resultados: Path, mode: str | None = None, force_remote_refresh: bool = False):
+    def __init__(self, resultados: Path, mode: str | None = None, force_remote_refresh: bool = False, sector: str = "saude"):
         requested = (mode or configured_data_source_mode()).strip().lower()
         self.mode = requested if requested in DATA_SOURCE_MODES else "auto"
         self.resultados = resultados
+        self.sector = validate_sector(sector)
         self.force_remote_refresh = force_remote_refresh
         self.files: dict[str, dict] = {}
         self.remote_metadata: dict = {}
         self.data_source = self.mode
         self.remote_available = False
         self._remote_manifest: dict = {}
+        self.manifest_v2 = False
         if self.mode in {"remote", "auto"}:
             self._load_remote_metadata()
 
@@ -251,6 +256,11 @@ class DashboardDataSource:
             self.remote_metadata = metadata
         if manifest:
             self._remote_manifest = manifest
+        self.manifest_v2 = self._remote_manifest.get("schema_version") == 2 and isinstance(self._remote_manifest.get("sectors"), dict)
+        if isinstance(self._remote_manifest.get("sectors"), dict):
+            self._remote_manifest = dict(self._remote_manifest["sectors"].get(self.sector) or {}) | {"data_version": self._remote_manifest.get("data_version", "")}
+        if isinstance(self.remote_metadata.get("sectors"), dict):
+            self.remote_metadata = dict(self.remote_metadata["sectors"].get(self.sector) or {}) | {"data_version": self.remote_metadata.get("data_version", "")}
         self.remote_available = bool(metadata or manifest)
 
     def remote_file_map(self) -> dict:
@@ -292,6 +302,9 @@ class DashboardDataSource:
         return None
 
     def load_remote_optional(self, relative_path: str, key: str | None = None) -> dict | None:
+        if self.manifest_v2:
+            if not relative_path.startswith("sectors/"):
+                relative_path = f"sectors/{self.sector}/{relative_path}"
         data, meta = cached_remote_json(relative_path, self.force_remote_refresh)
         self.files[key or relative_path] = meta
         if data is None:
@@ -357,6 +370,7 @@ UPDATE_STATE: dict[str, object] = {
     "status": "idle",
     "current_step": None,
     "scope": None,
+    "sector": None,
     "mode": None,
     "started_at": None,
     "finished_at": None,
@@ -422,16 +436,37 @@ def run_update(
     anos: list[int] | None = None,
     mode: str = "incremental",
     scope: str = "all",
+    sector: str = "saude",
     diagnostico_ri: bool = False,
 ) -> dict[str, object]:
     mode = validate_update_mode(mode)
     scope = validate_update_scope(scope)
+    sector = validate_sector(sector)
+    if sector == "all":
+        (resultados.expanduser().resolve() / "saude").mkdir(parents=True, exist_ok=True)
+        results = []
+        if scope in {"all", "financial", "operational"}:
+            health_scope = scope
+            results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri))
+        if scope in {"all", "financial"}:
+            results.append(run_update(resultados, anos, mode=mode, scope="financial", sector="construcao_civil", diagnostico_ri=False))
+        return {
+            "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
+            "warnings": [w for r in results for w in r.get("warnings", [])],
+            "steps": [s for r in results for s in r.get("steps", [])],
+            "scope": scope, "mode": mode, "sector": "all",
+            "companies": {"financial": [c.ticker for c in financial_companies("all")] if scope != "operational" else [], "operational": [c.ticker for c in operational_companies("saude")] if scope != "financial" else []},
+        }
+    if sector == "construcao_civil" and scope == "operational":
+        raise ValueError("O setor construcao_civil ainda não possui atualização operacional.")
     full_mode = mode == "full"
     full_suffix = " [FULL]" if full_mode else ""
     resultados = resultados.expanduser().resolve()
+    # A raiz plana continua sendo aceita para saude; novos setores ficam isolados.
+    if sector != "saude" or (resultados / "saude").exists():
+        resultados = resultados / sector
     resultados.mkdir(parents=True, exist_ok=True)
     operational_dir = resultados / "dados_operacionais"
-    operational_dir.mkdir(parents=True, exist_ok=True)
     dre_path = resultados / "DRE_ITR_CVM_ultimos_5_anos.json"
     dfc_path = resultados / "DFC_ITR_CVM.json"
     divida_path = resultados / "divida_liquida.json"
@@ -446,7 +481,13 @@ def run_update(
     warnings: list[str] = []
     started_total = time.monotonic()
     run_financial = scope in {"all", "financial"}
-    run_operational = scope in {"all", "operational"}
+    run_operational = scope in {"all", "operational"} and sector in {"saude", "all"}
+    selected_financial = [c.ticker for c in financial_companies(sector)] if run_financial else []
+    selected_operational = [c.ticker for c in operational_companies(sector)] if run_operational else []
+    if sector == "construcao_civil" and scope == "all":
+        warnings.append("Componente operacional ignorado: não habilitado para construcao_civil.")
+    if run_operational:
+        operational_dir.mkdir(parents=True, exist_ok=True)
 
     def skipped_step(label: str) -> dict[str, object]:
         append_update_log(f"[SKIP] {label} - scope={scope}")
@@ -459,12 +500,15 @@ def run_update(
         }
 
     append_update_log(f"Scope de atualizacao: {scope}")
+    append_update_log(f"Setor de atualizacao: {sector}")
+    append_update_log(f"Empresas financeiras: {', '.join(selected_financial) or '-'}")
+    append_update_log(f"Empresas operacionais: {', '.join(selected_operational) or '-'}")
     append_update_log(f"Modo de atualizacao: {mode}")
     append_update_log(f"Anos da atualizacao CVM: {', '.join(year_args)}")
 
     balanco_path: Path | None = None
     if run_financial:
-        balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados)]
+        balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados), "--sector", sector]
         if year_args:
             balanco_cmd.extend(["--years", *year_args])
         if full_mode:
@@ -472,14 +516,14 @@ def run_update(
         step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
         balanco_path = find_balanco_json(resultados)
 
-        dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path)]
+        dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path), "--sector", sector]
         if year_args:
             dre_cmd.extend(["--anos", *year_args])
         if full_mode:
             dre_cmd.append("--sobrescrever-zips")
         step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
 
-        dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path)]
+        dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path), "--sector", sector]
         if year_args:
             dfc_cmd.extend(["--anos", *year_args])
         if full_mode:
@@ -527,8 +571,8 @@ def run_update(
         assert balanco_path is not None
         step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
         step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)]))
-        step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path)]))
-        step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path)]))
+        step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path), "--sector", sector]))
+        step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path), "--sector", sector]))
         step_results.append(
             run_update_command(
                 "Indicadores financeiros",
@@ -586,7 +630,7 @@ def run_update(
     else:
         append_update_log("Pipeline concluido com sucesso.")
     append_update_log(f"TOTAL {round(time.monotonic() - started_total, 3)}s")
-    return {"status": global_status, "warnings": warnings, "steps": step_results, "scope": scope, "mode": mode}
+    return {"status": global_status, "warnings": warnings, "steps": step_results, "scope": scope, "mode": mode, "sector": sector, "companies": {"financial": selected_financial, "operational": selected_operational}}
 
 
 def run_full_update(
@@ -594,8 +638,11 @@ def run_full_update(
     anos: list[int] | None = None,
     diagnostico_ri: bool = False,
     scope: str = "all",
+    sector: str = "saude",
 ) -> dict[str, object]:
-    return run_update(resultados, anos, mode="full", scope=scope, diagnostico_ri=diagnostico_ri)
+    if sector == "saude":
+        return run_update(resultados, anos, mode="full", scope=scope, diagnostico_ri=diagnostico_ri)
+    return run_update(resultados, anos, mode="full", scope=scope, sector=sector, diagnostico_ri=diagnostico_ri)
 
 
 def port_process_ids(port: int) -> set[int]:
@@ -794,19 +841,25 @@ def load_manual_overrides_from_source(source: DashboardDataSource, resultados: P
     return empty_manual_payload(), {}
 
 
-def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> dict:
+def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refresh: bool = False) -> dict:
+    sector = validate_sector(sector)
+    if sector == "all":
+        raise ValueError("O dashboard requer um setor especifico.")
     resultados.mkdir(parents=True, exist_ok=True)
-    source = DashboardDataSource(resultados, force_remote_refresh=force_remote_refresh)
+    sector_dir = resultados / sector
+    data_dir = sector_dir if sector_dir.exists() or sector != "saude" else resultados
+    data_dir.mkdir(parents=True, exist_ok=True)
+    source = DashboardDataSource(data_dir, force_remote_refresh=force_remote_refresh, sector=sector)
     remote_files = source.remote_file_map()
     balanco_relative = remote_files.get("balanco")
     local_paths = {
-        "balanco": find_optional_balanco_json(resultados),
-        "dre": resultados / "DRE_ITR_CVM_ultimos_5_anos.json",
-        "dfc": resultados / "DFC_ITR_CVM.json",
-        "indicadores": resultados / "indicadores.json",
-        "divida_liquida": resultados / "divida_liquida.json",
-        "ciclo_financeiro": resultados / "ciclo_financeiro.json",
-        "market_cap": resultados / "market_cap.json",
+        "balanco": find_optional_balanco_json(data_dir),
+        "dre": data_dir / "DRE_ITR_CVM_ultimos_5_anos.json",
+        "dfc": data_dir / "DFC_ITR_CVM.json",
+        "indicadores": data_dir / "indicadores.json",
+        "divida_liquida": data_dir / "divida_liquida.json",
+        "ciclo_financeiro": data_dir / "ciclo_financeiro.json",
+        "market_cap": data_dir / "market_cap.json",
     }
     expected_paths = {
         "balanco": resultados / "balancos_itr_cvm_*.json",
@@ -822,8 +875,8 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
         "dre": source.load_optional("dre", local_paths["dre"], remote_files.get("dre", "DRE_ITR_CVM_ultimos_5_anos.json"), expected_paths["dre"]) or {},
         "dfc": source.load_optional("dfc", local_paths["dfc"], remote_files.get("dfc", "DFC_ITR_CVM.json"), expected_paths["dfc"]) or {},
     }
-    operational_data, operational_files = load_operational_data_from_source(source, resultados)
-    manual_overrides, manual_files = load_manual_overrides_from_source(source, resultados)
+    operational_data, operational_files = load_operational_data_from_source(source, data_dir) if sector == "saude" else ({"companies": {}}, {})
+    manual_overrides, manual_files = load_manual_overrides_from_source(source, data_dir) if sector == "saude" else (empty_manual_payload(), {})
     operational_data, manual_overrides_resolved = resolve_operational_data_with_manual(operational_data, manual_overrides)
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
@@ -837,7 +890,10 @@ def dashboard_payload(resultados: Path, force_remote_refresh: bool = False) -> d
     comparison = build_comparison_payload(indicators, operational_data)
     chart_assets = build_chart_assets(source)
     return {
-        "tickers": TICKERS,
+        "sector": sector,
+        "sector_label": SECTOR_LABELS[sector],
+        "operational_enabled": sector == "saude",
+        "tickers": tickers_for_sector(sector),
         "has_data": has_data,
         "data_source": source.data_source,
         "data_source_mode": source.mode,
@@ -1207,8 +1263,8 @@ def build_chart_assets(source: DashboardDataSource) -> dict:
     }
 
 
-def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str) -> pd.DataFrame:
-    payload = dashboard_payload(resultados)
+def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str, sector: str = "saude") -> pd.DataFrame:
+    payload = dashboard_payload(resultados, sector=sector)
     company = (((payload.get("indicators") or {}).get("indicadores") or {}).get("companies") or {}).get(ticker)
     if not company:
         return pd.DataFrame()
@@ -1229,9 +1285,9 @@ def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str) ->
     return pd.DataFrame(rows)
 
 
-def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str) -> bytes:
+def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str, sector: str = "saude") -> bytes:
     config = CHARTS[chart_key]
-    df = chart_dataframe(resultados, ticker, view, chart_key)
+    df = chart_dataframe(resultados, ticker, view, chart_key, sector)
     fig_width = max(8.0, min(16.0, 0.65 * max(len(df), 1) + 5.5))
     fig_height = 4.2 if view == "quarterly" else 3.6
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=150)
@@ -1311,14 +1367,14 @@ def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str) -> 
     return output.getvalue()
 
 
-def static_export_html(resultados: Path) -> str:
-    payload = dashboard_payload(resultados)
+def static_export_html(resultados: Path, sector: str = "saude") -> str:
+    payload = dashboard_payload(resultados, sector=sector)
     charts: dict[str, str] = {}
-    for ticker in TICKERS:
+    for ticker in tickers_for_sector(sector):
         for view in ("annual", "quarterly"):
             for chart_key in CHARTS:
                 try:
-                    png = make_chart_png(resultados, ticker, view, chart_key)
+                    png = make_chart_png(resultados, ticker, view, chart_key, sector)
                 except Exception:
                     continue
                 charts[f"{ticker}|{view}|{chart_key}"] = (
@@ -1788,10 +1844,17 @@ HTML = """<!doctype html>
   </style>
 </head>
 <body>
+  <div id="sector-selector" style="position:fixed;inset:0;z-index:9999;background:#f4f7fb;display:flex;align-items:center;justify-content:center">
+    <div style="text-align:center"><h1>Selecione o setor</h1><p>Escolha os dados que deseja consultar.</p>
+      <button class="update-button" onclick="selectSector('saude')">Saúde</button>
+      <button class="update-button" onclick="selectSector('construcao_civil')">Construção civil</button>
+    </div>
+  </div>
   <div class="topbar">
     <div class="brand-title">
       <img class="nerias-logo" src="/logos/Nerias.png" alt="Nerias">
       <h1>Acompanhador de Mercado</h1>
+      <span id="active-sector"></span><button onclick="changeSector()">Trocar setor</button>
     </div>
     <div id="quote" class="quote"></div>
   </div>
@@ -1821,7 +1884,8 @@ HTML = """<!doctype html>
   </div>
   <script>
     let DATA = null;
-    let currentTicker = "AALR3";
+    let currentSector = null;
+    let currentTicker = null;
     let currentMain = "dados";
     let currentStatement = "dashboard";
     let currentView = "annual";
@@ -1834,6 +1898,19 @@ HTML = """<!doctype html>
     const operationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
     const workflowUrl = "https://github.com/pedroatnerias/ri-tracker/actions/workflows/update-data.yml";
 
+    function selectSector(sector) {
+      currentSector = sector;
+      DATA = null; currentTicker = null; currentMain = "dados"; currentStatement = "dashboard"; currentView = "annual";
+      expandedRows.clear();
+      if (updatePolling) { clearInterval(updatePolling); updatePolling = null; }
+      document.getElementById("sector-selector").style.display = "none";
+      loadData().catch(error => { document.getElementById("meta").textContent = error.message; });
+    }
+    function changeSector() {
+      currentSector = null; DATA = null; currentTicker = null;
+      document.getElementById("sector-selector").style.display = "flex";
+    }
+
     async function loadData() {
       if (window.__STATIC_DATA__) {
         DATA = window.__STATIC_DATA__;
@@ -1842,9 +1919,11 @@ HTML = """<!doctype html>
         updateStatusText(DATA.update_status);
         return;
       }
-      const response = await fetch("/api/data", { cache: "no-store" });
+      if (!currentSector) return;
+      const response = await fetch(`/api/data?sector=${encodeURIComponent(currentSector)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await response.text());
       DATA = await response.json();
+      document.getElementById("active-sector").textContent = DATA.sector_label || "";
       currentTicker = DATA.tickers.includes(currentTicker) ? currentTicker : DATA.tickers[0];
       render();
       updateStatusText(DATA.update_status);
@@ -1936,7 +2015,7 @@ HTML = """<!doctype html>
         method: "POST",
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope, mode }),
+        body: JSON.stringify({ sector: currentSector, scope, mode }),
       });
       const payload = await response.json().catch(() => ({}));
       updateStatusText(payload.status);
@@ -1952,7 +2031,7 @@ HTML = """<!doctype html>
     }
 
     async function refreshRemoteData() {
-      const response = await fetch("/api/refresh-data", { method: "POST", cache: "no-store" });
+      const response = await fetch("/api/refresh-data", { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sector: currentSector }) });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Falha ao recarregar dados.");
       await loadData();
@@ -1966,11 +2045,11 @@ HTML = """<!doctype html>
 
     function renderUpdateButtons() {
       if (window.__STATIC_DATA__) return [];
-      const scopes = [
+      const scopes = (DATA?.operational_enabled ? [
         ["financial", "Atualizar Financeiro"],
         ["operational", "Atualizar Operacional"],
         ["all", "Atualizar Tudo"],
-      ];
+      ] : [["financial", "Atualizar Financeiro"]]);
       return scopes.map(([scope, label]) => {
         const btn = button(label, false, () => {
           startUpdate(scope, scope === "all" ? "full" : "incremental").catch(error => {
@@ -3517,10 +3596,7 @@ HTML = """<!doctype html>
       document.getElementById("content").innerHTML = sections.filter(Boolean).join("");
     }
 
-    loadData().catch(error => {
-      document.getElementById("meta").textContent = "Erro ao carregar JSONs.";
-      document.getElementById("content").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
-    });
+    // O carregamento começa somente após a seleção explícita do setor.
   </script>
 </body>
 </html>
@@ -3540,7 +3616,13 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
     @app.get("/api/data")
     def api_data() -> Response:
         try:
-            response = jsonify(dashboard_payload(resultados))
+            sector = validate_sector(request.args.get("sector", "saude"))
+            if sector == "all":
+                raise ValueError("Setor all nao e valido para visualizacao.")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        try:
+            response = jsonify(dashboard_payload(resultados, sector=sector))
             response.headers["Cache-Control"] = "no-store"
             return response
         except Exception as exc:
@@ -3558,6 +3640,9 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
         try:
             update_scope = validate_update_scope(str(payload.get("scope") or "all"))
             update_mode = validate_update_mode(str(payload.get("mode") or "full"))
+            update_sector = validate_sector(str(payload.get("sector") or "saude"))
+            if update_sector == "construcao_civil" and update_scope == "operational":
+                raise ValueError("O setor construcao_civil ainda não possui atualização operacional.")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         with UPDATE_LOCK:
@@ -3569,6 +3654,7 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
                     "status": "running",
                     "current_step": "Preparando atualização",
                     "scope": update_scope,
+                    "sector": update_sector,
                     "mode": update_mode,
                     "started_at": datetime.now(timezone.utc).isoformat(),
                     "finished_at": None,
@@ -3579,7 +3665,7 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
         def worker() -> None:
             try:
-                update_result = run_update(resultados, anos, mode=update_mode, scope=update_scope)
+                update_result = run_update(resultados, anos, mode=update_mode, scope=update_scope, sector=update_sector)
                 with UPDATE_LOCK:
                     UPDATE_STATE.update(
                         {
@@ -3587,6 +3673,7 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
                             "status": update_result.get("status", "success"),
                             "current_step": None,
                             "scope": update_result.get("scope", update_scope),
+                            "sector": update_result.get("sector", update_sector),
                             "mode": update_result.get("mode", update_mode),
                             "finished_at": datetime.now(timezone.utc).isoformat(),
                             "error": None,
@@ -3613,7 +3700,9 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
     def api_refresh_data() -> Response:
         clear_remote_cache()
         try:
-            payload = dashboard_payload(resultados, force_remote_refresh=True)
+            body = request.get_json(silent=True) or {}
+            sector = validate_sector(str(body.get("sector") or request.args.get("sector") or "saude"))
+            payload = dashboard_payload(resultados, sector=sector, force_remote_refresh=True)
             return jsonify(
                 {
                     "refreshed": True,
@@ -3698,7 +3787,8 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
     @app.get("/export/dashboard.html")
     def export_dashboard() -> Response:
         try:
-            response = Response(static_export_html(resultados), mimetype="text/html")
+            sector = validate_sector(request.args.get("sector", "saude"))
+            response = Response(static_export_html(resultados, sector=sector), mimetype="text/html")
             response.headers["Content-Disposition"] = "attachment; filename=acompanhador_de_mercado.html"
             response.headers["Cache-Control"] = "no-store"
             return response
@@ -3738,10 +3828,10 @@ def main() -> int:
     }
 
     if args.atualizar:
-        run_update(args.resultados, args.anos, mode=args.update_mode, scope=args.update_scope)
+        run_update(args.resultados, args.anos, mode=args.update_mode, scope=args.update_scope, sector=args.update_sector)
 
     if args.export_html:
-        html = static_export_html(args.resultados)
+        html = static_export_html(args.resultados, sector=args.sector)
         args.export_html.parent.mkdir(parents=True, exist_ok=True)
         args.export_html.write_text(html, encoding="utf-8")
         print(f"HTML exportado em {args.export_html}")

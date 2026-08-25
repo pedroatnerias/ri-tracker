@@ -3,6 +3,15 @@ name: Atualizar dados Nerias
 on:
   workflow_dispatch:
     inputs:
+      update_sector:
+        description: "Setor"
+        required: true
+        default: saude
+        type: choice
+        options:
+          - saude
+          - construcao_civil
+          - all
       update_scope:
         description: "Escopo de atualizacao"
         required: true
@@ -48,14 +57,17 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Executar pipeline Nerias
-        run: python update_data.py --resultados resultados --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" --diagnostico-ri
+        run: |
+          EXTRA_ARGS=""
+          if [[ "${{ inputs.update_sector }}" != "construcao_civil" && "${{ inputs.update_scope }}" != "financial" ]]; then EXTRA_ARGS="--diagnostico-ri"; fi
+          python update_data.py --resultados resultados --sector "${{ inputs.update_sector }}" --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" $EXTRA_ARGS
 
       - name: Gerar graficos Matplotlib
         if: ${{ inputs.update_scope != 'operational' }}
-        run: python -m chart_generation --resultados resultados --output-dir resultados/charts
+        run: python -m chart_generation --resultados resultados --output-dir resultados/charts --sector "${{ inputs.update_sector }}"
 
       - name: Validar JSONs gerados
-        run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}"
+        run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
 
       - name: Checkout ri-tracker-data
         uses: actions/checkout@v6
@@ -69,7 +81,7 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
           UPDATE_MODE: ${{ inputs.update_mode }}
-        run: python -m data_publication publish resultados data-repo/data --scope "${{ inputs.update_scope }}"
+        run: python -m data_publication publish resultados data-repo/data --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
 
       - name: Commit e push se houver alteracoes
         working-directory: data-repo

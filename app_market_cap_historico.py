@@ -11,6 +11,7 @@ Dependencia externa: yfinance (pip install yfinance).
 from __future__ import annotations
 
 import argparse
+from company_registry import financial_companies
 import csv
 import io
 import json
@@ -274,7 +275,10 @@ def main() -> None:
         default="acoes_totais_trimestrais_cvm.json",
         help="Arquivo JSON de saida (padrao: %(default)s).",
     )
+    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
     args = parser.parse_args()
+    global EMPRESAS
+    EMPRESAS = {c.ticker: c.cnpj for c in financial_companies(args.sector)}
     resultado = executar(args.saida)
     preenchidos = sum(
         p["quantidade_acoes_total"] is not None

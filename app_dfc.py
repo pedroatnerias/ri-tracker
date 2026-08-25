@@ -18,6 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+from company_registry import financial_companies
 import requests
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -531,11 +532,14 @@ def analisar_argumentos() -> argparse.Namespace:
     parser.add_argument("--saida", type=Path, help="Arquivo JSON; padrão: <diretorio>/DFC_ITR_CVM.json.")
     parser.add_argument("--sobrescrever-downloads", action="store_true")
     parser.add_argument("--sem-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
     return parser.parse_args()
 
 
 def main() -> int:
+    global COMPANHIAS
     args = analisar_argumentos()
+    COMPANHIAS = tuple(Companhia(c.ticker, c.aliases, c.statement_scope) for c in financial_companies(args.sector))
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     sessao = criar_sessao()
     pasta_zips = args.diretorio / "zips"

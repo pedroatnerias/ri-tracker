@@ -1,4 +1,20 @@
 ---
+
+## Abrangência setorial
+
+A metodologia financeira existente é comum a saúde e construção civil: dados
+CVM, ITR/DFP, maior versão, `ORDEM_EXERC = ÚLTIMO`, escala em reais integrais,
+períodos trimestrais/anuais/LTM, EBITDA, dívida líquida, ciclo financeiro,
+múltiplos e reconciliação. Não foi criada fórmula setorial nesta expansão.
+
+Construção civil não possui componente operacional. A estrutura de estoques,
+imóveis a comercializar, terrenos, adiantamentos, fornecedores e recebíveis
+pode limitar a comparabilidade do ciclo financeiro. A fórmula atual é mantida;
+componentes ausentes geram valor indisponível/incompleto e diagnóstico das
+contas usadas, nunca equivalência textual não auditável ou zero fabricado.
+Companhias sem documento, período ou cotação permanecem no universo com
+indisponibilidade explícita, inclusive casos históricos, reestruturados, sem
+negociação ou em recuperação judicial.
 title: "Metodologia do Novo RI Tracker"
 version: "2.0"
 date: "2026-08-17"

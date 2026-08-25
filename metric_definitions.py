@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
+from company_registry import financial_companies
 
 
 METHODOLOGY_VERSION = "2.0"
@@ -59,7 +60,7 @@ DEFAULT_NET_DEBT_RULE = NetDebtRule()
 
 COMPANY_METRIC_RULES: dict[str, CompanyMetricRule] = {
     ticker: CompanyMetricRule(ticker=ticker)
-    for ticker in ("AALR3", "DASA3", "FLRY3", "MATD3", "ONCO3")
+    for ticker in (company.ticker for company in financial_companies("all") if company.ticker not in {"RDOR3", "HAPV3"})
 }
 
 COMPANY_METRIC_RULES["RDOR3"] = CompanyMetricRule(

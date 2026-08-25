@@ -21,6 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+from company_registry import financial_companies
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -125,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
     args = parser.parse_args()
     args.years = sorted(set(args.years))
     if not args.years:
@@ -820,7 +822,9 @@ def verify_workbook(output: Path, coverage: list[dict]) -> None:
 
 
 def main() -> int:
+    global COMPANIES
     args = parse_args()
+    COMPANIES = financial_companies(args.sector)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",

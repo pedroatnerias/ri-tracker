@@ -12,6 +12,7 @@ from pathlib import Path
 
 from manual_operational import MANUAL_OVERRIDES_FILENAME
 from manual_operational import normalize_manual_payload, resolve_operational_data_with_manual
+from company_registry import SECTORS, tickers_for_sector, validate_sector
 
 BASE_DIR = Path(__file__).resolve().parent
 PUBLICATION_SCOPES = {"all", "financial", "operational"}
@@ -252,9 +253,16 @@ def resolve_manual_for_publication(manual_payload: dict[str, object], staging: P
     return normalize_manual_payload(resolved_manual)
 
 
-def build_publish_manifest(base: Path, scope: str = "all") -> dict[str, object]:
+def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
     scope = validate_scope(scope)
+    sector = validate_sector(sector)
     base = base.resolve()
+    if sector != "all" and (base / sector).is_dir():
+        base = base / sector
+    if sector == "construcao_civil" and scope == "operational":
+        raise SystemExit("O setor construcao_civil ainda não possui atualização operacional.")
+    if sector == "construcao_civil" and scope == "all":
+        scope = "financial"
     financial_paths: list[Path] = []
     if scope in {"all", "financial"}:
         balancos = sorted(base.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime)
@@ -296,6 +304,7 @@ def build_publish_manifest(base: Path, scope: str = "all") -> dict[str, object]:
         "manual_operational_overrides": manual_exists,
         "chart_pngs": [path.relative_to(base).as_posix() for path in chart_pngs],
         "scope": scope,
+        "sector": sector,
         "warnings": [] if operational_jsons or scope == "financial" else [
             "Nenhum JSON operacional novo validado; snapshot operacional anterior sera preservado."
         ],
@@ -312,8 +321,12 @@ def build_publish_manifest(base: Path, scope: str = "all") -> dict[str, object]:
     return manifest
 
 
-def validate_results(base: Path, scope: str = "all") -> dict[str, object]:
-    manifest = build_publish_manifest(base, scope)
+def validate_results(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
+    if validate_sector(sector) == "all":
+        health = validate_results(base, scope=scope, sector="saude")
+        construction = validate_results(base, scope="financial" if scope != "operational" else "operational", sector="construcao_civil") if scope != "operational" else None
+        return {"sector": "all", "scope": scope, "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
+    manifest = build_publish_manifest(base, scope, sector)
     print(
         "Validacao concluida: "
         f"{len(manifest['root_jsons'])} JSONs financeiros validos; "
@@ -339,12 +352,24 @@ def publish_validated_data(
     source_commit: str = "",
     workflow_run_id: str = "",
     scope: str = "all",
+    sector: str = "saude",
 ) -> dict[str, object]:
+    if validate_sector(sector) == "all":
+        health = publish_validated_data(source, target, source_commit, workflow_run_id, scope, "saude")
+        construction = None
+        if scope != "operational":
+            construction = publish_validated_data(source, target, source_commit, workflow_run_id, "financial", "construcao_civil")
+        return {"sector": "all", "scope": scope, "status": "success", "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
     scope = validate_scope(scope)
+    sector = validate_sector(sector)
     source = source.resolve()
-    target = target.resolve()
-    if target.name != "data":
-        raise SystemExit(f"Destino de publicacao inesperado: {target}")
+    publication_root = target.resolve()
+    if publication_root.name != "data":
+        raise SystemExit(f"Destino de publicacao inesperado: {publication_root}")
+    sector_layout = sector != "all" and (source / sector).is_dir()
+    if sector_layout:
+        source = source / sector
+    target = publication_root / "sectors" / sector if sector_layout else publication_root
 
     manifest = read_json(source / "publish_manifest.json")
     manifest_scope = str(manifest.get("scope") or scope)
@@ -365,7 +390,7 @@ def publish_validated_data(
     target.mkdir(parents=True, exist_ok=True)
     if scope in {"all", "financial"}:
         clear_financial_component(target)
-        chart_target = target.parent / "charts"
+        chart_target = (publication_root.parent / "charts" / sector) if sector_layout else target.parent / "charts"
         if chart_target.exists():
             shutil.rmtree(chart_target)
         chart_target.mkdir(parents=True, exist_ok=True)
@@ -451,6 +476,7 @@ def publish_validated_data(
         "source_commit": source_commit,
         "workflow_run_id": workflow_run_id,
         "scope": scope,
+        "sector": sector,
         "mode": os.environ.get("UPDATE_MODE", ""),
         "status": "success_with_warnings" if manifest.get("warnings") else "success",
         "warnings": manifest.get("warnings", []),
@@ -471,7 +497,8 @@ def publish_validated_data(
             source_path = staging / relative
             if not source_path.exists():
                 continue
-            target_path = target.parent / relative
+            rel_path = Path(relative)
+            target_path = ((publication_root.parent / "charts" / sector / Path(*rel_path.parts[1:])) if sector_layout else target.parent / rel_path)
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
             chart_copied += 1
@@ -480,6 +507,20 @@ def publish_validated_data(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    if sector_layout:
+        root_manifest = read_existing_json(publication_root / "data_manifest.json") or {"schema_version": 2, "sectors": {}}
+        if root_manifest.get("schema_version") != 2:
+            root_manifest = {"schema_version": 2, "sectors": {"saude": root_manifest}}
+        root_manifest.setdefault("sectors", {})[sector] = staged_manifest
+        root_manifest["schema_version"] = 2
+        root_manifest["data_version"] = data_version
+        (publication_root / "data_manifest.json").write_text(json.dumps(root_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        root_metadata = read_existing_json(publication_root / "update_metadata.json") or {"sectors": {}}
+        root_metadata.setdefault("sectors", {}).setdefault(sector, {})["components"] = metadata["components"]
+        root_metadata["updated_at_utc"] = now
+        root_metadata["source_commit"] = source_commit
+        root_metadata["workflow_run_id"] = workflow_run_id
+        (publication_root / "update_metadata.json").write_text(json.dumps(root_metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Publicacao preparada: {copied} JSONs copiados para data/ e {chart_copied} PNGs para charts/.")
     return metadata
 
@@ -491,18 +532,20 @@ def parse_args() -> argparse.Namespace:
     validate = subparsers.add_parser("validate")
     validate.add_argument("source", type=Path)
     validate.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
+    validate.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
 
     publish = subparsers.add_parser("publish")
     publish.add_argument("source", type=Path)
     publish.add_argument("target", type=Path)
     publish.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
+    publish.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.command == "validate":
-        validate_results(args.source, scope=args.scope)
+        validate_results(args.source, scope=args.scope, sector=args.sector)
         return 0
     if args.command == "publish":
         publish_validated_data(
@@ -511,6 +554,7 @@ def main() -> int:
             source_commit=os.environ.get("SOURCE_COMMIT", ""),
             workflow_run_id=os.environ.get("WORKFLOW_RUN_ID", ""),
             scope=args.scope,
+            sector=args.sector,
         )
         return 0
     raise SystemExit(f"Comando desconhecido: {args.command}")

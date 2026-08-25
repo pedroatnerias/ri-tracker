@@ -4,6 +4,29 @@
 
 O Nerias RI Tracker V2, ou Acompanhador de Mercado, consolida demonstrativos financeiros CVM, cotacoes de mercado e dados operacionais de RI para acompanhar AALR3, DASA3, FLRY3, HAPV3, MATD3, ONCO3 e RDOR3.
 
+O tracker também atende construção civil: AVLL3, CALI3, CURY3, CYRE3, DIRR3,
+EVEN3, EZTC3, FIEI3, GFSA3, HBOR3, INNT3, JFEN3, JHSF3, LAVV3, MDNE3,
+MELK3, MRVE3, MTRE3, PDGR3, PLPL3, RDNI3, RSID3, TCSA3, TEND3, TRIS3 e
+VIVR3. O cadastro auditável está centralizado em `company_registry.py`.
+Construção civil usa somente dados financeiros; não há indicadores ou
+overrides operacionais nesse setor.
+
+```bash
+python update_data.py --sector saude --scope all --mode incremental
+python update_data.py --sector construcao_civil --scope financial --mode full
+python update_data.py --sector all --scope financial --mode incremental
+python -m data_publication validate resultados --sector saude --scope financial
+python -m data_publication publish resultados data-repo/data --sector saude --scope financial
+python dashboard.py --export-html painel.html --sector construcao_civil
+```
+
+Sem `--sector`, o padrão retrocompatível é `saude`. A combinação construção +
+operacional é rejeitada; construção + tudo executa apenas financeiro com aviso;
+e todos + operacional executa apenas saúde. Publicações setoriais usam manifesto
+v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
+somente fallback de leitura e representa saúde. A publicação substitui apenas a
+interseção setor × componente e preserva os demais snapshots e overrides.
+
 ## Arquitetura
 
 CVM, Yahoo Finance e sites de RI alimentam scripts de extracao. Esses scripts geram JSONs locais em `resultados/`, calculam indicadores e expoem os dados no dashboard Flask.
