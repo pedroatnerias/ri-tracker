@@ -12,6 +12,7 @@ from pathlib import Path
 
 from manual_operational import MANUAL_OVERRIDES_FILENAME
 from manual_operational import normalize_manual_payload, resolve_operational_data_with_manual
+from sector_paths import find_financial_statement_json, read_json_if_exists, resolve_sector_results_dir
 from company_registry import SECTORS, tickers_for_sector, validate_sector
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -257,18 +258,19 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     scope = validate_scope(scope)
     sector = validate_sector(sector)
     base = base.resolve()
-    if sector != "all" and (base / sector).is_dir():
-        base = base / sector
+    if sector != "all":
+        base = resolve_sector_results_dir(base, sector)
     if sector == "construcao_civil" and scope == "operational":
         raise SystemExit("O setor construcao_civil ainda não possui atualização operacional.")
     if sector == "construcao_civil" and scope == "all":
         scope = "financial"
     financial_paths: list[Path] = []
     if scope in {"all", "financial"}:
-        balancos = sorted(base.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime)
-        if not balancos:
-            raise SystemExit("Nenhum balancos_itr_cvm_*.json foi gerado.")
-        financial_paths.append(balancos[-1])
+        manifest = read_json_if_exists(base / "data_manifest.json")
+        try:
+            financial_paths.append(find_financial_statement_json(base, "balanco", manifest))
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
         financial_paths.extend(base / name for name in REQUIRED_ROOT_JSONS)
 
         for path in financial_paths:

@@ -43,6 +43,7 @@ from manual_operational import (
 from operational_dictionary import TARGET_METRICS
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
+from sector_paths import find_financial_statement_json
 
 
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
@@ -727,13 +728,7 @@ def run_apps(args: argparse.Namespace, paths: dict[str, Path]) -> None:
 
 
 def find_balanco_json(resultados: Path) -> Path:
-    candidatos = sorted(resultados.glob("balancos_itr_cvm_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidatos:
-        raise FileNotFoundError(
-            f"Nenhum JSON de balanco encontrado em {resultados}. "
-            "Rode o dashboard a partir da pasta V2, use --atualizar, ou informe --resultados com o caminho correto."
-        )
-    return candidatos[0]
+    return find_financial_statement_json(resultados, "balanco")
 
 
 def find_optional_balanco_json(resultados: Path) -> Path | None:

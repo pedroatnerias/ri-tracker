@@ -40,15 +40,19 @@ def validate_png(path: Path, min_size: int = 500) -> None:
         raise ValueError(f"Assinatura PNG invalida: {path}")
 
 
-def generate_individual_charts(resultados: Path, output_dir: Path, sector: str = "saude") -> list[Path]:
+def generate_individual_charts(resultados: Path, output_dir: Path, sector: str = "saude", ticker: str = "all") -> list[Path]:
     generated: list[Path] = []
-    for ticker in tickers_for_sector(sector):
-        ticker_dir = output_dir / "individual" / ticker
+    selected = tickers_for_sector(sector)
+    if ticker != "all":
+        ticker_upper = ticker.upper()
+        selected = tuple(current for current in selected if current == ticker_upper)
+    for current_ticker in selected:
+        ticker_dir = output_dir / "individual" / current_ticker
         ticker_dir.mkdir(parents=True, exist_ok=True)
         for view in ("annual", "quarterly"):
             for chart_key in CHARTS:
                 path = ticker_dir / f"{view}_{chart_key}.png"
-                path.write_bytes(make_chart_png(resultados, ticker, view, chart_key, sector))
+                path.write_bytes(make_chart_png(resultados, current_ticker, view, chart_key, sector))
                 validate_png(path)
                 generated.append(path)
     return generated
@@ -204,7 +208,14 @@ def generate_sector_aggregate_charts(aggregates: dict[str, Any], output_dir: Pat
     return generated
 
 
-def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str = "saude") -> list[Path]:
+def generate_comparison_charts(
+    resultados: Path,
+    output_dir: Path,
+    sector: str = "saude",
+    *,
+    include_standard: bool = True,
+    include_sector: bool = True,
+) -> list[Path]:
     payload = dashboard_payload(resultados, sector=sector)
     tickers = tickers_for_sector(sector)
     comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {}, tickers)
@@ -216,22 +227,40 @@ def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str =
     if old_ev.exists():
         old_ev.unlink()
     generated: list[Path] = []
-    for chart_key in COMPARISON_CHARTS:
-        if chart_key in SPECIAL_COMPARISON_CHARTS:
-            continue
-        path = target_dir / f"{chart_key}.png"
-        result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, tickers)
-        if result:
-            generated.append(result)
-    generated.extend(generate_sector_aggregate_charts(aggregates, output_dir))
+    if include_standard:
+        for chart_key in COMPARISON_CHARTS:
+            if chart_key in SPECIAL_COMPARISON_CHARTS:
+                continue
+            path = target_dir / f"{chart_key}.png"
+            result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, tickers)
+            if result:
+                generated.append(result)
+    if include_sector:
+        generated.extend(generate_sector_aggregate_charts(aggregates, output_dir))
     return generated
 
 
-def generate_all_charts(resultados: Path, output_dir: Path, sector: str = "saude") -> list[Path]:
+def generate_all_charts(
+    resultados: Path,
+    output_dir: Path,
+    sector: str = "saude",
+    chart_scope: str = "all",
+    ticker: str = "all",
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     generated = []
-    generated.extend(generate_individual_charts(resultados, output_dir, sector))
-    generated.extend(generate_comparison_charts(resultados, output_dir, sector))
+    if chart_scope in {"all", "individual"}:
+        generated.extend(generate_individual_charts(resultados, output_dir, sector, ticker))
+    if chart_scope in {"all", "comparison", "sector"}:
+        generated.extend(
+            generate_comparison_charts(
+                resultados,
+                output_dir,
+                sector,
+                include_standard=chart_scope in {"all", "comparison"},
+                include_sector=chart_scope in {"all", "sector"},
+            )
+        )
     return generated
 
 
@@ -240,6 +269,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resultados", type=Path, default=Path("resultados"))
     parser.add_argument("--output-dir", type=Path, default=Path("resultados") / "charts")
     parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--chart-scope", choices=("all", "individual", "comparison", "sector"), default="all")
+    parser.add_argument("--ticker", default="all")
     return parser.parse_args()
 
 
@@ -249,7 +280,7 @@ def main() -> int:
     generated = []
     for sector in sectors:
         sector_resultados = args.resultados.resolve() / sector if (args.resultados.resolve() / sector).is_dir() else args.resultados.resolve()
-        generated.extend(generate_all_charts(args.resultados.resolve(), sector_resultados / "charts", sector))
+        generated.extend(generate_all_charts(args.resultados.resolve(), sector_resultados / "charts", sector, args.chart_scope, args.ticker))
     print(f"Graficos gerados: {len(generated)}")
     return 0
 

@@ -38,7 +38,8 @@ jobs:
     env:
       EXTERNAL_FETCH_ENABLED: "false"
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout do código
+        uses: actions/checkout@v4
       - uses: actions/setup-python@v6
         with:
           python-version-file: .python-version
@@ -46,15 +47,19 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - uses: actions/checkout@v6
+      - name: Checkout dos dados publicados
+        uses: actions/checkout@v4
         with:
           repository: pedroatnerias/ri-tracker-data
           token: ${{ secrets.DATA_REPO_TOKEN }}
-          path: data-repo
-      - name: Restaurar dados publicados
+          path: ri-tracker-data
+      - name: Restaurar dados existentes
         run: |
-          mkdir -p resultados
-          cp -R data-repo/data/sectors/. resultados/ || true
+          python -m pipeline_tasks hydrate-existing-data \
+            --data-repo ri-tracker-data \
+            --resultados resultados \
+            --sector "${{ inputs.sector }}" \
+            --requirements indicators
       - name: Recalcular sem coleta
         run: python -m pipeline_tasks recalculate-indicators --resultados resultados --sector "${{ inputs.sector }}" --scope "${{ inputs.scope }}"
       - name: Validar manifests
@@ -64,10 +69,10 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
-        run: python -m data_publication publish resultados data-repo/data --scope financial --sector "${{ inputs.sector }}"
+        run: python -m data_publication publish resultados ri-tracker-data/data --scope financial --sector "${{ inputs.sector }}"
       - name: Commit e push
         if: ${{ inputs.publish }}
-        working-directory: data-repo
+        working-directory: ri-tracker-data
         run: |
           git config user.name "Nerias Data Bot"
           git config user.email "actions@users.noreply.github.com"
