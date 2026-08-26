@@ -22,7 +22,11 @@ COMPARISON_CHARTS: dict[str, dict[str, str]] = {
     "margem_operacional": {"title": "Margem Operacional", "ylabel": "Margem Operacional (%)"},
     "margem_ebitda": {"title": "Margem EBITDA", "ylabel": "Margem EBITDA (%)"},
     "margem_liquida": {"title": "Margem Liquida", "ylabel": "Margem Liquida (%)"},
+    "ev_ebitda_agregado": {"title": "EV/EBITDA Agregado", "ylabel": "EV/EBITDA (x)"},
+    "retorno_preco_setorial_30d": {"title": "Retorno Setorial de Preco - 30 dias", "ylabel": "Retorno (%)"},
+    "retorno_preco_setorial_360d": {"title": "Retorno Setorial de Preco - 360 dias", "ylabel": "Retorno (%)"},
 }
+SPECIAL_COMPARISON_CHARTS = {"market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_360d"}
 
 
 def validate_png(path: Path, min_size: int = 500) -> None:
@@ -114,11 +118,98 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
     return output
 
 
+def generate_market_cap_share_chart(share: dict[str, Any], output: Path) -> Path | None:
+    items = share.get("items") or []
+    if not share.get("available") or not items:
+        return None
+    labels = [f"{item['ticker']}\n{item['share_pct']:.1f}%" for item in items]
+    values = [item["market_cap"] for item in items]
+    colors = [f"C{index % 10}" for index, _ in enumerate(items)]
+    fig, ax = plt.subplots(figsize=(7.2, 5.2), dpi=150)
+    ax.pie(values, labels=labels, colors=colors, startangle=90, counterclock=False, textprops={"fontsize": 7})
+    total = share.get("total_market_cap")
+    title = "Participacao no market cap setorial"
+    subtitle = f"Total incluido: R$ {total / 1_000_000_000:.1f} bi | Cobertura: {share.get('companies_included')}/{share.get('companies_registered')}"
+    ax.set_title(f"{title}\n{subtitle}", color="#00513F", fontsize=10, fontweight="bold")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, format="png", bbox_inches="tight")
+    plt.close(fig)
+    validate_png(output)
+    return output
+
+
+def _generate_single_series_chart(series: list[dict[str, Any]], output: Path, title: str, ylabel: str) -> Path | None:
+    rows = [row for row in series if isinstance(row.get("value"), (int, float))]
+    if not rows:
+        return None
+    fig, ax = plt.subplots(figsize=(9.2, 3.8), dpi=150)
+    x = list(range(len(rows)))
+    ax.axhline(0, color="#d8d0b0", linewidth=1.0)
+    ax.plot(x, [row["value"] for row in rows], color="#006341", marker="o", linewidth=1.4, markersize=3.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels([row.get("period") or row.get("date") for row in rows], rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel(ylabel, color="#00513F", fontsize=9)
+    ax.set_title(title, color="#00513F", loc="left", fontsize=11, fontweight="bold")
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    fig.tight_layout(pad=1.2)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, format="png", bbox_inches="tight")
+    plt.close(fig)
+    validate_png(output)
+    return output
+
+
+def _generate_return_chart(series: list[dict[str, Any]], output: Path, title: str) -> Path | None:
+    rows = [row for row in series if isinstance(row.get("return_pct"), (int, float))]
+    if not rows:
+        return None
+    fig, ax = plt.subplots(figsize=(9.2, 3.8), dpi=150)
+    x = list(range(len(rows)))
+    ax2 = ax.twinx()
+    ax.axhline(0, color="#d8d0b0", linewidth=1.0)
+    ax.plot(x, [row["return_pct"] for row in rows], color="#006341", marker="o", linewidth=1.4, label="Retorno")
+    ax2.plot(x, [(row.get("total_initial_market_cap") or 0) / 1_000_000_000 for row in rows], color="#B08A3C", linewidth=1.1, label="Market cap inicial")
+    ax.set_xticks(x)
+    ax.set_xticklabels([row.get("period") or row.get("date") for row in rows], rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Retorno (%)", color="#00513F", fontsize=9)
+    ax2.set_ylabel("Market cap inicial (R$ bi)", color="#7A5A1C", fontsize=9)
+    ax.set_title(title, color="#00513F", loc="left", fontsize=11, fontweight="bold")
+    ax.spines["top"].set_visible(False)
+    ax2.spines["top"].set_visible(False)
+    fig.tight_layout(pad=1.2)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, format="png", bbox_inches="tight")
+    plt.close(fig)
+    validate_png(output)
+    return output
+
+
+def generate_sector_aggregate_charts(aggregates: dict[str, Any], output_dir: Path) -> list[Path]:
+    generated: list[Path] = []
+    target_dir = output_dir / "comparison"
+    jobs = [
+        ("market_cap_share", lambda path: generate_market_cap_share_chart(aggregates.get("market_cap_share") or {}, path)),
+        ("ev_ebitda_agregado", lambda path: _generate_single_series_chart((aggregates.get("ev_ebitda_agregado") or {}).get("series") or [], path, "EV/EBITDA agregado do setor", "EV/EBITDA (x)")),
+        ("retorno_preco_setorial_30d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("30d") or [], path, "Retorno setorial de preco - 30 dias")),
+        ("retorno_preco_setorial_360d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("360d") or [], path, "Retorno setorial de preco - 360 dias")),
+    ]
+    for key, factory in jobs:
+        path = target_dir / f"{key}.png"
+        result = factory(path)
+        if result:
+            generated.append(result)
+        elif path.exists():
+            path.unlink()
+    return generated
+
+
 def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str = "saude") -> list[Path]:
     payload = dashboard_payload(resultados, sector=sector)
     tickers = tickers_for_sector(sector)
     comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {}, tickers)
     charts = comparison.get("charts") or {}
+    aggregates = comparison.get("sector_aggregates") or {}
     target_dir = output_dir / "comparison"
     target_dir.mkdir(parents=True, exist_ok=True)
     old_ev = target_dir / "ev_ebitda_ltm.png"
@@ -126,10 +217,13 @@ def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str =
         old_ev.unlink()
     generated: list[Path] = []
     for chart_key in COMPARISON_CHARTS:
+        if chart_key in SPECIAL_COMPARISON_CHARTS:
+            continue
         path = target_dir / f"{chart_key}.png"
         result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, tickers)
         if result:
             generated.append(result)
+    generated.extend(generate_sector_aggregate_charts(aggregates, output_dir))
     return generated
 
 

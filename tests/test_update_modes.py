@@ -20,6 +20,7 @@ class UpdateModeTests(unittest.TestCase):
         mode: str = "incremental",
         scope: str = "all",
         diagnostico_ri: bool = False,
+        refresh_cvm_files: str = "auto",
     ) -> tuple[list[str], list[list[str]], dict[str, object]]:
         labels: list[str] = []
         commands: list[list[str]] = []
@@ -35,7 +36,7 @@ class UpdateModeTests(unittest.TestCase):
                 patch("dashboard.run_update_command", side_effect=fake_run),
                 patch("dashboard.find_balanco_json", return_value=resultados / "balancos_itr_cvm_2026.json"),
             ):
-                result = dashboard.run_update(resultados, anos=[2026], mode=mode, scope=scope, diagnostico_ri=diagnostico_ri)
+                result = dashboard.run_update(resultados, anos=[2026], mode=mode, scope=scope, diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files)
         return labels, commands, result
 
     def test_incremental_does_not_force_downloads(self):
@@ -43,6 +44,7 @@ class UpdateModeTests(unittest.TestCase):
 
         self.assertFalse(any("[FULL]" in label for label in labels))
         self.assertNotIn("--force-download", command_for(commands, "app_balancos.py"))
+        self.assertEqual(command_for(commands, "app_balancos.py")[command_for(commands, "app_balancos.py").index("--refresh-cvm-files") + 1], "auto")
         self.assertNotIn("--sobrescrever-zips", command_for(commands, "app_dre.py"))
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_parser_operacional.py"))
@@ -52,6 +54,7 @@ class UpdateModeTests(unittest.TestCase):
 
         self.assertTrue(any("[FULL]" in label for label in labels))
         self.assertIn("--force-download", command_for(commands, "app_balancos.py"))
+        self.assertEqual(command_for(commands, "app_balancos.py")[command_for(commands, "app_balancos.py").index("--refresh-cvm-files") + 1], "force")
         self.assertNotIn("--sobrescrever-zips", command_for(commands, "app_dre.py"))
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
         self.assertIn("--sobrescrever-downloads", command_for(commands, "app_parser_operacional.py"))
@@ -68,6 +71,11 @@ class UpdateModeTests(unittest.TestCase):
         self.assertEqual(dfc[dfc.index("--pasta-zips") + 1], expected_itr)
         self.assertEqual(dre[dre.index("--pasta-zips-dfp") + 1], expected_dfp)
         self.assertEqual(dfc[dfc.index("--pasta-zips-dfp") + 1], expected_dfp)
+
+    def test_refresh_cvm_never_is_passed_to_balanco(self):
+        _labels, commands, _ = self.capture_commands(scope="financial", refresh_cvm_files="never")
+        bp = command_for(commands, "app_balancos.py")
+        self.assertEqual(bp[bp.index("--refresh-cvm-files") + 1], "never")
 
     def test_diagnostico_ri_is_only_passed_when_requested(self):
         _, commands, _ = self.capture_commands(mode="incremental", diagnostico_ri=False)
@@ -113,6 +121,7 @@ class UpdateModeTests(unittest.TestCase):
 
         self.assertEqual(args.mode, "incremental")
         self.assertEqual(args.scope, "all")
+        self.assertEqual(args.refresh_cvm_files, "auto")
 
     def test_cli_accepts_full_mode(self):
         args = update_data.parse_args(["--mode", "full"])
@@ -124,6 +133,10 @@ class UpdateModeTests(unittest.TestCase):
 
         self.assertEqual(args.scope, "operational")
         self.assertEqual(args.mode, "incremental")
+
+    def test_cli_accepts_refresh_cvm_files(self):
+        args = update_data.parse_args(["--refresh-cvm-files", "never"])
+        self.assertEqual(args.refresh_cvm_files, "never")
 
     def test_cli_rejects_invalid_mode(self):
         with self.assertRaises(SystemExit):
@@ -137,6 +150,9 @@ class UpdateModeTests(unittest.TestCase):
         self.assertIn("--scope \"${{ inputs.update_scope }}\"", workflow)
         self.assertIn("inputs.update_scope != 'operational'", workflow)
         self.assertIn("python -m data_publication publish resultados data-repo/data --scope", workflow)
+        self.assertIn("refresh_cvm_files:", workflow)
+        self.assertIn("--refresh-cvm-files \"${{ inputs.refresh_cvm_files }}\"", workflow)
+        self.assertIn("ri-tracker-data-publication", workflow)
 
 
 if __name__ == "__main__":

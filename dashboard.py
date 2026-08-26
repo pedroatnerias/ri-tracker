@@ -42,6 +42,7 @@ from manual_operational import (
 )
 from operational_dictionary import TARGET_METRICS
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
+from sector_aggregates import build_sector_aggregates
 
 
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
@@ -440,18 +441,21 @@ def run_update(
     scope: str = "all",
     sector: str = "saude",
     diagnostico_ri: bool = False,
+    refresh_cvm_files: str = "auto",
 ) -> dict[str, object]:
     mode = validate_update_mode(mode)
     scope = validate_update_scope(scope)
     sector = validate_sector(sector)
+    if refresh_cvm_files not in {"auto", "force", "never"}:
+        raise ValueError(f"refresh_cvm_files invalido: {refresh_cvm_files}")
     if sector == "all":
         (resultados.expanduser().resolve() / "saude").mkdir(parents=True, exist_ok=True)
         results = []
         if scope in {"all", "financial", "operational"}:
             health_scope = scope
-            results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri))
+            results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
         if scope in {"all", "financial"}:
-            results.append(run_update(resultados, anos, mode=mode, scope="financial", sector="construcao_civil", diagnostico_ri=False))
+            results.append(run_update(resultados, anos, mode=mode, scope="financial", sector="construcao_civil", diagnostico_ri=False, refresh_cvm_files=refresh_cvm_files))
         return {
             "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
             "warnings": [w for r in results for w in r.get("warnings", [])],
@@ -506,6 +510,7 @@ def run_update(
     append_update_log(f"Empresas financeiras: {', '.join(selected_financial) or '-'}")
     append_update_log(f"Empresas operacionais: {', '.join(selected_operational) or '-'}")
     append_update_log(f"Modo de atualizacao: {mode}")
+    append_update_log(f"Politica CVM: {refresh_cvm_files}")
     append_update_log(f"Anos da atualizacao CVM: {', '.join(year_args)}")
 
     balanco_path: Path | None = None
@@ -515,6 +520,7 @@ def run_update(
             balanco_cmd.extend(["--years", *year_args])
         if full_mode:
             balanco_cmd.append("--force-download")
+        balanco_cmd.extend(["--refresh-cvm-files", "force" if full_mode else refresh_cvm_files])
         step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
         balanco_path = find_balanco_json(resultados)
 
@@ -906,13 +912,21 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "divida_liquida": source.load_optional("divida_liquida", local_paths["divida_liquida"], remote_files.get("divida_liquida", "divida_liquida.json"), expected_paths["divida_liquida"]),
         "ciclo_financeiro": source.load_optional("ciclo_financeiro", local_paths["ciclo_financeiro"], remote_files.get("ciclo_financeiro", "ciclo_financeiro.json"), expected_paths["ciclo_financeiro"]),
         "market_cap": source.load_optional("market_cap", local_paths["market_cap"], remote_files.get("market_cap", "market_cap.json"), expected_paths["market_cap"]),
+        "market_cap_historico": source.load_optional("market_cap_historico", data_dir / "market_cap_historico.json", remote_files.get("market_cap_historico", "market_cap_historico.json"), data_dir / "market_cap_historico.json"),
     }
     if sector == "construcao_civil":
         indicators = {key: migrate_legacy_company_tickers(value) for key, value in indicators.items()}
     # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
     # os tres demonstrativos financeiros minimos ja foram gerados.
     has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))
-    comparison = build_comparison_payload(indicators, operational_data, tickers_for_sector(sector))
+    sector_tickers = tickers_for_sector(sector)
+    comparison = build_comparison_payload(indicators, operational_data, sector_tickers)
+    comparison["sector_aggregates"] = build_sector_aggregates(
+        indicators.get("indicadores") or {},
+        indicators.get("market_cap") or {},
+        indicators.get("market_cap_historico") or {},
+        sector_tickers,
+    )
     chart_assets = build_chart_assets(source)
     return {
         "sector": sector,
@@ -3427,19 +3441,47 @@ HTML = """<!doctype html>
       return 0;
     }
 
-    function renderComparison() {
-      const charts = DATA.comparison?.charts || {};
-      const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"];
-      const chartHtml = chartOrder.map(key => renderComparisonChartImage(key, charts[key] || {})).filter(Boolean);
-      return `${renderComparisonTable()}<h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div>`;
-    }
-
     function renderComparisonChartImage(chartKey, chart) {
       const asset = DATA.chart_assets?.comparison?.[chartKey]?.url;
       if (!asset) {
         return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div>`;
       }
       return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(chart.title || chartKey)}"></div>`;
+    }
+
+    function renderSectorAggregateChart(key, title) {
+      const asset = DATA.chart_assets?.comparison?.[key]?.url;
+      if (asset) return `<section class="chart-card"><h2>${escapeHtml(title)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(title)}"></div></section>`;
+      return `<section class="chart-card"><h2>${escapeHtml(title)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div></section>`;
+    }
+
+    function renderMarketCapShareSummary() {
+      const share = DATA.comparison?.sector_aggregates?.market_cap_share || {};
+      if (!share.available) return `<div class="empty">${escapeHtml(share.message || "Market cap setorial indisponível.")}</div>`;
+      const rows = (share.items || []).slice(0, 10).map(item => (
+        `<tr><td>${escapeHtml(item.ticker)}</td><td class="num">${escapeHtml(formatMillions(item.market_cap))}</td><td class="num">${escapeHtml(formatPercent(item.share_pct))}%</td></tr>`
+      )).join("");
+      return `<div class="disclaimer">Data-base: ${escapeHtml(share.base_date || "N/A")} | Market cap incluído: ${escapeHtml(formatMillions(share.total_market_cap))} | Cobertura: ${escapeHtml(formatPercent((share.coverage_count || 0) * 100))}% das empresas.</div><div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Market cap</th><th>Participação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function renderSectorAggregates() {
+      const aggregates = DATA.comparison?.sector_aggregates || {};
+      const latestEv = [...(aggregates.ev_ebitda_agregado?.series || [])].reverse().find(item => typeof item.value === "number");
+      const evMeta = latestEv ? `<div class="disclaimer">EV/EBITDA agregado mais recente: ${escapeHtml(formatComparisonValue(latestEv.value, "multiple"))} em ${escapeHtml(latestEv.period)} | Metodologia: ${escapeHtml(latestEv.methodology || "")}</div>` : '<div class="disclaimer">EV/EBITDA agregado indisponível nos períodos atuais.</div>';
+      return `<h2>Agregados Setoriais</h2><div class="charts-grid">
+        <section class="chart-card"><h2>Participação no market cap</h2>${renderMarketCapShareSummary()}</section>
+        ${renderSectorAggregateChart("market_cap_share", "Participação no market cap")}
+        ${renderSectorAggregateChart("ev_ebitda_agregado", "EV/EBITDA agregado")}${evMeta}
+        ${renderSectorAggregateChart("retorno_preco_setorial_30d", "Retorno setorial de preço - 30 dias")}
+        ${renderSectorAggregateChart("retorno_preco_setorial_360d", "Retorno setorial de preço - 360 dias")}
+      </div>`;
+    }
+
+    function renderComparison() {
+      const charts = DATA.comparison?.charts || {};
+      const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"];
+      const chartHtml = chartOrder.map(key => renderComparisonChartImage(key, charts[key] || {})).filter(Boolean);
+      return `${renderComparisonTable()}${renderSectorAggregates()}<h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div>`;
     }
 
     function renderInlineMarkdown(text) {

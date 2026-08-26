@@ -29,9 +29,27 @@ on:
         options:
           - incremental
           - full
+      refresh_cvm_files:
+        description: "Politica dos ZIPs CVM"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - force
+          - never
+      publish:
+        description: "Publicar no ri-tracker-data"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ inputs.publish && 'ri-tracker-data-publication' || format('ri-tracker-no-publish-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   update-data:
@@ -56,11 +74,20 @@ jobs:
       - name: Instalar Chromium do Playwright
         run: python -m playwright install --with-deps chromium
 
+      - name: Restaurar cache CVM
+        uses: actions/cache@v4
+        with:
+          path: resultados/**/downloads
+          key: cvm-zips-${{ inputs.update_sector }}-${{ inputs.refresh_cvm_files }}-${{ github.run_id }}
+          restore-keys: |
+            cvm-zips-${{ inputs.update_sector }}-
+            cvm-zips-
+
       - name: Executar pipeline Nerias
         run: |
           EXTRA_ARGS=""
           if [[ "${{ inputs.update_sector }}" != "construcao_civil" && "${{ inputs.update_scope }}" != "financial" ]]; then EXTRA_ARGS="--diagnostico-ri"; fi
-          python update_data.py --resultados resultados --sector "${{ inputs.update_sector }}" --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" $EXTRA_ARGS
+          python update_data.py --resultados resultados --sector "${{ inputs.update_sector }}" --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" --refresh-cvm-files "${{ inputs.refresh_cvm_files }}" $EXTRA_ARGS
 
       - name: Gerar graficos Matplotlib
         if: ${{ inputs.update_scope != 'operational' }}
@@ -70,6 +97,7 @@ jobs:
         run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
 
       - name: Checkout ri-tracker-data
+        if: ${{ inputs.publish }}
         uses: actions/checkout@v6
         with:
           repository: pedroatnerias/ri-tracker-data
@@ -77,6 +105,7 @@ jobs:
           path: data-repo
 
       - name: Publicar JSONs no repositorio de dados
+        if: ${{ inputs.publish }}
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
@@ -84,6 +113,7 @@ jobs:
         run: python -m data_publication publish resultados data-repo/data --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
 
       - name: Commit e push se houver alteracoes
+        if: ${{ inputs.publish }}
         working-directory: data-repo
         run: |
           git config user.name "Nerias Data Bot"
@@ -95,3 +125,16 @@ jobs:
           fi
           git commit -m "Update Nerias data $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push origin main
+
+      - name: Resumo da execucao
+        if: always()
+        run: |
+          {
+            echo "## Nerias update"
+            echo "- setor: ${{ inputs.update_sector }}"
+            echo "- scope: ${{ inputs.update_scope }}"
+            echo "- mode: ${{ inputs.update_mode }}"
+            echo "- refresh_cvm_files: ${{ inputs.refresh_cvm_files }}"
+            echo "- publish: ${{ inputs.publish }}"
+            echo "- coleta externa: habilitada conforme scope/mode"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,88 @@
+name: Recriar gráficos
+
+on:
+  workflow_dispatch:
+    inputs:
+      sector:
+        description: "Setor"
+        required: true
+        default: all
+        type: choice
+        options: [all, saude, construcao_civil]
+      chart_scope:
+        description: "Escopo dos gráficos"
+        required: true
+        default: all
+        type: choice
+        options: [all, individual, comparison, sector]
+      ticker:
+        description: "Ticker ou all; usado apenas em gráficos individuais"
+        required: true
+        default: all
+      publish:
+        description: "Publicar no ri-tracker-data"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.publish && 'ri-tracker-data-publication' || format('ri-tracker-no-publish-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    env:
+      EXTERNAL_FETCH_ENABLED: "false"
+      MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.MPLCONFIGDIR }}
+          key: matplotlib-font-cache-${{ runner.os }}
+      - uses: actions/checkout@v6
+        with:
+          repository: pedroatnerias/ri-tracker-data
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: data-repo
+      - name: Restaurar dados publicados
+        run: |
+          mkdir -p resultados
+          cp -R data-repo/data/sectors/. resultados/ || true
+      - name: Recriar gráficos sem coleta
+        run: python -m pipeline_tasks regenerate-charts --resultados resultados --sector "${{ inputs.sector }}"
+      - name: Validar manifests
+        run: python -m data_publication validate resultados --scope financial --sector "${{ inputs.sector }}"
+      - name: Artefatos para inspeção
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nerias-charts-${{ inputs.sector }}
+          path: resultados/**/charts/**/*.png
+      - name: Publicar
+        if: ${{ inputs.publish }}
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        run: python -m data_publication publish resultados data-repo/data --scope financial --sector "${{ inputs.sector }}"
+      - name: Commit e push
+        if: ${{ inputs.publish }}
+        working-directory: data-repo
+        run: |
+          git config user.name "Nerias Data Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/ charts/
+          if git diff --cached --quiet; then echo "Nenhuma alteracao."; exit 0; fi
+          git commit -m "Regenerate Nerias charts $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push origin main

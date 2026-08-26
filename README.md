@@ -29,6 +29,68 @@ v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
 somente fallback de leitura e representa saúde. A publicação substitui apenas a
 interseção setor × componente e preserva os demais snapshots e overrides.
 
+## Metodologia dos agregados setoriais
+
+O market cap setorial usa apenas empresas ativas do setor selecionado com
+market cap valido, positivo e numerico. A participacao de cada empresa e:
+`market_cap_empresa / soma_market_cap_empresas_validas`. Empresas sem dado
+valido sao excluidas e reportadas no diagnostico; ausencias nao viram zero.
+
+O EV/EBITDA setorial e calculado pela divisao do enterprise value agregado pelo
+EBITDA LTM agregado das empresas incluidas. Nao representa uma media simples ou
+ponderada dos multiplos individuais. A formula e `soma(EV) / soma(EBITDA LTM)`,
+com EV definido pela metodologia vigente como `market cap historico + divida
+liquida padronizada`. EBITDAs negativos validos entram na soma agregada; se o
+EBITDA LTM agregado for menor ou igual a zero, o multiplo fica nulo e o
+diagnostico explicita a causa.
+
+Os retornos setoriais de preco de 30 e 360 dias usam fechamento nao ajustado,
+coerente com o market cap historico. Para cada empresa, o retorno e
+`preco_final / preco_inicial - 1`, usando o fechamento do proprio dia ou o
+ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap do
+inicio do intervalo: `preco_inicial x quantidade historica de acoes em ou antes
+da data inicial`. A cobertura minima inicial e 70%; abaixo dela, o retorno
+setorial nao e publicado como representativo.
+
+Todos os agregados registram metodologia, empresas incluidas, empresas
+excluidas, cobertura, datas efetivas dos componentes e limitacoes de dados
+historicos.
+
+## Cache CVM e workflows sem coleta
+
+Os ZIPs brutos da CVM ficam em `resultados/<setor>/downloads/<itr|dfp>/`,
+separados por tipo de documento e ano. O workflow principal restaura esse
+diretorio via GitHub Actions cache; como o cache do GitHub e imutavel por chave
+e nao e permanente, a chave inclui setor, politica de refresh e run id, com
+restore por prefixo. Anos historicos podem ser reutilizados, mas nao sao
+tratados como imutaveis para sempre.
+
+A politica `--refresh-cvm-files` aceita:
+
+- `auto`: usa ZIP local valido; quando nao houver base valida, tenta baixar. Se
+  uma consulta externa falhar e houver cache valido, reutiliza o cache com
+  diagnostico de fallback.
+- `force`: exige novo download validado antes de substituir o ZIP anterior. Se
+  falhar, preserva a copia valida antiga e falha a execucao.
+- `never`: nao faz chamada externa; exige ZIPs persistidos validos.
+
+Downloads sao atomicos: baixam para arquivo temporario, validam tamanho minimo,
+assinatura ZIP e CSVs esperados, calculam checksum e so entao substituem o
+destino. O diagnostico estruturado fica em
+`resultados/<setor>/downloads/cvm_download_events.json`.
+
+Os workflows manuais sem coleta sao:
+
+- `Recalcular indicadores`: recalcula derivados usando snapshots ja persistidos.
+- `Recriar graficos`: recria PNGs e manifests a partir dos JSONs existentes.
+- `Reconstruir dashboard - sem coleta`: recompõe derivados, graficos e manifests
+  sem consultar CVM, RI ou Yahoo.
+
+Nesses workflows `EXTERNAL_FETCH_ENABLED=false` documenta e protege a intencao:
+se faltar dado bruto, a rotina reporta dependencia ausente em vez de buscar
+externamente. `publish=false` gera artefatos para inspecao e nao altera o
+repositorio de dados.
+
 ## Arquitetura
 
 CVM, Yahoo Finance e sites de RI alimentam scripts de extracao. Esses scripts geram JSONs locais em `resultados/`, calculam indicadores e expoem os dados no dashboard Flask.

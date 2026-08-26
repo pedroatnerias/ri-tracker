@@ -47,13 +47,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="all",
         help="Escopo independente da atualizacao. Padrao: all.",
     )
+    parser.add_argument(
+        "--refresh-cvm-files",
+        choices=("auto", "force", "never"),
+        default="auto",
+        help="Politica de obtencao dos ZIPs CVM.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     resultados = resolve_app_path(args.resultados)
-    run_update(resultados, args.anos, mode=args.mode, scope=args.scope, sector=args.sector, diagnostico_ri=args.diagnostico_ri)
+    run_update(
+        resultados,
+        args.anos,
+        mode=args.mode,
+        scope=args.scope,
+        sector=args.sector,
+        diagnostico_ri=args.diagnostico_ri,
+        refresh_cvm_files=args.refresh_cvm_files,
+    )
     return 0
 
 

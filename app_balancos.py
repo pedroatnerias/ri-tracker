@@ -8,13 +8,9 @@ import json
 import logging
 import os
 import re
-import shutil
 import sys
-import tempfile
 import time
 import unicodedata
-import urllib.error
-import urllib.request
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -22,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 from company_registry import financial_companies
+from cvm_downloads import CvmDownloadPolicy, fetch_cvm_zip, validate_zip, write_events_json
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -124,6 +121,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-download", action="store_true", help="Substitui ZIPs já existentes."
     )
+    parser.add_argument("--refresh-cvm-files", choices=("auto", "force", "never"), default="auto")
+    parser.add_argument("--max-attempts", type=int, default=5)
+    parser.add_argument("--download-timeout", type=int, default=120)
     parser.add_argument("--no-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
@@ -147,64 +147,36 @@ def normalize_cd_cvm(series: pd.Series) -> pd.Series:
 
 
 def valid_zip(path: Path, year: int, doc: str = "itr") -> bool:
-    if not path.exists() or path.stat().st_size == 0:
-        return False
+    return validate_zip(path, year, doc, "bp")
+
+
+def download_zip(
+    year: int,
+    destination: Path,
+    force: bool,
+    offline: bool,
+    doc: str = "itr",
+    policy: CvmDownloadPolicy | None = None,
+) -> tuple[Path, list]:
     prefix = "dfp" if doc == "dfp" else "itr"
-    expected = {
-        f"{prefix}_cia_aberta_BPA_con_{year}.csv",
-        f"{prefix}_cia_aberta_BPP_con_{year}.csv",
-        f"{prefix}_cia_aberta_BPA_ind_{year}.csv",
-        f"{prefix}_cia_aberta_BPP_ind_{year}.csv",
-    }
-    try:
-        with zipfile.ZipFile(path) as archive:
-            return archive.testzip() is None and expected.issubset(set(archive.namelist()))
-    except (OSError, zipfile.BadZipFile):
-        return False
-
-
-def download_zip(year: int, destination: Path, force: bool, offline: bool, doc: str = "itr") -> Path:
-    destination.mkdir(parents=True, exist_ok=True)
-    prefix = "dfp" if doc == "dfp" else "itr"
-    output = destination / f"{prefix}_cia_aberta_{year}.zip"
-
-    if valid_zip(output, year, doc) and not force:
-        logging.info("ZIP %s já existe e é válido.", year)
-        return output
-    if offline:
-        raise FileNotFoundError(f"ZIP válido de {year} não encontrado em {destination}.")
-
     url = (DFP_BASE_URL if doc == "dfp" else BASE_URL).format(year=year)
-    logging.info("A descarregar %s", url)
-    last_error: Exception | None = None
-
-    for attempt in range(1, 4):
-        temporary: Path | None = None
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(request, timeout=120) as response:
-                content_type = response.headers.get("Content-Type", "").lower()
-                if "html" in content_type:
-                    raise RuntimeError(f"A CVM devolveu HTML em vez de ZIP para {year}.")
-                with tempfile.NamedTemporaryFile(
-                    prefix=f"itr_{year}_", suffix=".zip", dir=destination, delete=False
-                ) as temp_file:
-                    temporary = Path(temp_file.name)
-                    shutil.copyfileobj(response, temp_file, length=1024 * 1024)
-            if not valid_zip(temporary, year, doc):
-                raise zipfile.BadZipFile(f"Download de {year} incompleto ou inválido.")
-            os.replace(temporary, output)
-            return output
-        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
-            last_error = exc
-            if temporary and temporary.exists():
-                temporary.unlink()
-            if attempt < 3:
-                wait = 2**attempt
-                logging.warning("Falha na tentativa %d/3 (%s). Nova tentativa em %ds.", attempt, exc, wait)
-                time.sleep(wait)
-
-    raise RuntimeError(f"Não foi possível descarregar o ITR de {year}: {last_error}")
+    refresh = "never" if offline else "force" if force else (policy.refresh if policy else "auto")
+    effective_policy = CvmDownloadPolicy(
+        refresh=refresh,
+        max_attempts=(policy.max_attempts if policy else 5),
+        timeout=(policy.timeout if policy else 120),
+        backoff_seconds=(policy.backoff_seconds if policy else (5, 15, 30, 60, 120)),
+    )
+    return fetch_cvm_zip(
+        url=url,
+        year=year,
+        doc=doc,
+        destination=destination,
+        filename=f"{prefix}_cia_aberta_{year}.zip",
+        user_agent=USER_AGENT,
+        kind="bp",
+        policy=effective_policy,
+    )
 
 
 def read_company_statement(
@@ -831,21 +803,26 @@ def main() -> int:
     )
     downloads = args.output_dir / "downloads"
     try:
-        zip_paths = [
-            ("itr", year, download_zip(year, downloads / "itr", args.force_download, args.offline, "itr"))
-            for year in args.years
-        ]
+        refresh = "force" if args.force_download else "never" if args.offline else args.refresh_cvm_files
+        policy = CvmDownloadPolicy(refresh=refresh, max_attempts=args.max_attempts, timeout=args.download_timeout)
+        download_events = []
+        zip_paths = []
+        for year in args.years:
+            path, events = download_zip(year, downloads / "itr", args.force_download, args.offline, "itr", policy)
+            download_events.extend(events)
+            zip_paths.append(("itr", year, path))
         if not args.no_dfp:
             for year in args.years:
                 if year >= date.today().year:
                     logging.warning("DFP %s ainda não é esperada para o exercício corrente; ITR mantido normalmente.", year)
                     continue
                 try:
-                    zip_paths.append(
-                        ("dfp", year, download_zip(year, downloads / "dfp", args.force_download, args.offline, "dfp"))
-                    )
+                    path, events = download_zip(year, downloads / "dfp", args.force_download, args.offline, "dfp", policy)
+                    download_events.extend(events)
+                    zip_paths.append(("dfp", year, path))
                 except Exception as exc:
                     logging.warning("DFP %s nao incorporado: %s", year, exc)
+        write_events_json(downloads / "cvm_download_events.json", download_events)
         data = collect_data(zip_paths)
         output = args.output_dir / f"balancos_itr_cvm_{min(args.years)}_{max(args.years)}.json"
         coverage = export_json(data, zip_paths, output, args.years)

@@ -112,7 +112,16 @@ class ChartAssetTests(unittest.TestCase):
     def test_comparison_chart_catalog_has_five_pngs_and_y_axis_labels(self):
         self.assertEqual(
             list(chart_generation.COMPARISON_CHARTS),
-            ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"],
+            [
+                "ciclo_financeiro",
+                "margem_bruta",
+                "margem_operacional",
+                "margem_ebitda",
+                "margem_liquida",
+                "ev_ebitda_agregado",
+                "retorno_preco_setorial_30d",
+                "retorno_preco_setorial_360d",
+            ],
         )
         self.assertNotIn("ev_ebitda_ltm", chart_generation.COMPARISON_CHARTS)
         self.assertTrue(all(config.get("ylabel") for config in chart_generation.COMPARISON_CHARTS.values()))
@@ -126,6 +135,10 @@ class ChartAssetTests(unittest.TestCase):
 
     def test_operational_dre_block_requires_operational_sector(self):
         self.assertIn('currentStatement === "dre" && DATA.operational_enabled === true', dashboard.HTML)
+
+    def test_frontend_mentions_new_sector_aggregate_charts(self):
+        for key in ("market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_360d"):
+            self.assertIn(key, dashboard.HTML)
 
 
 if __name__ == "__main__":
