@@ -5,6 +5,8 @@ from pathlib import Path
 
 import data_publication
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 600
+
 
 def financial_outputs(base: Path, ticker: str) -> None:
     base.mkdir(parents=True, exist_ok=True)
@@ -35,3 +37,20 @@ class SectorPublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit):
                 data_publication.validate_results(Path(tmp), "operational", "construcao_civil")
+
+    def test_sector_charts_are_published_under_sector_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "resultados"
+            target = root / "repo" / "data"
+            financial_outputs(source / "construcao_civil", "CURY3")
+            chart = source / "construcao_civil" / "charts" / "comparison" / "margem_bruta.png"
+            chart.parent.mkdir(parents=True, exist_ok=True)
+            chart.write_bytes(PNG_BYTES)
+
+            manifest = data_publication.validate_results(source, "financial", "construcao_civil")
+            metadata = data_publication.publish_validated_data(source, target, "commit", "run", "financial", "construcao_civil")
+
+            self.assertEqual(manifest["chart_pngs"], ["charts/comparison/margem_bruta.png"])
+            self.assertTrue((target.parent / "charts" / "construcao_civil" / "comparison" / "margem_bruta.png").exists())
+            self.assertEqual(metadata["charts"]["comparison"], {"margem_bruta": "charts/comparison/margem_bruta.png"})

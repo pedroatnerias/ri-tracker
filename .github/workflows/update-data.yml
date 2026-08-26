@@ -64,7 +64,7 @@ jobs:
 
       - name: Gerar graficos Matplotlib
         if: ${{ inputs.update_scope != 'operational' }}
-        run: python -m chart_generation --resultados resultados --output-dir resultados/charts --sector "${{ inputs.update_sector }}"
+        run: python -m chart_generation --resultados resultados --sector "${{ inputs.update_sector }}"
 
       - name: Validar JSONs gerados
         run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"

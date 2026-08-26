@@ -1,5 +1,6 @@
 import unittest
 
+from company_registry import tickers_for_sector
 from dashboard import TICKERS, build_comparison_payload
 
 
@@ -66,7 +67,7 @@ class ComparisonPayloadTests(unittest.TestCase):
                 }
             }
         }
-        return build_comparison_payload(indicators, operational)
+        return build_comparison_payload(indicators, operational, TICKERS)
 
     def test_comparison_has_seven_companies_and_eleven_metrics(self):
         payload = self.payload()
@@ -97,6 +98,13 @@ class ComparisonPayloadTests(unittest.TestCase):
 
     def test_chart_set_has_exactly_five_charts(self):
         self.assertEqual(len(self.payload()["charts"]), 5)
+
+    def test_companies_order_is_sector_scoped(self):
+        construction = tickers_for_sector("construcao_civil")
+        payload = build_comparison_payload({"indicadores": {"companies": {}}}, {"companies": {}}, construction)
+        self.assertEqual(payload["companies_order"], list(construction))
+        self.assertNotIn("AALR3", payload["companies_order"])
+        self.assertIn("CURY3", payload["companies_order"])
 
 
 if __name__ == "__main__":

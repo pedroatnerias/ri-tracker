@@ -80,6 +80,16 @@ class ChartAssetTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first.endswith("?v=v1"))
 
+    def test_sector_chart_url_includes_sector_directory(self):
+        manifest = {"charts": {"comparison": {"margem_bruta": "charts/comparison/margem_bruta.png"}}, "data_version": "v1"}
+        with patch.object(dashboard.DashboardDataSource, "chart_manifest", return_value=manifest["charts"]), patch.object(
+            dashboard.DashboardDataSource, "data_version", return_value="v1"
+        ):
+            source = dashboard.DashboardDataSource(Path("."), sector="construcao_civil")
+            source.manifest_v2 = True
+            assets = dashboard.build_chart_assets(source)
+        self.assertIn("/charts/construcao_civil/comparison/margem_bruta.png", assets["comparison"]["margem_bruta"]["url"])
+
     def test_logo_route_has_long_cache(self):
         app = dashboard.create_app(Path("resultados"))
         response = app.test_client().get("/logos/Nerias.png")
@@ -108,9 +118,14 @@ class ChartAssetTests(unittest.TestCase):
         self.assertTrue(all(config.get("ylabel") for config in chart_generation.COMPARISON_CHARTS.values()))
 
     def test_comparison_table_has_no_unit_column(self):
-        self.assertIn("...tickers", dashboard.HTML)
+        self.assertIn("comparison-ticker-select", dashboard.HTML)
+        self.assertIn("changeComparisonTicker", dashboard.HTML)
+        self.assertIn("comparisonSelectedTickers.includes(ticker)", dashboard.HTML)
         self.assertNotIn('"Unidade", ...tickers', dashboard.HTML)
         self.assertIn("predominantPeriod", dashboard.HTML)
+
+    def test_operational_dre_block_requires_operational_sector(self):
+        self.assertIn('currentStatement === "dre" && DATA.operational_enabled === true', dashboard.HTML)
 
 
 if __name__ == "__main__":

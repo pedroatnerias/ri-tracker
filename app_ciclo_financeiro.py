@@ -199,7 +199,7 @@ def _nearest_bp_period(periods: list[str], target: date) -> str | None:
     return max(valid, key=lambda item: item[1])[0]
 
 
-def calculate_bp_json(data: dict[str, Any], scope: str = "auto", dre_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def calculate_bp_json(data: dict[str, Any], scope: str = "auto", dre_payload: dict[str, Any] | None = None, sector: str = "saude") -> dict[str, Any]:
     results: dict[str, Any] = {}
     errors: dict[str, Any] = {}
 
@@ -223,19 +223,31 @@ def calculate_bp_json(data: dict[str, Any], scope: str = "auto", dre_payload: di
                     cogs_row = _pick_flow(dre_rows, "cogs", end)
                     net_revenue = revenue.value
                     cogs = abs(cogs_row.value)
-                    inv0 = _bp_value(company_payload, "inventory", opening_period, scope)
-                    inv1 = _bp_value(company_payload, "inventory", closing_period, scope)
-                    ar0 = _bp_value(company_payload, "receivables", opening_period, scope)
-                    ar1 = _bp_value(company_payload, "receivables", closing_period, scope)
-                    ap0 = _bp_value(company_payload, "payables", opening_period, scope)
-                    ap1 = _bp_value(company_payload, "payables", closing_period, scope)
+                    if sector == "construcao_civil":
+                        opening_rows = _choose_scope([normalise(r) for r in _bp_period_records(company_payload, opening_period)], scope)
+                        closing_rows = _choose_scope([normalise(r) for r in _bp_period_records(company_payload, closing_period)], scope)
+                        ar0_components = _construction_balance_components(opening_rows, "receivables")
+                        ar1_components = _construction_balance_components(closing_rows, "receivables")
+                        inv0_components = _construction_balance_components(opening_rows, "inventory")
+                        inv1_components = _construction_balance_components(closing_rows, "inventory")
+                        ap0_components = _construction_balance_components(opening_rows, "payables")
+                        ap1_components = _construction_balance_components(closing_rows, "payables")
+                        ar0, ar1 = ar0_components["total"], ar1_components["total"]
+                        inv0, inv1 = inv0_components["total"], inv1_components["total"]
+                        ap0, ap1 = ap0_components["total"], ap1_components["total"]
+                    else:
+                        inv0 = _bp_value(company_payload, "inventory", opening_period, scope)
+                        inv1 = _bp_value(company_payload, "inventory", closing_period, scope)
+                        ar0 = _bp_value(company_payload, "receivables", opening_period, scope)
+                        ar1 = _bp_value(company_payload, "receivables", closing_period, scope)
+                        ap0 = _bp_value(company_payload, "payables", opening_period, scope)
+                        ap1 = _bp_value(company_payload, "payables", closing_period, scope)
                     days = (end - start).days + 1
                     purchases = cogs + inv1 - inv0
                     pmr = _safe_days((ar0 + ar1) / 2, net_revenue, days, "PMR")
                     pme = _safe_days((inv0 + inv1) / 2, cogs, days, "PME")
                     pmp = _safe_days((ap0 + ap1) / 2, purchases, days, "PMP")
-                    company_results.append(
-                        {
+                    record = {
                             "periodo": {
                                 "dre": dre_period,
                                 "inicio": start.isoformat(),
@@ -258,8 +270,25 @@ def calculate_bp_json(data: dict[str, Any], scope: str = "auto", dre_payload: di
                                 "estoque_medio": (inv0 + inv1) / 2,
                                 "fornecedores_medio": (ap0 + ap1) / 2,
                             },
+                    }
+                    if sector == "construcao_civil":
+                        record["metodologia"] = CONSTRUCTION_METHODOLOGY
+                        record["bases_calculo"].update(
+                            {
+                                "contas_a_receber_inicial": ar0_components,
+                                "contas_a_receber_final": ar1_components,
+                                "estoque_inicial": inv0_components,
+                                "estoque_final": inv1_components,
+                                "fornecedores_operacionais_inicial": ap0_components,
+                                "fornecedores_operacionais_final": ap1_components,
+                            }
+                        )
+                        record["contas_selecionadas"] = {
+                            "contas_a_receber_total": ar1_components["contas"],
+                            "estoque_total": inv1_components["contas"],
+                            "fornecedores_operacionais_total": ap1_components["contas"],
                         }
-                    )
+                    company_results.append(record)
                 except CalculationError as exc:
                     errors.setdefault(ticker, {})[dre_period] = str(exc)
             results[ticker] = company_results
@@ -345,6 +374,64 @@ ACCOUNT_RULES = {
     },
 }
 
+CONSTRUCTION_METHODOLOGY = "construcao_civil_extended_operating_cycle_v1"
+
+CONSTRUCTION_ACCOUNT_RULES = {
+    "receivables": {
+        "current_codes": ("1.01.03",),
+        "noncurrent_codes": ("1.02.01.08", "1.02.01.09"),
+        "noncurrent_descriptions": (
+            r"recebiveis imobiliarios",
+            r"recebiveis de clientes",
+            r"clientes",
+            r"contas? a receber",
+        ),
+        "exclude_descriptions": (
+            r"partes relacionadas",
+            r"tribut",
+            r"aplicac",
+            r"valor justo",
+        ),
+    },
+    "inventory": {
+        "current_codes": ("1.01.04",),
+        "noncurrent_codes": ("1.02.01.04", "1.02.01.05", "1.02.01.06"),
+        "noncurrent_descriptions": (
+            r"estoques?",
+            r"imoveis a comercializar",
+            r"imoveis em construcao",
+            r"unidades em construcao",
+            r"terrenos",
+        ),
+        "exclude_descriptions": (
+            r"propriedades para investimento",
+            r"investimentos?",
+            r"imobilizado",
+            r"intangivel",
+            r"tribut",
+        ),
+    },
+    "payables": {
+        "current_codes": ("2.01.02",),
+        "noncurrent_codes": ("2.02.01.01", "2.02.01.02"),
+        "noncurrent_descriptions": (
+            r"fornecedores?",
+            r"terrenos? a pagar",
+            r"aquisic[aã]o de terrenos?",
+            r"aquisic[aã]o de imoveis",
+            r"contas a pagar por aquisic[aã]o",
+        ),
+        "exclude_descriptions": (
+            r"emprestimos?",
+            r"financiamentos?",
+            r"debentures",
+            r"provis",
+            r"tribut",
+            r"partes relacionadas",
+        ),
+    },
+}
+
 
 def _is_current(row: AccountRow) -> bool:
     # Evita duplicar a coluna comparativa quando ORDEM_EXERC existe.
@@ -363,6 +450,56 @@ def _matching(rows: Iterable[AccountRow], kind: str, *, current_only: bool = Tru
         current = [r for r in candidates if _is_current(r)]
         return current or candidates
     return candidates
+
+
+def _construction_classification(row: AccountRow) -> str:
+    return "circulante" if row.code.startswith(("1.01", "2.01")) else "nao_circulante"
+
+
+def _construction_account_matches(row: AccountRow, kind: str) -> bool:
+    rule = CONSTRUCTION_ACCOUNT_RULES[kind]
+    if row.code in rule["current_codes"]:
+        return True
+    if row.code in rule["noncurrent_codes"]:
+        return True
+    expected_prefix = "2.02" if kind == "payables" else "1.02"
+    if not row.code.startswith(expected_prefix):
+        return False
+    description = _text(row.description)
+    if any(re.search(pattern, description, re.I) for pattern in rule["exclude_descriptions"]):
+        return False
+    return any(re.search(pattern, description, re.I) for pattern in rule["noncurrent_descriptions"])
+
+
+def _without_double_counting(rows: list[AccountRow]) -> list[AccountRow]:
+    selected: list[AccountRow] = []
+    for row in rows:
+        if any(other.code.startswith(f"{row.code}.") for other in rows if other.code != row.code):
+            continue
+        selected.append(row)
+    return selected
+
+
+def _construction_balance_components(rows: list[AccountRow], kind: str) -> dict[str, Any]:
+    matches = _without_double_counting([r for r in rows if _construction_account_matches(r, kind)])
+    if not matches:
+        raise CalculationError(f"Conta de {kind} ausente no BP.")
+    current = [r for r in matches if _construction_classification(r) == "circulante"]
+    noncurrent = [r for r in matches if _construction_classification(r) == "nao_circulante"]
+    return {
+        "total": sum(r.value for r in matches),
+        "circulante": sum(r.value for r in current),
+        "nao_circulante": sum(r.value for r in noncurrent),
+        "contas": [
+            {
+                "codigo": r.code,
+                "descricao": r.description,
+                "classificacao": _construction_classification(r),
+                "valor": r.value,
+            }
+            for r in matches
+        ],
+    }
 
 
 def _choose_scope(rows: list[AccountRow], requested: str) -> list[AccountRow]:
@@ -419,9 +556,10 @@ def calculate(
     target_end: Optional[date] = None,
     scope: str = "auto",
     dre_payload: dict[str, Any] | None = None,
+    sector: str = "saude",
 ) -> dict[str, Any]:
     if _is_bp_json(data):
-        return calculate_bp_json(data, scope=scope, dre_payload=dre_payload)
+        return calculate_bp_json(data, scope=scope, dre_payload=dre_payload, sector=sector)
 
     raw_records = flatten_records(data)
     if not raw_records:
@@ -519,6 +657,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--target-end", type=str, help="Data final desejada (AAAA-MM-DD); padrao: periodo mais recente")
     parser.add_argument("--scope", choices=("auto", "consolidado", "individual"), default="auto")
     parser.add_argument("--dre", type=Path, help="JSON gerado pelo app_dre para receita e CMV")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
     args = parser.parse_args(argv)
 
     try:
@@ -531,7 +670,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = _date(args.target_end) if args.target_end else None
         if args.target_end and target is None:
             raise CalculationError("--target-end deve estar no formato AAAA-MM-DD.")
-        result = calculate(data, target_end=target, scope=args.scope, dre_payload=dre_payload)
+        result = calculate(data, target_end=target, scope=args.scope, dre_payload=dre_payload, sector=args.sector)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("w", encoding="utf-8") as fh:
             json.dump(result, fh, ensure_ascii=False, indent=2)

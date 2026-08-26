@@ -570,7 +570,7 @@ def run_update(
     if run_financial:
         assert balanco_path is not None
         step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
-        step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path)]))
+        step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path), "--sector", sector]))
         step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path), "--sector", sector]))
         step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path), "--sector", sector]))
         step_results.append(
@@ -912,7 +912,7 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     # Primeiro boot em cloud pode nao ter JSONs; has_data so fica true quando
     # os tres demonstrativos financeiros minimos ja foram gerados.
     has_data = all(bool(statements[key]) for key in ("balanco", "dre", "dfc"))
-    comparison = build_comparison_payload(indicators, operational_data)
+    comparison = build_comparison_payload(indicators, operational_data, tickers_for_sector(sector))
     chart_assets = build_chart_assets(source)
     return {
         "sector": sector,
@@ -1146,7 +1146,8 @@ def _latest_operational_metric(company: dict, metric: str) -> dict | None:
     return sorted(candidates, key=lambda item: _period_sort_key(str(item["period"])))[-1] if candidates else None
 
 
-def build_comparison_payload(indicators: dict, operational: dict) -> dict:
+def build_comparison_payload(indicators: dict, operational: dict, tickers: Iterable[str] | None = None) -> dict:
+    tickers = tuple(tickers or TICKERS)
     indicadores = ((indicators.get("indicadores") or {}).get("companies") or {})
     ciclo = ((indicators.get("ciclo_financeiro") or {}).get("companies") or {})
     market = ((indicators.get("market_cap") or {}).get("companies") or {})
@@ -1160,7 +1161,7 @@ def build_comparison_payload(indicators: dict, operational: dict) -> dict:
         "margem_liquida": {"title": "Margem Líquida", "unit": "%", "periodicity": "annual", "series": {}},
     }
 
-    for ticker in TICKERS:
+    for ticker in tickers:
         records = list((indicadores.get(ticker) or {}).get("periodos") or [])
         annual = _annual_records(records)
         first = annual[0] if annual else None
@@ -1253,7 +1254,7 @@ def build_comparison_payload(indicators: dict, operational: dict) -> dict:
             ]
 
     return {
-        "companies_order": list(TICKERS),
+        "companies_order": list(tickers),
         "metrics": [
             {"key": key, "label": label, "format": fmt}
             for key, label, fmt in COMPARISON_METRICS
@@ -1268,7 +1269,8 @@ def build_chart_assets(source: DashboardDataSource) -> dict:
     version = source.data_version()
 
     def with_url(path: str) -> dict:
-        url = remote_asset_url_for(path) if path else ""
+        asset_path = f"charts/{source.sector}/{path.removeprefix('charts/')}" if source.manifest_v2 and path.startswith("charts/") else path
+        url = remote_asset_url_for(asset_path) if asset_path else ""
         return {"path": path, "url": f"{url}?v={quote(version)}" if url and version else url}
 
     individual: dict[str, dict[str, dict]] = {}
@@ -1914,6 +1916,7 @@ HTML = """<!doctype html>
     let currentMain = "dados";
     let currentStatement = "dashboard";
     let currentView = "annual";
+    let comparisonSelectedTickers = [];
     let updatePolling = null;
     let currentManualEditingId = null;
     const expandedRows = new Set();
@@ -1925,14 +1928,14 @@ HTML = """<!doctype html>
 
     function selectSector(sector) {
       currentSector = sector;
-      DATA = null; currentTicker = null; currentMain = "dados"; currentStatement = "dashboard"; currentView = "annual";
+      DATA = null; currentTicker = null; currentMain = "dados"; currentStatement = "dashboard"; currentView = "annual"; comparisonSelectedTickers = [];
       expandedRows.clear();
       if (updatePolling) { clearInterval(updatePolling); updatePolling = null; }
       document.getElementById("sector-selector").style.display = "none";
       loadData().catch(error => { document.getElementById("meta").textContent = error.message; });
     }
     function changeSector() {
-      currentSector = null; DATA = null; currentTicker = null;
+      currentSector = null; DATA = null; currentTicker = null; comparisonSelectedTickers = [];
       document.getElementById("sector-selector").style.display = "flex";
     }
 
@@ -2993,7 +2996,6 @@ HTML = """<!doctype html>
       if (!periods.length) return "";
       const receita = operationalMetricItem(currentTicker, "Receita Bruta");
       const glosa = operationalMetricItem(currentTicker, "Glosa/PCLD");
-      const zeroIfMissing = value => typeof value === "number" ? value : 0;
       const labelsByPeriod = Object.fromEntries(periods.map(period => [period, viewData.labels[period] || period]));
       const valueFor = (item, period) => {
         if (!item) return null;
@@ -3006,21 +3008,21 @@ HTML = """<!doctype html>
           code: "",
           description: "(+) Receita Bruta",
           isPercent: false,
-          values: periods.map(period => zeroIfMissing(valueFor(receita, period))),
+          values: periods.map(period => valueFor(receita, period)),
         },
         {
           code: "",
           description: "(-) Glosa e PCLD",
           isPercent: false,
-          values: periods.map(period => zeroIfMissing(valueFor(glosa, period))),
+          values: periods.map(period => valueFor(glosa, period)),
         },
         {
           code: "",
           description: "(=) Glosa/PCLD / Receita Bruta (%)",
           isPercent: true,
           values: periods.map(period => {
-            const revenue = zeroIfMissing(valueFor(receita, period));
-            const deductions = zeroIfMissing(valueFor(glosa, period));
+            const revenue = valueFor(receita, period);
+            const deductions = valueFor(glosa, period);
             return typeof revenue === "number" && revenue !== 0 && typeof deductions === "number"
               ? deductions / revenue * 100
               : null;
@@ -3362,11 +3364,39 @@ HTML = """<!doctype html>
       return `<td class="num" title="${escapeHtml(title)}"><strong>${escapeHtml(value)}</strong>${period}${confidence}${manual}${quality}</td>`;
     }
 
+    function normalizeComparisonSelection() {
+      const available = DATA.tickers || [];
+      const seen = new Set();
+      comparisonSelectedTickers = comparisonSelectedTickers.filter(ticker => available.includes(ticker) && !seen.has(ticker) && seen.add(ticker));
+      available.forEach(ticker => {
+        if (comparisonSelectedTickers.length < Math.min(7, available.length) && !seen.has(ticker)) {
+          comparisonSelectedTickers.push(ticker);
+          seen.add(ticker);
+        }
+      });
+      return comparisonSelectedTickers.slice(0, Math.min(7, available.length));
+    }
+
+    function comparisonTickerSelectHtml(selectedTicker, columnIndex) {
+      const selected = new Set(normalizeComparisonSelection());
+      const options = (DATA.tickers || [])
+        .filter(ticker => ticker === selectedTicker || !selected.has(ticker))
+        .map(ticker => `<option value="${escapeHtml(ticker)}"${ticker === selectedTicker ? " selected" : ""}>${escapeHtml(ticker)}</option>`)
+        .join("");
+      return `<select class="comparison-ticker-select" data-column="${columnIndex}" onchange="changeComparisonTicker(${columnIndex}, this.value)">${options}</select>`;
+    }
+
+    function changeComparisonTicker(columnIndex, ticker) {
+      if (!DATA.tickers?.includes(ticker) || comparisonSelectedTickers.includes(ticker)) return;
+      comparisonSelectedTickers[columnIndex] = ticker;
+      render();
+    }
+
     function renderComparisonTable() {
       const comparison = DATA.comparison || {};
-      const tickers = comparison.companies_order || DATA.tickers || [];
+      const tickers = normalizeComparisonSelection();
       const metrics = comparison.metrics || [];
-      const headers = ["Métrica", ...tickers].map(value => `<th>${escapeHtml(value)}</th>`).join("");
+      const headers = ["Métrica", ...tickers.map((ticker, index) => comparisonTickerSelectHtml(ticker, index))].map(value => `<th>${value}</th>`).join("");
       const body = metrics.map(metric => {
         const periods = tickers
           .map(ticker => comparison.companies?.[ticker]?.[metric.key]?.period)
@@ -3611,7 +3641,7 @@ HTML = """<!doctype html>
         return;
       }
       const sections = [];
-      if (currentStatement === "dre") {
+      if (currentStatement === "dre" && DATA.operational_enabled === true) {
         sections.push(renderOperationalDreTable(company, currentView));
       }
       sections.push(renderTable(company, currentStatement, currentView));
@@ -3829,10 +3859,11 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
     @app.get("/chart/<ticker>/<view>/<chart_key>")
     def chart(ticker: str, view: str, chart_key: str) -> Response:
         """Rota legada para desenvolvimento local; produção usa PNGs publicados."""
-        if ticker not in TICKERS or view not in {"annual", "quarterly"} or chart_key not in CHARTS:
+        sector = validate_sector(request.args.get("sector", "saude"))
+        if ticker not in tickers_for_sector(sector) or view not in {"annual", "quarterly"} or chart_key not in CHARTS:
             return jsonify({"error": "chart_not_found"}), 404
         try:
-            response = Response(make_chart_png(resultados, ticker, view, chart_key), mimetype="image/png")
+            response = Response(make_chart_png(resultados, ticker, view, chart_key, sector), mimetype="image/png")
             response.headers["Cache-Control"] = "no-store"
             return response
         except Exception as exc:

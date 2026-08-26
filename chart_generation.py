@@ -12,7 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dashboard import CHARTS, TICKERS, build_comparison_payload, dashboard_payload, make_chart_png
+from dashboard import CHARTS, build_comparison_payload, dashboard_payload, make_chart_png
 from company_registry import tickers_for_sector
 
 
@@ -60,7 +60,7 @@ def _comparison_period_sort(period: str) -> tuple[int, int]:
     return 0, 0
 
 
-def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Path) -> Path | None:
+def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Path, tickers: tuple[str, ...]) -> Path | None:
     config = COMPARISON_CHARTS[chart_key]
     series = chart.get("series") or {}
     periods = sorted(
@@ -84,7 +84,7 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
     colors = ["#006341", "#23AC81", "#6B7C3A", "#B08A3C", "#6C8CA6", "#8A6F98", "#4D5D53"]
     x_by_period = {period: index for index, period in enumerate(periods)}
 
-    for index, ticker in enumerate(TICKERS):
+    for index, ticker in enumerate(tickers):
         rows = [
             point for point in series.get(ticker, [])
             if point.get("period") in x_by_period and isinstance(point.get("value"), (int, float))
@@ -105,7 +105,7 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
     for spine in ("left", "right", "bottom"):
         ax.spines[spine].set_color("#DDD5B3")
     ax.grid(False)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=min(len(TICKERS), 4), frameon=False, fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=min(len(tickers), 4), frameon=False, fontsize=8)
     fig.tight_layout(pad=1.2)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, format="png", bbox_inches="tight")
@@ -116,7 +116,8 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
 
 def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str = "saude") -> list[Path]:
     payload = dashboard_payload(resultados, sector=sector)
-    comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {})
+    tickers = tickers_for_sector(sector)
+    comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {}, tickers)
     charts = comparison.get("charts") or {}
     target_dir = output_dir / "comparison"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -126,7 +127,7 @@ def generate_comparison_charts(resultados: Path, output_dir: Path, sector: str =
     generated: list[Path] = []
     for chart_key in COMPARISON_CHARTS:
         path = target_dir / f"{chart_key}.png"
-        result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path)
+        result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, tickers)
         if result:
             generated.append(result)
     return generated
@@ -153,7 +154,8 @@ def main() -> int:
     sectors = ("saude", "construcao_civil") if args.sector == "all" else (args.sector,)
     generated = []
     for sector in sectors:
-        generated.extend(generate_all_charts(args.resultados.resolve(), args.output_dir.resolve() / sector, sector))
+        sector_resultados = args.resultados.resolve() / sector if (args.resultados.resolve() / sector).is_dir() else args.resultados.resolve()
+        generated.extend(generate_all_charts(args.resultados.resolve(), sector_resultados / "charts", sector))
     print(f"Graficos gerados: {len(generated)}")
     return 0
 
