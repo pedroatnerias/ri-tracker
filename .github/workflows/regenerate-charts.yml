@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXTERNAL_FETCH_ENABLED: "false"
-      MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+      MPLCONFIGDIR: .matplotlib-cache
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

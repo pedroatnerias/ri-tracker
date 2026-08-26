@@ -24,7 +24,13 @@ class ManualWorkflowTests(unittest.TestCase):
     def test_regenerate_charts_has_matplotlib_cache_and_artifacts(self):
         workflow = self.read("regenerate-charts.yml")
         self.assertIn("matplotlib-font-cache", workflow)
+        self.assertNotIn("runner.temp", workflow)
         self.assertIn("actions/upload-artifact", workflow)
+
+    def test_rebuild_dashboard_avoids_runner_context_in_job_env(self):
+        workflow = self.read("rebuild-dashboard-no-fetch.yml")
+        self.assertIn("MPLCONFIGDIR: .matplotlib-cache", workflow)
+        self.assertNotIn("runner.temp", workflow)
 
 
 if __name__ == "__main__":
