@@ -26,7 +26,11 @@ def resolve_sector_results_dir(resultados: Path, sector: str, *, create: bool = 
         return sector_dir
     if sector_dir.exists():
         return sector_dir
-    if sector == "saude" and any(resultados.glob("balancos_itr_cvm_*.json")):
+    if sector == "saude" and (
+        any(resultados.glob("balancos_itr_cvm_*.json"))
+        or (resultados / "dados_operacionais").exists()
+        or (resultados / "manual_operational_overrides.json").exists()
+    ):
         return resultados
     return sector_dir
 

@@ -278,14 +278,14 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
 
     op_dir = base / "dados_operacionais"
     operational_jsons = sorted(op_dir.glob("*.json")) if scope in {"all", "operational"} and op_dir.exists() else []
-    if scope == "operational" and not operational_jsons:
-        raise SystemExit("Nenhum JSON operacional foi gerado.")
     for path in operational_jsons:
         validate_json_file(path, "operacional")
     manual_path = base / MANUAL_OVERRIDES_FILENAME
     manual_exists = manual_path.exists()
     if manual_exists:
         validate_json_file(manual_path, "override operacional manual")
+    if scope == "operational" and not operational_jsons and not manual_exists:
+        raise SystemExit("Nenhum JSON operacional foi gerado.")
 
     chart_dir = base / "charts"
     chart_pngs = sorted(chart_dir.rglob("*.png")) if scope in {"all", "financial"} and chart_dir.exists() else []

@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request
 import matplotlib
 
 matplotlib.use("Agg")
@@ -3889,7 +3889,11 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 
     @app.get("/logos/<path:filename>")
     def logos(filename: str) -> Response:
-        response = send_from_directory(BASE_DIR / "Logos", filename)
+        logo_root = (BASE_DIR / "Logos").resolve()
+        logo_path = (logo_root / filename).resolve()
+        if logo_root not in logo_path.parents or not logo_path.exists() or not logo_path.is_file():
+            return jsonify({"error": "logo_not_found"}), 404
+        response = Response(logo_path.read_bytes(), mimetype="image/png")
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

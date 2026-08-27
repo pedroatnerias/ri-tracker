@@ -168,6 +168,49 @@ class OperationalResilienceTests(unittest.TestCase):
             self.assertEqual(metadata["components"]["financial"]["last_update"], "2026-08-24T09:00:00+00:00")
             self.assertEqual(metadata["components"]["operational"]["status"], "success")
 
+    def test_operational_publication_accepts_legacy_health_root_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "resultados"
+            write_json(source / "dados_operacionais" / "AALR3.json", {"ticker": "AALR3"})
+
+            manifest = data_publication.validate_results(source, scope="operational")
+
+            self.assertEqual(manifest["sector"], "saude")
+            self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/AALR3.json"])
+
+    def test_operational_publication_accepts_explicit_health_sector_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "resultados"
+            write_json(source / "saude" / "dados_operacionais" / "AALR3.json", {"ticker": "AALR3"})
+
+            manifest = data_publication.validate_results(source, scope="operational", sector="saude")
+
+            self.assertEqual(manifest["sector"], "saude")
+            self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/AALR3.json"])
+
+    def test_operational_publication_accepts_manual_only_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "resultados"
+            write_json(source / data_publication.MANUAL_OVERRIDES_FILENAME, {"schema_version": 1, "overrides": []})
+
+            manifest = data_publication.validate_results(source, scope="operational")
+
+            self.assertEqual(manifest["operational_jsons"], [])
+            self.assertTrue(manifest["manual_operational_overrides"])
+
+    def test_operational_publication_rejects_total_absence_of_operational_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                data_publication.validate_results(Path(tmp) / "resultados", scope="operational")
+
+    def test_construction_still_rejects_operational_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "resultados"
+            write_json(source / "construcao_civil" / "dados_operacionais" / "TEND3.json", {"ticker": "TEND3"})
+
+            with self.assertRaises(SystemExit):
+                data_publication.validate_results(source, scope="operational", sector="construcao_civil")
+
     def test_publication_replaces_operational_when_new_snapshot_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
