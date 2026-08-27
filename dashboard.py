@@ -1045,6 +1045,7 @@ COMPARISON_METRICS = (
     ("margem_liquida", "Margem Líquida", "percent"),
     ("ev_ebitda", "EV/EBITDA", "multiple"),
     ("delta_preco_30d", "Delta Preço da Ação 30 dias", "signed_percent"),
+    ("delta_preco_90d", "Delta Preço da Ação 90 dias", "signed_percent"),
     ("delta_preco_360d", "Delta Preço da Ação 360 dias", "signed_percent"),
     ("n_unidades", "N. Unidades", "integer"),
 )
@@ -1234,6 +1235,7 @@ def build_comparison_payload(indicators: dict, operational: dict, tickers: Itera
 
         quote_data = market.get(ticker) or {}
         company["delta_preco_30d"] = _comparison_cell(_as_number(quote_data.get("variacao_30d_pct")), "Atual")
+        company["delta_preco_90d"] = _comparison_cell(_as_number(quote_data.get("variacao_90d_pct")), "Atual")
         company["delta_preco_360d"] = _comparison_cell(_as_number(quote_data.get("variacao_360d_pct")), "Atual")
 
         units = _latest_operational_metric(operational_companies.get(ticker) or {}, "N. Unidades")
@@ -1633,10 +1635,12 @@ HTML = """<!doctype html>
     .charts-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
+      gap: 14px;
       align-items: start;
-      margin-top: 18px;
+      margin-top: 12px;
     }
+    .comparison-section { margin-top: 14px; }
+    .comparison-section h2 { margin-bottom: 10px; }
     .dashboard-card { min-width: 0; }
     .dashboard-card h2 { margin: 0 0 10px; }
     .chart-card { min-width: 0; }
@@ -2626,6 +2630,7 @@ HTML = """<!doctype html>
         <div class="quote-price-card">
           <strong>${escapeHtml(ticker)} ${escapeHtml(quote.ultimo_preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }))}</strong>
           <div>30 dias: ${escapeHtml(formatPercent(quote.variacao_30d_pct))}%</div>
+          <div>90 dias: ${escapeHtml(formatPercent(quote.variacao_90d_pct))}%</div>
           <div>360 dias: ${escapeHtml(formatPercent(quote.variacao_360d_pct))}%</div>
         </div>
       `;
@@ -3375,28 +3380,24 @@ HTML = """<!doctype html>
 
     function normalizeComparisonSelection() {
       const available = DATA.tickers || [];
-      const seen = new Set();
-      comparisonSelectedTickers = comparisonSelectedTickers.filter(ticker => available.includes(ticker) && !seen.has(ticker) && seen.add(ticker));
+      comparisonSelectedTickers = comparisonSelectedTickers.filter(ticker => available.includes(ticker));
       available.forEach(ticker => {
-        if (comparisonSelectedTickers.length < Math.min(7, available.length) && !seen.has(ticker)) {
+        if (comparisonSelectedTickers.length < Math.min(7, available.length)) {
           comparisonSelectedTickers.push(ticker);
-          seen.add(ticker);
         }
       });
       return comparisonSelectedTickers.slice(0, Math.min(7, available.length));
     }
 
     function comparisonTickerSelectHtml(selectedTicker, columnIndex) {
-      const selected = new Set(normalizeComparisonSelection());
       const options = (DATA.tickers || [])
-        .filter(ticker => ticker === selectedTicker || !selected.has(ticker))
         .map(ticker => `<option value="${escapeHtml(ticker)}"${ticker === selectedTicker ? " selected" : ""}>${escapeHtml(ticker)}</option>`)
         .join("");
       return `<select class="comparison-ticker-select" data-column="${columnIndex}" onchange="changeComparisonTicker(${columnIndex}, this.value)">${options}</select>`;
     }
 
     function changeComparisonTicker(columnIndex, ticker) {
-      if (!DATA.tickers?.includes(ticker) || comparisonSelectedTickers.includes(ticker)) return;
+      if (!DATA.tickers?.includes(ticker)) return;
       comparisonSelectedTickers[columnIndex] = ticker;
       render();
     }
@@ -3438,16 +3439,14 @@ HTML = """<!doctype html>
 
     function renderComparisonChartImage(chartKey, chart) {
       const asset = DATA.chart_assets?.comparison?.[chartKey]?.url;
-      if (!asset) {
-        return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div>`;
-      }
+      if (!asset) return "";
       return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(chart.title || chartKey)}"></div>`;
     }
 
     function renderSectorAggregateChart(key, title) {
       const asset = DATA.chart_assets?.comparison?.[key]?.url;
       if (asset) return `<section class="chart-card"><h2>${escapeHtml(title)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(title)}"></div></section>`;
-      return `<section class="chart-card"><h2>${escapeHtml(title)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div></section>`;
+      return "";
     }
 
     function renderMarketCapShareSummary() {
@@ -3463,20 +3462,24 @@ HTML = """<!doctype html>
       const aggregates = DATA.comparison?.sector_aggregates || {};
       const latestEv = [...(aggregates.ev_ebitda_agregado?.series || [])].reverse().find(item => typeof item.value === "number");
       const evMeta = latestEv ? `<div class="disclaimer">EV/EBITDA agregado mais recente: ${escapeHtml(formatComparisonValue(latestEv.value, "multiple"))} em ${escapeHtml(latestEv.period)} | Metodologia: ${escapeHtml(latestEv.methodology || "")}</div>` : '<div class="disclaimer">EV/EBITDA agregado indisponível nos períodos atuais.</div>';
-      return `<h2>Agregados Setoriais</h2><div class="charts-grid">
-        <section class="chart-card"><h2>Participação no market cap</h2>${renderMarketCapShareSummary()}</section>
-        ${renderSectorAggregateChart("market_cap_share", "Participação no market cap")}
-        ${renderSectorAggregateChart("ev_ebitda_agregado", "EV/EBITDA agregado")}${evMeta}
-        ${renderSectorAggregateChart("retorno_preco_setorial_30d", "Retorno setorial de preço - 30 dias")}
-        ${renderSectorAggregateChart("retorno_preco_setorial_360d", "Retorno setorial de preço - 360 dias")}
-      </div>`;
+      const cards = [
+        `<section class="chart-card"><h2>Participação no market cap</h2>${renderMarketCapShareSummary()}</section>`,
+        renderSectorAggregateChart("market_cap_share", "Participação no market cap"),
+        renderSectorAggregateChart("ev_ebitda_agregado", "EV/EBITDA agregado"),
+        renderSectorAggregateChart("retorno_preco_setorial_30d", "Retorno setorial de preço - 30 dias"),
+        renderSectorAggregateChart("retorno_preco_setorial_90d", "Retorno setorial de preço - 90 dias"),
+        renderSectorAggregateChart("retorno_preco_setorial_360d", "Retorno setorial de preço - 360 dias"),
+      ].filter(Boolean);
+      if (!cards.length) return "";
+      return `<section class="comparison-section"><h2>Agregados Setoriais</h2>${evMeta}<div class="charts-grid">${cards.join("")}</div></section>`;
     }
 
     function renderComparison() {
       const charts = DATA.comparison?.charts || {};
       const chartOrder = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"];
       const chartHtml = chartOrder.map(key => renderComparisonChartImage(key, charts[key] || {})).filter(Boolean);
-      return `${renderComparisonTable()}${renderSectorAggregates()}<h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div>`;
+      const historical = chartHtml.length ? `<section class="comparison-section"><h2>Evolução Histórica</h2><div class="charts-grid">${chartHtml.map(chart => `<section class="chart-card">${chart}</section>`).join("")}</div></section>` : "";
+      return `${renderComparisonTable()}${historical}${renderSectorAggregates()}`;
     }
 
     function renderInlineMarkdown(text) {

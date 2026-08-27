@@ -24,9 +24,11 @@ COMPARISON_CHARTS: dict[str, dict[str, str]] = {
     "margem_liquida": {"title": "Margem Liquida", "ylabel": "Margem Liquida (%)"},
     "ev_ebitda_agregado": {"title": "EV/EBITDA Agregado", "ylabel": "EV/EBITDA (x)"},
     "retorno_preco_setorial_30d": {"title": "Retorno Setorial de Preco - 30 dias", "ylabel": "Retorno (%)"},
+    "retorno_preco_setorial_90d": {"title": "Retorno Setorial de Preco - 90 dias", "ylabel": "Retorno (%)"},
     "retorno_preco_setorial_360d": {"title": "Retorno Setorial de Preco - 360 dias", "ylabel": "Retorno (%)"},
 }
-SPECIAL_COMPARISON_CHARTS = {"market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_360d"}
+SPECIAL_COMPARISON_CHARTS = {"market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_90d", "retorno_preco_setorial_360d"}
+STANDARD_COMPARISON_CHART_KEYS = ("ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida")
 
 
 def validate_png(path: Path, min_size: int = 500) -> None:
@@ -122,6 +124,27 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
     return output
 
 
+def comparison_chart_tickers(payload: dict[str, Any], sector: str, tickers: tuple[str, ...]) -> tuple[str, ...]:
+    """Seleciona tickers exibidos nos gráficos históricos comparativos.
+
+    Construção civil usa Top 5 por market cap atual para reduzir poluição visual.
+    Se não houver market caps válidos, mantém o conjunto original como fallback
+    seguro para não quebrar a geração dos gráficos.
+    """
+
+    if sector != "construcao_civil":
+        return tickers
+    market_companies = (((payload.get("indicators") or {}).get("market_cap") or {}).get("companies") or {})
+    ranked = []
+    for ticker in tickers:
+        value = (market_companies.get(ticker) or {}).get("market_cap")
+        if isinstance(value, (int, float)) and value > 0:
+            ranked.append((ticker, float(value)))
+    if not ranked:
+        return tickers
+    return tuple(ticker for ticker, _value in sorted(ranked, key=lambda item: item[1], reverse=True)[:5])
+
+
 def generate_market_cap_share_chart(share: dict[str, Any], output: Path) -> Path | None:
     items = share.get("items") or []
     if not share.get("available") or not items:
@@ -196,6 +219,7 @@ def generate_sector_aggregate_charts(aggregates: dict[str, Any], output_dir: Pat
         ("market_cap_share", lambda path: generate_market_cap_share_chart(aggregates.get("market_cap_share") or {}, path)),
         ("ev_ebitda_agregado", lambda path: _generate_single_series_chart((aggregates.get("ev_ebitda_agregado") or {}).get("series") or [], path, "EV/EBITDA agregado do setor", "EV/EBITDA (x)")),
         ("retorno_preco_setorial_30d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("30d") or [], path, "Retorno setorial de preco - 30 dias")),
+        ("retorno_preco_setorial_90d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("90d") or [], path, "Retorno setorial de preco - 90 dias")),
         ("retorno_preco_setorial_360d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("360d") or [], path, "Retorno setorial de preco - 360 dias")),
     ]
     for key, factory in jobs:
@@ -218,6 +242,7 @@ def generate_comparison_charts(
 ) -> list[Path]:
     payload = dashboard_payload(resultados, sector=sector)
     tickers = tickers_for_sector(sector)
+    chart_tickers = comparison_chart_tickers(payload, sector, tickers)
     comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {}, tickers)
     charts = comparison.get("charts") or {}
     aggregates = comparison.get("sector_aggregates") or {}
@@ -232,7 +257,7 @@ def generate_comparison_charts(
             if chart_key in SPECIAL_COMPARISON_CHARTS:
                 continue
             path = target_dir / f"{chart_key}.png"
-            result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, tickers)
+            result = generate_comparison_chart(chart_key, charts.get(chart_key) or {}, path, chart_tickers)
             if result:
                 generated.append(result)
     if include_sector:

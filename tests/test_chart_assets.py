@@ -120,6 +120,7 @@ class ChartAssetTests(unittest.TestCase):
                 "margem_liquida",
                 "ev_ebitda_agregado",
                 "retorno_preco_setorial_30d",
+                "retorno_preco_setorial_90d",
                 "retorno_preco_setorial_360d",
             ],
         )
@@ -129,16 +130,40 @@ class ChartAssetTests(unittest.TestCase):
     def test_comparison_table_has_no_unit_column(self):
         self.assertIn("comparison-ticker-select", dashboard.HTML)
         self.assertIn("changeComparisonTicker", dashboard.HTML)
-        self.assertIn("comparisonSelectedTickers.includes(ticker)", dashboard.HTML)
+        self.assertNotIn("comparisonSelectedTickers.includes(ticker)", dashboard.HTML)
         self.assertNotIn('"Unidade", ...tickers', dashboard.HTML)
         self.assertIn("predominantPeriod", dashboard.HTML)
+
+    def test_comparison_selection_allows_duplicate_tickers(self):
+        self.assertNotIn("!seen.has(ticker)", dashboard.HTML)
+        self.assertNotIn(".filter(ticker => ticker === selectedTicker || !selected.has(ticker))", dashboard.HTML)
 
     def test_operational_dre_block_requires_operational_sector(self):
         self.assertIn('currentStatement === "dre" && DATA.operational_enabled === true', dashboard.HTML)
 
     def test_frontend_mentions_new_sector_aggregate_charts(self):
-        for key in ("market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_360d"):
+        for key in ("market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_90d", "retorno_preco_setorial_360d"):
             self.assertIn(key, dashboard.HTML)
+
+    def test_construction_comparison_charts_use_top_five_market_caps(self):
+        payload = {
+            "indicators": {
+                "market_cap": {
+                    "companies": {
+                        "A": {"market_cap": 100},
+                        "B": {"market_cap": None},
+                        "C": {"market_cap": 700},
+                        "D": {"market_cap": -1},
+                        "E": {"market_cap": 300},
+                        "F": {"market_cap": 200},
+                        "G": {"market_cap": 600},
+                        "H": {"market_cap": 500},
+                    }
+                }
+            }
+        }
+        self.assertEqual(chart_generation.comparison_chart_tickers(payload, "construcao_civil", ("A", "B", "C", "D", "E", "F", "G", "H")), ("C", "G", "H", "E", "F"))
+        self.assertEqual(chart_generation.comparison_chart_tickers(payload, "saude", ("A", "B")), ("A", "B"))
 
 
 if __name__ == "__main__":

@@ -73,12 +73,35 @@ class SectorAggregateTests(unittest.TestCase):
         self.assertAlmostEqual(row["value"], -0.125)
         self.assertAlmostEqual(row["total_initial_market_cap"], 400)
         self.assertEqual(row["companies_included"], 2)
+        self.assertIn("90d", sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"])
+
+    def test_sector_return_90d_uses_90_day_horizon_and_weights(self):
+        payload = {
+            "empresas": {
+                "A": {
+                    "periodos": [
+                        {"data_referencia": "2026-03-30", "preco_acao": 10, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-06-28", "preco_acao": 12, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                    ]
+                },
+                "B": {
+                    "periodos": [
+                        {"data_referencia": "2026-03-30", "preco_acao": 20, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-06-28", "preco_acao": 10, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                    ]
+                },
+            }
+        }
+        row = next(item for item in sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["90d"] if item["date"] == "2026-06-28")
+        self.assertEqual(row["included_companies"][0]["target_initial_date"], "2026-03-30")
+        self.assertAlmostEqual(row["value"], -0.2666666667)
 
     def test_sector_return_null_below_coverage(self):
         payload = {"empresas": {"A": {"periodos": [{"data_referencia": "2026-06-30", "preco_acao": 10, "quantidade_acoes_total": 1}]}}}
         row = sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["30d"][0]
         self.assertIsNone(row["value"])
         self.assertLess(row["coverage_count"], 0.70)
+        self.assertIsNone(sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["90d"][0]["value"])
 
 
 if __name__ == "__main__":

@@ -62,16 +62,26 @@ def obter_variacoes_preco(acao: yf.Ticker, preco_atual: float) -> dict[str, Any]
     if historico.empty or "Close" not in historico:
         return {
             "preco_30d": None,
+            "data_30d": None,
             "variacao_30d_pct": None,
+            "preco_90d": None,
+            "data_90d": None,
+            "variacao_90d_pct": None,
             "preco_360d": None,
+            "data_360d": None,
             "variacao_360d_pct": None,
         }
     fechamentos = historico["Close"].dropna().sort_index()
     if fechamentos.empty:
         return {
             "preco_30d": None,
+            "data_30d": None,
             "variacao_30d_pct": None,
+            "preco_90d": None,
+            "data_90d": None,
+            "variacao_90d_pct": None,
             "preco_360d": None,
+            "data_360d": None,
             "variacao_360d_pct": None,
         }
 
@@ -86,11 +96,15 @@ def obter_variacoes_preco(acao: yf.Ticker, preco_atual: float) -> dict[str, Any]
         return preco_ref, data_ref, variacao
 
     preco_30d, data_30d, variacao_30d = referencia(30)
+    preco_90d, data_90d, variacao_90d = referencia(90)
     preco_360d, data_360d, variacao_360d = referencia(360)
     return {
         "preco_30d": preco_30d,
         "data_30d": data_30d,
         "variacao_30d_pct": variacao_30d,
+        "preco_90d": preco_90d,
+        "data_90d": data_90d,
+        "variacao_90d_pct": variacao_90d,
         "preco_360d": preco_360d,
         "data_360d": data_360d,
         "variacao_360d_pct": variacao_360d,
@@ -192,6 +206,9 @@ def main() -> None:
                     "preco_30d": None,
                     "data_30d": None,
                     "variacao_30d_pct": None,
+                    "preco_90d": None,
+                    "data_90d": None,
+                    "variacao_90d_pct": None,
                     "preco_360d": None,
                     "data_360d": None,
                     "variacao_360d_pct": None,

@@ -186,8 +186,8 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
     tickers = tuple(tickers)
     rows_by_ticker = {ticker: _historical_rows(market_payload, ticker) for ticker in tickers}
     dates = sorted({row["ref"] for rows in rows_by_ticker.values() for row in rows})
-    by_horizon: dict[str, list[dict[str, Any]]] = {"30d": [], "360d": []}
-    for horizon in (30, 360):
+    by_horizon: dict[str, list[dict[str, Any]]] = {"30d": [], "90d": [], "360d": []}
+    for horizon in (30, 90, 360):
         key = f"{horizon}d"
         for ref in dates:
             target_start = ref - timedelta(days=horizon)

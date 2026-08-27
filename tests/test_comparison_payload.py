@@ -53,7 +53,7 @@ class ComparisonPayloadTests(unittest.TestCase):
                     ]
                 }
             },
-            "market_cap": {"companies": {"AALR3": {"variacao_30d_pct": 12.4, "variacao_360d_pct": -8.7}}},
+            "market_cap": {"companies": {"AALR3": {"variacao_30d_pct": 12.4, "variacao_90d_pct": 4.2, "variacao_360d_pct": -8.7}}},
         }
         operational = {
             "companies": {
@@ -69,10 +69,10 @@ class ComparisonPayloadTests(unittest.TestCase):
         }
         return build_comparison_payload(indicators, operational, TICKERS)
 
-    def test_comparison_has_seven_companies_and_eleven_metrics(self):
+    def test_comparison_has_seven_companies_and_twelve_metrics(self):
         payload = self.payload()
         self.assertEqual(payload["companies_order"], list(TICKERS))
-        self.assertEqual(len(payload["metrics"]), 11)
+        self.assertEqual(len(payload["metrics"]), 12)
 
     def test_table_uses_requested_temporal_rules(self):
         aalr = self.payload()["companies"]["AALR3"]
@@ -83,7 +83,16 @@ class ComparisonPayloadTests(unittest.TestCase):
         self.assertEqual(aalr["margem_bruta"]["period"], "FY2025")
         self.assertEqual(aalr["ev_ebitda"]["period"], "LTM 2T26")
         self.assertEqual(aalr["delta_preco_30d"]["value"], 12.4)
+        self.assertEqual(aalr["delta_preco_90d"]["value"], 4.2)
         self.assertEqual(aalr["delta_preco_360d"]["value"], -8.7)
+
+    def test_legacy_market_payload_without_90d_does_not_break_comparison(self):
+        aalr = build_comparison_payload(
+            {"indicadores": {"companies": {"AALR3": {"periodos": []}}}, "market_cap": {"companies": {"AALR3": {"variacao_30d_pct": 1.0, "variacao_360d_pct": 2.0}}}},
+            {"companies": {}},
+            ("AALR3",),
+        )["companies"]["AALR3"]
+        self.assertIsNone(aalr["delta_preco_90d"]["value"])
 
     def test_latest_operational_units_ignores_low_confidence(self):
         units = self.payload()["companies"]["AALR3"]["n_unidades"]
