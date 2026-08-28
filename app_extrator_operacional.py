@@ -1576,6 +1576,30 @@ def parse_local_files(values: list[str]) -> dict[str, Path]:
 
 async def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
+    if args.sector == "construcao_civil":
+        from company_registry import operational_companies
+        from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, extract_markdown_observations
+        markdown_dir = Path(args.md_dir).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        all_observations: list[dict[str, Any]] = []
+        for company in operational_companies("construcao_civil"):
+            observations: list[dict[str, Any]] = []
+            aliases = (company.ticker, *company.legacy_tickers)
+            for path in markdown_dir.rglob("*.md") if markdown_dir.exists() else ():
+                if not any(alias.lower() in path.name.lower() for alias in aliases):
+                    continue
+                observations.extend(extract_markdown_observations(path.read_text(encoding="utf-8", errors="replace"), ticker=company.ticker, source_document=path.name))
+            if not observations:
+                continue
+            metricas: dict[str, list[dict[str, Any]]] = {}
+            for observation in observations:
+                name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
+                metricas.setdefault(name, []).append({"metric": name, "indicator_id": observation["indicator_id"], "confidence": observation["confidence"], "calculated": False, "serie": {observation["period"]: observation["value"]}, "observations": [observation]})
+            payload = {"schema_version": "construction_operational_v1", "sector": "construcao_civil", "ticker": company.ticker, "companhia": company.expected_name, "metricas": metricas, "observations": observations}
+            write_json(payload, output_dir)
+            all_observations.extend(observations)
+        write_observations_json(all_observations, output_dir)
+        return 0
     markdown_paths: list[Path] = []
     if not args.no_md_fallback:
         markdown_dir = Path(args.md_dir).expanduser().resolve()
@@ -1640,6 +1664,7 @@ async def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
     parser.add_argument(
         "--output-dir",
         default=".",

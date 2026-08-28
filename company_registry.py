@@ -40,11 +40,12 @@ class Company:
 
 
 def _c(ticker: str, sector: str, cd: str, cnpj: str, name: str, aliases: tuple[str, ...] = (),
-       scope: str = "con", operational: bool = False, yahoo: str | None = None,
+       scope: str = "con", operational: bool | None = None, yahoo: str | None = None,
        status: str = "validated", note: str | None = None,
        legacy_tickers: tuple[str, ...] = ()) -> Company:
+    operational_enabled = sector == "construcao_civil" if operational is None else operational
     return Company(ticker, sector, cd.zfill(6), cnpj, name, aliases or (name,), scope, True,
-                   operational, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers)
+                   operational_enabled, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers)
 
 
 _COMPANIES = (
@@ -55,9 +56,9 @@ _COMPANIES = (
     _c("MATD3", "saude", "25690", "16.676.520/0001-59", "HOSPITAL MATER DEI S.A.", operational=True),
     _c("ONCO3", "saude", "26123", "12.104.241/0004-02", "ONCOCLINICAS DO BRASIL SERVICOS MEDICOS S.A.", operational=True),
     _c("RDOR3", "saude", "24821", "06.047.087/0001-39", "REDE D'OR SAO LUIZ S.A.", ("REDE D'OR SAO LUIZ S.A.", "REDE DOR SAO LUIZ S.A.", "REDE DOR S.A."), scope="ind", operational=True),
-    _c("AVLL3", "construcao_civil", "25275", "16.811.931/0001-00", "ALPHAVILLE S.A."),
-    _c("CALI3", "construcao_civil", "4723", "61.022.042/0001-18", "CONSTRUTORA ADOLPHO LINDENBERG S.A.", ("CONSTRUTORA ADOLPHO LINDENBERG S.A.", "CAL S/A")),
-    _c("CURY3", "construcao_civil", "25100", "08.797.760/0001-83", "CURY CONSTRUTORA E INCORPORADORA S.A."),
+    _c("AVLL3", "construcao_civil", "25275", "16.811.931/0001-00", "ALPHAVILLE S.A.", operational=True),
+    _c("CALI3", "construcao_civil", "4723", "61.022.042/0001-18", "CONSTRUTORA ADOLPHO LINDENBERG S.A.", ("CONSTRUTORA ADOLPHO LINDENBERG S.A.", "CAL S/A"), operational=True),
+    _c("CURY3", "construcao_civil", "25100", "08.797.760/0001-83", "CURY CONSTRUTORA E INCORPORADORA S.A.", operational=True),
     _c("CYRE3", "construcao_civil", "14460", "73.178.600/0001-18", "CYRELA BRAZIL REALTY S.A. EMPREENDIMENTOS E PARTICIPACOES"),
     _c("DIRR3", "construcao_civil", "21350", "16.614.075/0001-00", "DIRECIONAL ENGENHARIA S.A."),
     _c("EVEN3", "construcao_civil", "20524", "43.470.988/0001-65", "EVEN CONSTRUTORA E INCORPORADORA S.A."),

@@ -1609,6 +1609,7 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
             "Pode reduzir a quantidade de documentos encontrados."
         ),
     )
+    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
 
     parser.add_argument(
         "--diagnostico-ri",

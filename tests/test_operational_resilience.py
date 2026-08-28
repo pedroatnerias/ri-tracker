@@ -163,7 +163,7 @@ class OperationalResilienceTests(unittest.TestCase):
             data_manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(data_manifest["files"], {"dre": "DRE_ITR_CVM_ultimos_5_anos.json"})
             self.assertEqual(data_manifest["charts"], {"comparison": {"margem_bruta": "charts/comparison/margem_bruta.png"}})
-            self.assertEqual(data_manifest["operational_jsons"], ["dados_operacionais/AALR3.json"])
+            self.assertEqual(data_manifest["operational_jsons"], ["dados_operacionais/OLD.json", "dados_operacionais/AALR3.json"])
             self.assertEqual(metadata["components"]["financial"]["status"], "skipped_by_scope")
             self.assertEqual(metadata["components"]["financial"]["last_update"], "2026-08-24T09:00:00+00:00")
             self.assertEqual(metadata["components"]["operational"]["status"], "success")
@@ -203,13 +203,13 @@ class OperationalResilienceTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 data_publication.validate_results(Path(tmp) / "resultados", scope="operational")
 
-    def test_construction_still_rejects_operational_publication(self):
+    def test_construction_accepts_operational_publication(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "resultados"
             write_json(source / "construcao_civil" / "dados_operacionais" / "TEND3.json", {"ticker": "TEND3"})
 
-            with self.assertRaises(SystemExit):
-                data_publication.validate_results(source, scope="operational", sector="construcao_civil")
+            manifest = data_publication.validate_results(source, scope="operational", sector="construcao_civil")
+            self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/TEND3.json"])
 
     def test_publication_replaces_operational_when_new_snapshot_exists(self):
         with tempfile.TemporaryDirectory() as tmp:

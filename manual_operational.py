@@ -16,10 +16,12 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from operational_dictionary import TARGET_METRICS
+from company_registry import canonical_ticker, company_by_ticker, operational_companies
+from operational_dictionary import all_metric_names
+from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY
 
 
-TICKERS: tuple[str, ...] = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
+TICKERS: tuple[str, ...] = tuple(company.ticker for company in operational_companies("all"))
 MANUAL_OVERRIDES_FILENAME = "manual_operational_overrides.json"
 MANUAL_REMOTE_RELATIVE_PATH = MANUAL_OVERRIDES_FILENAME
 MANUAL_CONFIDENCE = "MANUAL"
@@ -33,7 +35,10 @@ METRIC_UNITS = {
     "N. Pacientes": "contagem",
     "Receita Bruta": "R$",
     "Glosa/PCLD": "R$",
+    **{definition["display_name"]: definition["unit"] for definition in CONSTRUCTION_OPERATIONAL_DICTIONARY.values()},
 }
+
+CONSTRUCTION_METRIC_BY_ID = {key: value["display_name"] for key, value in CONSTRUCTION_OPERATIONAL_DICTIONARY.items()}
 
 
 def utc_now() -> str:
@@ -64,7 +69,7 @@ def normalize_metric(metric: str) -> str:
         "glosa/pcld": "Glosa/PCLD",
         "glosa pcld": "Glosa/PCLD",
     }
-    return aliases.get(text.lower(), text)
+    return aliases.get(text.lower(), CONSTRUCTION_METRIC_BY_ID.get(text, text))
 
 
 def normalize_period(period: str) -> str:
@@ -103,11 +108,17 @@ def parse_numeric_value(value: Any) -> float:
 
 
 def validate_manual_record(record: dict[str, Any], *, existing_id: str | None = None) -> dict[str, Any]:
-    ticker = str(record.get("ticker") or "").strip().upper()
-    if ticker not in TICKERS:
-        raise ValueError(f"Ticker operacional invalido: {ticker}")
+    raw_ticker = str(record.get("ticker") or "").strip().upper()
+    try:
+        ticker = canonical_ticker(raw_ticker)
+        company = company_by_ticker(ticker)
+    except ValueError as exc:
+        raise ValueError(f"Ticker operacional invalido: {raw_ticker}") from exc
+    sector = str(record.get("sector") or company.sector).strip().lower()
+    if sector != company.sector or ticker not in TICKERS:
+        raise ValueError(f"Ticker operacional invalido para {sector}: {ticker}")
     metric = normalize_metric(str(record.get("metric") or ""))
-    if metric not in TARGET_METRICS:
+    if metric not in all_metric_names(sector):
         raise ValueError(f"Metrica operacional invalida: {metric}")
     period = normalize_period(str(record.get("period") or ""))
     value = parse_numeric_value(record.get("value"))
@@ -115,10 +126,14 @@ def validate_manual_record(record: dict[str, Any], *, existing_id: str | None = 
     return {
         "id": existing_id or str(record.get("id") or uuid.uuid4()),
         "ticker": ticker,
+        "sector": sector,
         "metric": metric,
         "period": period,
         "value": value,
         "unit": METRIC_UNITS.get(metric, ""),
+        "ownership_basis": str(record.get("ownership_basis") or "unknown"),
+        "segment": str(record.get("segment") or "consolidated"),
+        "comment": str(record.get("comment") or record.get("source_comment") or ""),
         "created_at": str(record.get("created_at") or now),
         "updated_at": now,
         "status": "active",
@@ -129,11 +144,14 @@ def validate_manual_record(record: dict[str, Any], *, existing_id: str | None = 
     }
 
 
-def manual_key(record: dict[str, Any]) -> tuple[str, str, str]:
+def manual_key(record: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
     return (
+        str(record.get("sector") or "saude"),
         str(record.get("ticker") or "").upper(),
         normalize_metric(str(record.get("metric") or "")),
         normalize_period(str(record.get("period") or "")),
+        str(record.get("ownership_basis") or "unknown"),
+        str(record.get("segment") or "consolidated"),
     )
 
 
@@ -155,7 +173,7 @@ def normalize_manual_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(payload, dict):
         normalized.update({key: value for key, value in payload.items() if key != "overrides"})
         normalized["overrides"] = payload.get("overrides") if isinstance(payload.get("overrides"), list) else []
-    active_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    active_by_key: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
     history: list[dict[str, Any]] = []
     for raw in normalized["overrides"]:
         if not isinstance(raw, dict):
@@ -229,7 +247,7 @@ def resolve_operational_data_with_manual(
     for override in manual["overrides"]:
         if override.get("status") != "active":
             continue
-        ticker, metric, period = manual_key(override)
+        _sector, ticker, metric, period, _ownership_basis, _segment = manual_key(override)
         company = data["companies"].setdefault(ticker, {"ticker": ticker, "metricas": {}, "warnings": []})
         company.setdefault("metricas", {})
         company.setdefault("warnings", [])
@@ -348,4 +366,3 @@ def save_remote_manual_overrides(repo: str, branch: str, token: str, payload: di
 
 def manual_admin_token_configured() -> bool:
     return bool(os.getenv("NERIAS_MANUAL_ADMIN_TOKEN"))
-

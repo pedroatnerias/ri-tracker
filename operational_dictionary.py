@@ -9,6 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from construction_operational import CONSTRUCTION_METRIC_IDS, CONSTRUCTION_OPERATIONAL_DICTIONARY
+
 
 TARGET_METRICS: tuple[str, ...] = (
     "Ticket Médio",
@@ -130,8 +132,18 @@ COMPANY_OPERATIONAL_DICTIONARY: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 
-def all_metric_names() -> tuple[str, ...]:
+def all_metric_names(sector: str = "saude") -> tuple[str, ...]:
+    if sector == "construcao_civil":
+        return tuple(CONSTRUCTION_OPERATIONAL_DICTIONARY[item]["display_name"] for item in CONSTRUCTION_METRIC_IDS)
     return TARGET_METRICS
+
+
+def metric_ids(sector: str = "saude") -> tuple[str, ...]:
+    return CONSTRUCTION_METRIC_IDS if sector == "construcao_civil" else TARGET_METRICS
+
+
+def sector_dictionary(sector: str = "saude") -> dict[str, dict[str, Any]]:
+    return deepcopy(CONSTRUCTION_OPERATIONAL_DICTIONARY if sector == "construcao_civil" else GENERIC_OPERATIONAL_DICTIONARY)
 
 
 def metric_definition(ticker: str, metric: str) -> dict[str, Any]:

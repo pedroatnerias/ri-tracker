@@ -27,5 +27,6 @@ class SectorDashboardTests(unittest.TestCase):
             health=client.get("/api/data?sector=saude").get_json()
             construction=client.get("/api/data?sector=construcao_civil").get_json()
             self.assertEqual(health["sector"],"saude")
-            self.assertFalse(construction["operational_enabled"])
+            self.assertTrue(construction["operational_enabled"])
+            self.assertEqual(len(construction["operational_metrics"]), 10)
             self.assertNotIn("AALR3", construction["tickers"])

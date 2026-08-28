@@ -12,6 +12,7 @@ from pathlib import Path
 
 from manual_operational import MANUAL_OVERRIDES_FILENAME
 from manual_operational import normalize_manual_payload, resolve_operational_data_with_manual
+from company_registry import operational_companies
 from sector_paths import find_financial_statement_json, read_json_if_exists, resolve_sector_results_dir
 from company_registry import SECTORS, tickers_for_sector, validate_sector
 
@@ -231,7 +232,9 @@ def merge_data_manifest(previous: dict[str, object] | None, current: dict[str, o
         if isinstance(current_files, dict) and current_files.get("manual_operational_overrides"):
             merged["files"]["manual_operational_overrides"] = current_files["manual_operational_overrides"]
         merged["charts"] = previous.get("charts", {})
-        merged["operational_jsons"] = current.get("operational_jsons", previous.get("operational_jsons", []))
+        previous_operational = previous.get("operational_jsons", []) if isinstance(previous.get("operational_jsons"), list) else []
+        current_operational = current.get("operational_jsons", []) if isinstance(current.get("operational_jsons"), list) else []
+        merged["operational_jsons"] = list(dict.fromkeys((*previous_operational, *current_operational)))
     return merged
 
 
@@ -260,10 +263,6 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     base = base.resolve()
     if sector != "all":
         base = resolve_sector_results_dir(base, sector)
-    if sector == "construcao_civil" and scope == "operational":
-        raise SystemExit("O setor construcao_civil ainda não possui atualização operacional.")
-    if sector == "construcao_civil" and scope == "all":
-        scope = "financial"
     financial_paths: list[Path] = []
     if scope in {"all", "financial"}:
         manifest = read_json_if_exists(base / "data_manifest.json")
@@ -277,7 +276,10 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
             validate_json_file(path, "financeiro obrigatorio")
 
     op_dir = base / "dados_operacionais"
-    operational_jsons = sorted(op_dir.glob("*.json")) if scope in {"all", "operational"} and op_dir.exists() else []
+    allowed_operational_names = {f"{company.ticker}.json" for company in operational_companies(sector)}
+    operational_jsons = sorted(
+        path for path in op_dir.iterdir() if path.is_file() and path.name in allowed_operational_names
+    ) if scope in {"all", "operational"} and op_dir.exists() else []
     for path in operational_jsons:
         validate_json_file(path, "operacional")
     manual_path = base / MANUAL_OVERRIDES_FILENAME
@@ -414,8 +416,6 @@ def publish_validated_data(
     financial_updated = scope in {"all", "financial"} and bool(manifest["root_jsons"])
     operational_updated = scope in {"all", "operational"} and bool(manifest["operational_jsons"])
     if scope in {"all", "operational"} and operational_updated:
-        if target_operational.exists():
-            shutil.rmtree(target_operational)
         target_operational.mkdir(parents=True, exist_ok=True)
         for relative in manifest["operational_jsons"]:
             path = staging / relative

@@ -14,7 +14,7 @@ class CompanyRegistryTests(unittest.TestCase):
         expected = {"AVLL3","CALI3","CURY3","CYRE3","DIRR3","EVEN3","EZTC3","FIEI3","GFSA3","HBOR3","INNC3","JFEN3","JHSF3","LAVV3","MDNE3","MELK3","MRVE3","MTRE3","PDGR3","PLPL3","RDNI3","RSID3","TCSA3","TEND3","TRIS3","VIVR3"}
         companies = companies_for_sector("construcao_civil")
         self.assertEqual({c.ticker for c in companies}, expected)
-        self.assertTrue(all(c.financial_enabled and not c.operational_enabled for c in companies))
+        self.assertTrue(all(c.financial_enabled and c.operational_enabled for c in companies))
         self.assertEqual(company_by_ticker("RDOR3").statement_scope, "ind")
 
     def test_inc_current_and_legacy_tickers(self):

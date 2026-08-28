@@ -40,7 +40,7 @@ from manual_operational import (
     validate_manual_record,
     write_manual_overrides_file,
 )
-from operational_dictionary import TARGET_METRICS
+from operational_dictionary import TARGET_METRICS, all_metric_names
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json
@@ -455,17 +455,15 @@ def run_update(
         if scope in {"all", "financial", "operational"}:
             health_scope = scope
             results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
-        if scope in {"all", "financial"}:
-            results.append(run_update(resultados, anos, mode=mode, scope="financial", sector="construcao_civil", diagnostico_ri=False, refresh_cvm_files=refresh_cvm_files))
+        if scope in {"all", "financial", "operational"}:
+            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
         return {
             "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
             "warnings": [w for r in results for w in r.get("warnings", [])],
             "steps": [s for r in results for s in r.get("steps", [])],
             "scope": scope, "mode": mode, "sector": "all",
-            "companies": {"financial": [c.ticker for c in financial_companies("all")] if scope != "operational" else [], "operational": [c.ticker for c in operational_companies("saude")] if scope != "financial" else []},
+            "companies": {"financial": [c.ticker for c in financial_companies("all")] if scope != "operational" else [], "operational": [c.ticker for c in operational_companies("all")] if scope != "financial" else []},
         }
-    if sector == "construcao_civil" and scope == "operational":
-        raise ValueError("O setor construcao_civil ainda não possui atualização operacional.")
     full_mode = mode == "full"
     full_suffix = " [FULL]" if full_mode else ""
     resultados = resultados.expanduser().resolve()
@@ -488,11 +486,9 @@ def run_update(
     warnings: list[str] = []
     started_total = time.monotonic()
     run_financial = scope in {"all", "financial"}
-    run_operational = scope in {"all", "operational"} and sector in {"saude", "all"}
+    run_operational = scope in {"all", "operational"}
     selected_financial = [c.ticker for c in financial_companies(sector)] if run_financial else []
     selected_operational = [c.ticker for c in operational_companies(sector)] if run_operational else []
-    if sector == "construcao_civil" and scope == "all":
-        warnings.append("Componente operacional ignorado: não habilitado para construcao_civil.")
     if run_operational:
         operational_dir.mkdir(parents=True, exist_ok=True)
 
@@ -540,7 +536,7 @@ def run_update(
         step_results.extend([skipped_step("Balanço Patrimonial CVM"), skipped_step("DRE CVM"), skipped_step("DFC CVM")])
 
     if run_operational:
-        parser_cmd = [sys.executable, script_path("app_parser_operacional.py")]
+        parser_cmd = [sys.executable, script_path("app_parser_operacional.py"), "--sector", sector]
         if full_mode:
             parser_cmd.append("--sobrescrever-downloads")
         if diagnostico_ri:
@@ -565,7 +561,7 @@ def run_update(
         else:
             extractor_result = run_update_command(
                 "Dados operacionais",
-                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir)],
+                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--sector", sector],
                 critical=False,
             )
             step_results.append(extractor_result)
@@ -899,8 +895,10 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     }
     if sector == "construcao_civil":
         statements = {key: migrate_legacy_company_tickers(value) or {} for key, value in statements.items()}
-    operational_data, operational_files = load_operational_data_from_source(source, data_dir) if sector == "saude" else ({"companies": {}}, {})
-    manual_overrides, manual_files = load_manual_overrides_from_source(source, data_dir) if sector == "saude" else (empty_manual_payload(), {})
+    operational_data, operational_files = load_operational_data_from_source(source, data_dir)
+    manual_overrides, manual_files = load_manual_overrides_from_source(source, data_dir)
+    if sector == "construcao_civil":
+        operational_data = migrate_legacy_company_tickers(operational_data) or {"companies": {}}
     operational_data, manual_overrides_resolved = resolve_operational_data_with_manual(operational_data, manual_overrides)
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
@@ -926,7 +924,8 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     return {
         "sector": sector,
         "sector_label": SECTOR_LABELS[sector],
-        "operational_enabled": sector == "saude",
+        "operational_enabled": True,
+        "operational_metrics": all_metric_names(sector),
         "tickers": tickers_for_sector(sector),
         "has_data": has_data,
         "data_source": source.data_source,
@@ -1936,7 +1935,7 @@ HTML = """<!doctype html>
     const labels = { dashboard: "Dashboard", operacional: "Dados Operacionais", balanco: "Balanço", dre: "DRE", dfc: "DFC" };
     const mainLabels = { dados: "Dados", comparativo: "Comparativo", metodologia: "Metodologia", auditoria: "Auditoria" };
     const viewLabels = { annual: "Anual", quarterly: "Trimestral" };
-    const operationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
+    let operationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
     const workflowUrl = "https://github.com/pedroatnerias/ri-tracker/actions/workflows/update-data.yml";
 
     function selectSector(sector) {
@@ -1964,6 +1963,7 @@ HTML = """<!doctype html>
       const response = await fetch(`/api/data?sector=${encodeURIComponent(currentSector)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await response.text());
       DATA = await response.json();
+      operationalMetrics = DATA.operational_metrics || operationalMetrics;
       document.getElementById("active-sector").textContent = DATA.sector_label || "";
       currentTicker = DATA.tickers.includes(currentTicker) ? currentTicker : DATA.tickers[0];
       render();
@@ -3736,8 +3736,6 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
             update_scope = validate_update_scope(str(payload.get("scope") or "all"))
             update_mode = validate_update_mode(str(payload.get("mode") or "full"))
             update_sector = validate_sector(str(payload.get("sector") or "saude"))
-            if update_sector == "construcao_civil" and update_scope == "operational":
-                raise ValueError("O setor construcao_civil ainda não possui atualização operacional.")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         with UPDATE_LOCK:
