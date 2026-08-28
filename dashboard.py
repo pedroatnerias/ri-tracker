@@ -9,6 +9,7 @@ import io
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -46,7 +47,6 @@ from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
 
 
-TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8050
 UPDATE_MODES = {"incremental", "full"}
@@ -491,6 +491,7 @@ def run_update(
     selected_operational = [c.ticker for c in operational_companies(sector)] if run_operational else []
     if run_operational:
         operational_dir.mkdir(parents=True, exist_ok=True)
+        existing_snapshot_paths_before = [path for path in operational_dir.glob("*.json") if path.name not in {"operational_observations.json"}]
         releases_input_dir = resolve_releases_input_dir(BASE_DIR, sector, create=True)
         releases_output_dir = resolve_releases_output_dir(BASE_DIR, sector, create=True)
         parser_result_json = resultados / "operational_releases_result.json"
@@ -555,7 +556,7 @@ def run_update(
         )
         step_results.append(parser_result)
         if command_failed(parser_result):
-            existing_snapshots = [path for path in operational_dir.glob("*.json") if path.name not in {"operational_observations.json"}]
+            existing_snapshots = existing_snapshot_paths_before
             manual_exists = (resultados / MANUAL_OVERRIDES_FILENAME).exists()
             if sector == "construcao_civil" and not existing_snapshots and not manual_exists:
                 raise RuntimeError(f"Nenhum documento setorial e nenhum snapshot operacional válido para {sector}.")
@@ -578,7 +579,7 @@ def run_update(
             )
             step_results.append(extractor_result)
             if command_failed(extractor_result):
-                existing_snapshots = [path for path in operational_dir.glob("*.json") if path.name not in {"operational_observations.json"}]
+                existing_snapshots = existing_snapshot_paths_before
                 manual_exists = (resultados / MANUAL_OVERRIDES_FILENAME).exists()
                 if existing_snapshots or manual_exists:
                     extractor_result["status"] = "preserved_existing_snapshot" if existing_snapshots else "success_manual_only"
@@ -589,6 +590,10 @@ def run_update(
                     raise RuntimeError(f"Nenhum snapshot operacional válido foi produzido para {sector}.")
                 else:
                     warnings.append("Dados operacionais falhou; pipeline continuou.")
+            elif extractor_result_json.exists():
+                structured = load_json(extractor_result_json)
+                extractor_result.update({key: structured[key] for key in ("status", "companies_with_observations", "companies_without_observations", "operational_files_generated") if key in structured})
+                warnings.extend(str(item) for item in structured.get("warnings", []) if item)
     else:
         step_results.extend([skipped_step("Releases e relatorios operacionais"), skipped_step("Dados operacionais")])
 
@@ -809,7 +814,88 @@ def migrate_legacy_company_tickers(payload: dict | None) -> dict | None:
     return payload
 
 
-def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
+def _operational_annual_series(series: dict, indicator_id: str, sector: str) -> tuple[dict, set[str]]:
+    result = dict(series)
+    derived: set[str] = set()
+    if sector != "construcao_civil":
+        return result, derived
+    from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY
+    definition = CONSTRUCTION_OPERATIONAL_DICTIONARY.get(indicator_id, {})
+    nature = definition.get("nature")
+    classification = definition.get("classification")
+    years = sorted({f"20{match.group(2)[-2:]}" for period in series if (match := re.fullmatch(r"([1-4])T(\d{2}|\d{4})", str(period), re.I))})
+    for year in years:
+        if year in result:
+            continue
+        quarters = [series.get(f"{quarter}T{year[-2:]}", series.get(f"{quarter}T{year}")) for quarter in range(1, 5)]
+        if nature == "stock" and quarters[3] not in (None, ""):
+            result[year] = quarters[3]
+            derived.add(year)
+        elif nature == "flow" and classification != "calculated" and all(isinstance(value, (int, float)) for value in quarters):
+            result[year] = sum(quarters)
+            derived.add(year)
+    return result, derived
+
+
+def normalize_operational_metric_item(item: dict, sector: str) -> dict:
+    normalized = dict(item or {})
+    series = normalized.get("series") if isinstance(normalized.get("series"), dict) else normalized.get("serie")
+    series = dict(series) if isinstance(series, dict) else {}
+    observations = [observation for observation in normalized.get("observations", []) if isinstance(observation, dict)]
+    rejected_observations = []
+    if sector == "construcao_civil" and observations:
+        valid_periods = set()
+        for observation in observations:
+            row_label = str(observation.get("row_label") or "").lower()
+            evidence = str(observation.get("evidence_text") or "")
+            value = observation.get("value")
+            breakdown_as_total = any(term in row_label for term in ("por região", "por regiao", "por produto", "by region", "by product")) and "total" not in row_label
+            scale_mismatch = False
+            if isinstance(value, (int, float)) and value != 0:
+                bold_values = re.findall(r"\*\*(\d[\d.,]*)\*\*", evidence)
+                parsed_evidence = []
+                for raw in bold_values[:4]:
+                    try:
+                        from construction_operational import parse_brazilian_financial_value
+                        parsed_evidence.append(parse_brazilian_financial_value(raw, str(observation.get("raw_unit") or observation.get("unit") or "R$ MM"))["normalized_value"])
+                    except ValueError:
+                        pass
+                evidence_ratios = [abs(candidate / value) for candidate in parsed_evidence if candidate]
+                scale_mismatch = bool(evidence_ratios and min(evidence_ratios) > 100)
+            if breakdown_as_total or scale_mismatch:
+                rejected_observations.append({**observation, "dashboard_rejection_reason": "breakdown_as_total" if breakdown_as_total else "scale_incompatible_with_evidence"})
+            else:
+                valid_periods.add(str(observation.get("period") or ""))
+        if rejected_observations:
+            series = {period: value for period, value in series.items() if period in valid_periods}
+    indicator_id = str(normalized.get("indicator_id") or "")
+    series, derived_periods = _operational_annual_series(series, indicator_id, sector)
+    first_observation = observations[0] if observations else {}
+    source = next((str(normalized.get(key)) for key in ("source", "escopo", "fonte_linha", "source_document") if normalized.get(key)), str(first_observation.get("source_document") or first_observation.get("source_url") or ""))
+    unit = normalized.get("unit") or normalized.get("unidade") or first_observation.get("unit") or ""
+    normalized.update({
+        "series": series, "serie": series,
+        "unit": unit, "unidade": unit,
+        "calculated": bool(normalized.get("calculated", normalized.get("calculado", False)) or derived_periods),
+        "calculado": bool(normalized.get("calculated", normalized.get("calculado", False)) or derived_periods),
+        "source": source, "derived_periods": sorted(derived_periods),
+        "rejected_observations": rejected_observations,
+    })
+    return normalized
+
+
+def normalize_operational_company(data: dict, sector: str) -> dict:
+    normalized = dict(data)
+    metrics = {}
+    for metric, items in (data.get("metricas") or {}).items():
+        metrics[metric] = [normalize_operational_metric_item(item, sector) for item in items if isinstance(item, dict)]
+    normalized["metricas"] = metrics
+    normalized.setdefault("status", "found" if any(metrics.values()) else "not_found")
+    return normalized
+
+
+def load_operational_data(resultados: Path, sector: str = "saude") -> tuple[dict, dict[str, dict]]:
+    allowed_tickers = set(tickers_for_sector(sector))
     candidate_files = [
         resultados / "dados_operacionais.json",
         resultados / "operacional.json",
@@ -821,10 +907,11 @@ def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
             continue
         data = load_json(path)
         if "companies" in data:
-            return data, {"operacional": {"path": str(path), "modified_at": path.stat().st_mtime}}
+            companies = {ticker: normalize_operational_company(company, sector) for ticker, company in data["companies"].items() if ticker in allowed_tickers and isinstance(company, dict)}
+            return {**data, "companies": companies}, {"operacional": {"path": str(path), "modified_at": path.stat().st_mtime}}
         ticker = str(data.get("ticker") or "").upper()
-        if ticker in TICKERS and "metricas" in data:
-            return {"companies": {ticker: data}}, {"operacional": {"path": str(path), "modified_at": path.stat().st_mtime}}
+        if ticker in allowed_tickers and "metricas" in data:
+            return {"companies": {ticker: normalize_operational_company(data, sector)}}, {"operacional": {"path": str(path), "modified_at": path.stat().st_mtime}}
 
     companies: dict[str, dict] = {}
     file_meta: dict[str, dict] = {}
@@ -838,14 +925,15 @@ def load_operational_data(resultados: Path) -> tuple[dict, dict[str, dict]]:
             except Exception:
                 continue
             ticker = str(data.get("ticker") or "").upper()
-            if ticker not in TICKERS or "metricas" not in data:
+            if ticker not in allowed_tickers or "metricas" not in data:
                 continue
-            companies[ticker] = data
+            companies[ticker] = normalize_operational_company(data, sector)
             file_meta[f"operacional_{ticker}"] = {"path": str(path), "modified_at": path.stat().st_mtime, "exists": True}
     return {"companies": companies}, file_meta
 
 
 def load_operational_data_from_source(source: DashboardDataSource, resultados: Path) -> tuple[dict, dict[str, dict]]:
+    allowed_tickers = set(tickers_for_sector(source.sector))
     if source.mode in {"remote", "auto"} and source.remote_available:
         companies: dict[str, dict] = {}
         file_meta: dict[str, dict] = {}
@@ -854,12 +942,12 @@ def load_operational_data_from_source(source: DashboardDataSource, resultados: P
             if not data:
                 continue
             ticker = str(data.get("ticker") or "").upper()
-            if ticker in TICKERS and "metricas" in data:
-                companies[ticker] = data
+            if ticker in allowed_tickers and "metricas" in data:
+                companies[ticker] = normalize_operational_company(data, source.sector)
                 file_meta[f"operacional_{ticker}"] = source.files.get(f"operacional_{Path(relative).stem.upper()}", {})
         if companies or source.mode == "remote":
             return {"companies": companies}, file_meta
-    return load_operational_data(resultados)
+    return load_operational_data(resultados, source.sector)
 
 
 def local_manual_overrides_path(resultados: Path) -> Path:
@@ -922,6 +1010,24 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     if sector == "construcao_civil":
         operational_data = migrate_legacy_company_tickers(operational_data) or {"companies": {}}
     operational_data, manual_overrides_resolved = resolve_operational_data_with_manual(operational_data, manual_overrides)
+    operational_company_map = operational_data.get("companies") or {}
+    companies_with_observations = sum(1 for company in operational_company_map.values() if any(company.get("metricas", {}).values()))
+    observations_rejected = sum(
+        len(item.get("rejected_observations", []))
+        for company in operational_company_map.values()
+        for items in company.get("metricas", {}).values()
+        for item in items
+        if isinstance(item, dict)
+    )
+    operational_coverage = {
+        "companies_requested": len(tickers_for_sector(sector)),
+        "operational_files_loaded": len(operational_company_map),
+        "companies_with_observations": companies_with_observations,
+        "companies_without_observations": len(tickers_for_sector(sector)) - companies_with_observations,
+        "observations_rejected": observations_rejected,
+        "status": "complete" if companies_with_observations == len(tickers_for_sector(sector)) else "partial",
+    }
+    operational_coverage["warning"] = None if operational_coverage["status"] == "complete" else f"Cobertura operacional parcial: {companies_with_observations}/{len(tickers_for_sector(sector))} empresas com observações."
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
         "divida_liquida": source.load_optional("divida_liquida", local_paths["divida_liquida"], remote_files.get("divida_liquida", "divida_liquida.json"), expected_paths["divida_liquida"]),
@@ -956,6 +1062,7 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "statements": statements,
         "indicators": indicators,
         "operational": operational_data,
+        "operational_coverage": operational_coverage,
         "manual_operational": {
             **manual_overrides_resolved,
             "write_enabled": manual_admin_token_configured(),
@@ -1178,7 +1285,7 @@ def _latest_operational_metric(company: dict, metric: str) -> dict | None:
 
 
 def build_comparison_payload(indicators: dict, operational: dict, tickers: Iterable[str] | None = None) -> dict:
-    tickers = tuple(tickers or TICKERS)
+    tickers = tuple(tickers or tickers_for_sector("saude"))
     indicadores = ((indicators.get("indicadores") or {}).get("companies") or {})
     ciclo = ((indicators.get("ciclo_financeiro") or {}).get("companies") or {})
     market = ((indicators.get("market_cap") or {}).get("companies") or {})
@@ -2546,6 +2653,11 @@ HTML = """<!doctype html>
       Object.keys(labels).forEach(key => {
         statementTabs.appendChild(button(labels[key], key === currentStatement, () => {
           currentStatement = key;
+          if (key === "operacional") {
+            const metricas = DATA.operational?.companies?.[currentTicker]?.metricas || {};
+            const periods = Object.values(metricas).flatMap(items => (items || []).flatMap(item => Object.keys(item?.series || {})));
+            if (periods.some(period => /^[1-4]T\\d{2,4}$/i.test(period)) && !periods.some(period => /^20\\d{2}$/.test(period))) currentView = "quarterly";
+          }
           render();
         }));
       });
@@ -3259,7 +3371,7 @@ HTML = """<!doctype html>
       const currentYear = new Date().getFullYear();
       if (view === "annual") {
         const annual = sorted.slice(-5).map(info => info.period);
-        return annual.length ? annual : Array.from({ length: 5 }, (_, i) => String(currentYear - 4 + i));
+        return annual;
       }
       const latestYears = Array.from(new Set(sorted.map(info => info.year))).filter(Boolean).sort((a, b) => a - b).slice(-5);
       const quarterly = sorted.filter(info => latestYears.includes(info.year)).map(info => info.period);
@@ -3285,7 +3397,7 @@ HTML = """<!doctype html>
         };
         const validItems = (items || []).filter(candidate => String(candidate?.confidence || "").toLowerCase() !== "low");
         validItems.forEach(item => {
-          Object.entries(item?.serie || {}).forEach(([period, value]) => {
+          Object.entries(item?.series || {}).forEach(([period, value]) => {
             const info = operationalPeriodInfo(period);
             if (view === "annual" && !info.annual) return;
             if (view === "quarterly" && info.annual) return;
@@ -3296,12 +3408,12 @@ HTML = """<!doctype html>
             }
           });
         });
-        const item = validItems.find(candidate => candidate?.serie && Object.keys(candidate.serie).length) || validItems[0] || null;
+        const item = validItems.find(candidate => candidate?.series && Object.keys(candidate.series).length) || validItems[0] || null;
         return {
           metric,
-          source: item?.escopo || item?.fonte_linha || "",
-          unit: item?.unidade || "",
-          calculated: Boolean(item?.calculado),
+          source: item?.source || "",
+          unit: item?.unit || "",
+          calculated: Boolean(item?.calculated),
           manualByPeriod: Object.fromEntries(Object.entries(meta).map(([period, entry]) => [period, Boolean(entry.item?.manual || entry.item?.confidence === "MANUAL")])),
           values,
           order: 0,
@@ -3325,9 +3437,14 @@ HTML = """<!doctype html>
 
     function renderOperationalTable(ticker, view) {
       let company = DATA.operational?.companies?.[ticker];
-      if (!company) company = { metricas: {} };
+      if (!company) return '<div class="empty"><strong>Sem dados operacionais publicados.</strong><br>Arquivo operacional não publicado para esta empresa.</div>';
       const rows = operationalRowsResolved(company, view);
       const periods = fixedOperationalPeriods(company, view);
+      if (!periods.length) {
+        const hasQuarterly = Object.values(company.metricas || {}).some(items => (items || []).some(item => Object.keys(item?.series || {}).some(period => /^[1-4]T\\d{2,4}$/i.test(period))));
+        const action = view === "annual" && hasQuarterly ? ' Selecione a visão <strong>Trimestral</strong>.' : '';
+        return `<div class="empty"><strong>Sem observações para a periodicidade selecionada.</strong>${action}</div>${renderOperationalWarnings(company)}`;
+      }
       const labelsByPeriod = Object.fromEntries(periods.map(period => [period, operationalPeriodInfo(period).label]));
       const headers = ["Indicador", "Escopo / fonte", "Unidade", ...periods.map(period => labelsByPeriod[period])]
         .map(value => `<th>${escapeHtml(value)}</th>`)
@@ -3345,8 +3462,9 @@ HTML = """<!doctype html>
       }).join("");
       const colgroup = `<colgroup><col style="width:220px"><col style="width:300px"><col style="width:150px">${periods.map(() => '<col style="width:130px">').join("")}</colgroup>`;
       const disclaimer = '<div class="disclaimer"><strong>Aviso:</strong> os dados operacionais são capturados de forma experimental a partir de planilhas de fundamentos, releases e documentos convertidos para Markdown. Eles podem estar incompletos, classificados incorretamente ou conter erros de leitura. Use estes dados como apoio exploratório e valide contra os documentos originais antes de qualquer decisão.</div>';
+      const coverageWarning = DATA.operational_coverage?.warning ? `<div class="disclaimer"><strong>Cobertura:</strong> ${escapeHtml(DATA.operational_coverage.warning)}</div>` : "";
       const manualToolbar = window.__STATIC_DATA__ ? "" : '<div class="manual-toolbar"><button class="update-button" onclick="openManualModal()">Adicionar dado manual</button></div>';
-      return `<h2>Dados Operacionais</h2>${disclaimer}${manualToolbar}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}${renderManualAudit(company)}`;
+      return `<h2>Dados Operacionais</h2>${disclaimer}${coverageWarning}${manualToolbar}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}${renderManualAudit(company)}`;
     }
 
     function renderOperationalWarnings(company) {

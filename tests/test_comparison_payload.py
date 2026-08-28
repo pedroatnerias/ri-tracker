@@ -1,7 +1,10 @@
 import unittest
 
 from company_registry import tickers_for_sector
-from dashboard import TICKERS, build_comparison_payload
+from dashboard import build_comparison_payload
+from company_registry import tickers_for_sector
+
+TICKERS = tickers_for_sector("saude")
 
 
 def indicator_record(year, quarter, is_ytd, **values):

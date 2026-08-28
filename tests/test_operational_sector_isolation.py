@@ -79,7 +79,8 @@ class OperationalSectorIsolationTests(unittest.TestCase):
             ])
             self.assertEqual(asyncio.run(app_extrator_operacional.run(args)), 0)
             manifest = data_publication.validate_results(root / "resultados", "operational", "construcao_civil")
-            self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/CURY3.json"])
+            self.assertEqual(len(manifest["operational_jsons"]), 26)
+            self.assertIn("dados_operacionais/CURY3.json", manifest["operational_jsons"])
 
     def test_empty_construction_extraction_fails_without_empty_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

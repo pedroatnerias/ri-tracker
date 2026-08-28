@@ -85,9 +85,33 @@ def normalize_money(value: float, unit_text: str) -> tuple[float, str, str]:
         return number * 1000, "BRL", "million"
     if re.search(r"\bmil\b|thousand", unit) and "milhao" not in unit and "million" not in unit:
         return number / 1000, "BRL", "million"
-    if "r$" in unit and not any(term in unit for term in ("milhao", "million")):
+    if re.search(r"(?:r\$|brl)\s*mm\b", unit) or "milhoes" in unit or "milhao" in unit or "million" in unit:
+        return number, "BRL", "million"
+    if "r$" in unit and not any(term in unit for term in ("milhao", "million", " mm")):
         return number / 1_000_000, "BRL", "million"
     return number, "BRL", "million"
+
+
+def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale: str) -> dict[str, Any]:
+    raw = str(raw_value).strip()
+    if isinstance(raw_value, (int, float)):
+        parsed = float(raw_value)
+    else:
+        cleaned = re.sub(r"[^\d,.-]", "", raw)
+        if not cleaned:
+            raise ValueError(f"valor financeiro inválido: {raw_value}")
+        if "," in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", cleaned):
+            cleaned = cleaned.replace(".", "")
+        parsed = float(cleaned)
+    normalized, currency, scale = normalize_money(parsed, declared_scale)
+    return {
+        "raw_value": raw, "raw_unit": declared_scale, "parsed_value": parsed,
+        "normalized_value": normalized, "normalized_unit": "BRL_million",
+        "currency": currency, "scale": scale,
+        "scale_conversion_applied": not math.isclose(parsed, normalized),
+    }
 
 
 def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str | None, list[str]]:
@@ -117,7 +141,8 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
         label: str, unit: str, context: str = "", source_document: str = "", source_url: str = "",
         source_type: str = "release", page: int | None = None, table_title: str = "",
         column_label: str = "", ownership_basis: str | None = None, segment: str = "consolidated",
-        region: str = "", reported_or_derived: str = "reported") -> dict[str, Any]:
+        region: str = "", reported_or_derived: str = "reported", raw_value: str | None = None,
+        raw_unit: str | None = None) -> dict[str, Any]:
     definition = CONSTRUCTION_OPERATIONAL_DICTIONARY[indicator_id]
     canonical_period, period_type = normalize_period(period)
     if definition["nature"] == "stock":
@@ -141,6 +166,9 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
         "evidence_text": context or label, "extraction_method": "contextual_table",
         "reported_or_derived": reported_or_derived, "confidence": confidence,
         "confidence_reasons": confidence_reasons, "validation_flags": [] if basis != "unknown" else ["unknown_ownership_basis"],
+        "raw_value": raw_value if raw_value is not None else str(value), "raw_unit": raw_unit or unit,
+        "normalized_value": normalized_value, "normalized_unit": definition["unit"],
+        "scale_conversion_applied": not math.isclose(float(value), normalized_value) if indicator_id.endswith("_vgv") else False,
         "created_at": datetime.now(timezone.utc).isoformat(), "extractor_version": EXTRACTOR_VERSION,
     }
 
@@ -172,6 +200,10 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
             continue
         context = " ".join(lines[max(0, index - 3): min(len(lines), index + 4)])
         indicator_id, flags = identify_metric(cells[0], context, context)
+        normalized_context = normalize_text(context)
+        normalized_label = normalize_text(cells[0])
+        if any(term in normalized_context for term in ("por regiao", "por produto", "by region", "by product")) and not any(term in normalized_label for term in ("total", "consolidado", "consolidated")):
+            flags.append("breakdown_without_explicit_total")
         if not indicator_id or flags:
             continue
         for column, raw_value in enumerate(cells[1:], start=1):
@@ -191,14 +223,19 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
                     label=cells[0], unit=" ".join((cells[0], table_title, context)), context=context,
                     source_document=source_document, source_url=source_url, page=page,
                     table_title=table_title, column_label=headers[column],
+                    raw_value=raw_value, raw_unit=" ".join((cells[0], table_title, context)),
                 )
             except (ValueError, KeyError):
                 continue
             observations.append(observation)
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
     for observation in observations:
-        key = (observation["indicator_id"], observation["period"], observation["ownership_basis"], observation["segment"], observation["value"])
-        unique.setdefault(key, observation)
+        key = (observation["ticker"], observation["indicator_id"], observation["period"], observation["ownership_basis"], observation["segment"])
+        current = unique.get(key)
+        score = (observation["consolidated_or_breakdown"] == "consolidated", observation["ownership_basis"] == "company_share", {"high": 2, "medium": 1}.get(observation["confidence"], 0))
+        current_score = (-1, -1, -1) if current is None else (current["consolidated_or_breakdown"] == "consolidated", current["ownership_basis"] == "company_share", {"high": 2, "medium": 1}.get(current["confidence"], 0))
+        if current is None or score > current_score:
+            unique[key] = observation
     return list(unique.values())
 
 

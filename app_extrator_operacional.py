@@ -1586,6 +1586,7 @@ async def run(args: argparse.Namespace) -> int:
         documents_processed: set[str] = set()
         for company in operational_companies("construcao_civil"):
             observations: list[dict[str, Any]] = []
+            company_documents: set[str] = set()
             aliases = (company.ticker, *company.legacy_tickers)
             for path in markdown_dir.rglob("*.md") if markdown_dir.exists() else ():
                 if not any(alias.lower() in path.name.lower() for alias in aliases):
@@ -1593,9 +1594,8 @@ async def run(args: argparse.Namespace) -> int:
                 extracted = extract_markdown_observations(path.read_text(encoding="utf-8", errors="replace"), ticker=company.ticker, source_document=path.name)
                 if extracted:
                     documents_processed.add(str(path))
+                    company_documents.add(str(path))
                 observations.extend(extracted)
-            if not observations:
-                continue
             metricas: dict[str, list[dict[str, Any]]] = {}
             for observation in observations:
                 name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
@@ -1604,16 +1604,24 @@ async def run(args: argparse.Namespace) -> int:
                 "schema_version": "construction_operational_v1", "sector": "construcao_civil",
                 "generated_at": datetime.now(timezone.utc).isoformat(), "extractor_version": "construction_operational_v1",
                 "ticker": company.ticker, "companhia": company.expected_name,
-                "companies_requested": len(allowed_tickers), "documents_processed": len(documents_processed),
+                "companies_requested": len(allowed_tickers), "documents_processed": len(company_documents),
                 "metricas": metricas, "observations": observations,
+                "status": "found" if observations else "not_found",
                 "calculation_metadata": {
                     "roe": {"value": None, "calculation_status": "missing_financial_dependencies"},
                     "credit_loss_allowance_to_receivables": {"value": None, "calculation_status": "missing_financial_dependencies"},
                 },
-                "warnings": ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
+                "warnings": (["Nenhuma métrica operacional válida encontrada nos documentos processados."] if not observations else []) + ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
             }
             write_json(payload, output_dir)
             all_observations.extend(observations)
+        observations_by_metric: dict[str, int] = {}
+        observations_by_confidence: dict[str, int] = {}
+        for observation in all_observations:
+            observations_by_metric[observation["indicator_id"]] = observations_by_metric.get(observation["indicator_id"], 0) + 1
+            confidence = str(observation.get("confidence") or "unknown")
+            observations_by_confidence[confidence] = observations_by_confidence.get(confidence, 0) + 1
+        companies_with_observations = sum(1 for path in output_dir.glob("*.json") if path.stem in allowed_tickers and json.loads(path.read_text(encoding="utf-8")).get("observations"))
         result = {
             "sector": "construcao_civil", "companies_requested": len(allowed_tickers),
             "documents_processed": len(documents_processed), "observations_candidates": len(all_observations),
@@ -1623,7 +1631,16 @@ async def run(args: argparse.Namespace) -> int:
             "status": "success_new_snapshot" if all_observations else "no_valid_observations",
             "errors": [] if all_observations else ["Nenhuma observação válida de construcao_civil foi gerada."],
             "warnings": [],
+            "companies_with_documents": len({Path(path).name.split("_", 1)[0] for path in documents_processed}),
+            "companies_with_observations": companies_with_observations,
+            "companies_without_observations": len(allowed_tickers) - companies_with_observations,
+            "operational_files_generated": len(allowed_tickers),
+            "observations_by_metric": observations_by_metric,
+            "observations_by_confidence": observations_by_confidence,
         }
+        if 0 < companies_with_observations < len(allowed_tickers):
+            result["status"] = "success_with_warnings"
+            result["warnings"] = [f"Cobertura operacional parcial: {companies_with_observations}/{len(allowed_tickers)} empresas com observações."]
         if all_observations:
             write_observations_json(all_observations, output_dir)
         if args.result_json:

@@ -7,7 +7,9 @@ from construction_operational import (
     calculate_vso,
     extract_markdown_observations,
     identify_metric,
+    parse_brazilian_financial_value,
 )
+from dashboard import normalize_operational_metric_item
 
 
 class ConstructionOperationalTests(unittest.TestCase):
@@ -54,6 +56,52 @@ Página 3
         mismatch = calculate_vso(300, 700, 300, ownership_bases=("company_share", "one_hundred_percent"))
         self.assertEqual(mismatch["calculation_status"], "incompatible_basis")
         self.assertEqual(calculate_vso(None, 700, 300)["calculation_status"], "missing_components")
+
+    def test_brazilian_financial_scale_is_applied_once(self):
+        self.assertEqual(parse_brazilian_financial_value("7.395", "R$ MM")["normalized_value"], 7395.0)
+        self.assertEqual(parse_brazilian_financial_value("814.000", "R$ mil")["normalized_value"], 814.0)
+        self.assertEqual(parse_brazilian_financial_value("24,15", "R$ milhões")["normalized_value"], 24.15)
+        self.assertFalse(parse_brazilian_financial_value(7395, "R$ MM")["scale_conversion_applied"])
+
+    def test_canonical_item_and_annual_rules(self):
+        flow = normalize_operational_metric_item({
+            "indicator_id": "launches_vgv", "unit": "BRL_million", "calculated": False,
+            "source_document": "release.pdf", "series": {"1T25": 1, "2T25": 2, "3T25": 3, "4T25": 4},
+        }, "construcao_civil")
+        self.assertEqual(flow["series"]["2025"], 10)
+        self.assertEqual(flow["source"], "release.pdf")
+        self.assertEqual(flow["unit"], "BRL_million")
+        incomplete = normalize_operational_metric_item({"indicator_id": "launches_vgv", "series": {"1T25": 1}}, "construcao_civil")
+        self.assertNotIn("2025", incomplete["series"])
+        stock = normalize_operational_metric_item({"indicator_id": "ending_inventory_vgv", "series": {"4T25": 9}}, "construcao_civil")
+        self.assertEqual(stock["series"]["2025"], 9)
+        percent = normalize_operational_metric_item({"indicator_id": "net_vso", "series": {"1T25": .1, "2T25": .2, "3T25": .3, "4T25": .4}}, "construcao_civil")
+        self.assertNotIn("2025", percent["series"])
+
+    def test_historical_breakdown_value_is_quarantined(self):
+        item = normalize_operational_metric_item({
+            "indicator_id": "launches_vgv", "series": {"1T26": .626625},
+            "observations": [{
+                "period": "1T26", "value": .626625, "row_label": "Por Região",
+                "unit": "BRL_million", "source_document": "CYRE3_1T26.md",
+                "evidence_text": "| Total | **7.395** | R$ MM |",
+            }],
+        }, "construcao_civil")
+        self.assertNotIn("1T26", item["series"])
+        self.assertEqual(item["unit"], "BRL_million")
+        self.assertEqual(item["source"], "CYRE3_1T26.md")
+        self.assertEqual(item["rejected_observations"][0]["dashboard_rejection_reason"], "breakdown_as_total")
+
+    def test_historical_scale_mismatch_is_quarantined(self):
+        item = normalize_operational_metric_item({
+            "indicator_id": "launches_vgv", "series": {"2T25": .000814},
+            "observations": [{
+                "period": "2T25", "value": .000814, "row_label": "Total consolidado",
+                "raw_unit": "R$ mil", "evidence_text": "| Total consolidado | **814.000** |",
+            }],
+        }, "construcao_civil")
+        self.assertNotIn("2T25", item["series"])
+        self.assertEqual(item["rejected_observations"][0]["dashboard_rejection_reason"], "scale_incompatible_with_evidence")
 
 
 if __name__ == "__main__":

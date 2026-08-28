@@ -171,6 +171,27 @@ class RemoteDataSourceTests(unittest.TestCase):
 
         self.assertIn("AALR3", payload["operational"]["companies"])
 
+    def test_manifest_v2_loads_only_construction_operational_companies(self):
+        metric = {"Lançamentos": [{"indicator_id": "launches_vgv", "unit": "BRL_million", "calculated": False, "source_document": "release.pdf", "series": {"1T26": 7395.0}, "confidence": "high"}]}
+        tickers = ("CYRE3", "AVLL3", "DIRR3", "EZTC3", "AALR3")
+        paths = [f"dados_operacionais/{ticker}.json" for ticker in tickers]
+        mapping = {
+            "update_metadata.json": {"sectors": {"construcao_civil": {"operational_jsons": paths}}},
+            "data_manifest.json": {"schema_version": 2, "sectors": {"construcao_civil": {"operational_jsons": paths, "files": {}}}},
+        }
+        for ticker in tickers:
+            mapping[f"sectors/construcao_civil/dados_operacionais/{ticker}.json"] = {"ticker": ticker, "metricas": metric}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
+            "dashboard.remote_http_get_json", side_effect=lambda relative: mapping.get(relative),
+        ):
+            source = dashboard.DashboardDataSource(Path(tmp), sector="construcao_civil")
+            operational, _meta = dashboard.load_operational_data_from_source(source, Path(tmp))
+        self.assertEqual(set(operational["companies"]), {"CYRE3", "AVLL3", "DIRR3", "EZTC3"})
+        item = operational["companies"]["CYRE3"]["metricas"]["Lançamentos"][0]
+        self.assertEqual(item["unit"], "BRL_million")
+        self.assertFalse(item["calculated"])
+        self.assertEqual(item["source"], "release.pdf")
+
     def test_api_update_is_disabled_in_remote_mode(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"NERIAS_DATA_SOURCE": "remote"}, clear=False), patch(
             "dashboard.run_update",

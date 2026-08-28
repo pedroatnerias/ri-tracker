@@ -81,7 +81,7 @@ def validate_operational_snapshot(path: Path, sector: str) -> None:
         missing = sorted(required - set(payload))
         if missing:
             raise SystemExit(f"Snapshot operacional sem campos obrigatórios: {', '.join(missing)}.")
-    if sector == "construcao_civil" and (not isinstance(observations, list) or not observations):
+    if sector == "construcao_civil" and (not isinstance(observations, list) or (not observations and payload.get("status") != "not_found")):
         raise SystemExit(f"Nenhuma observação válida de {sector} foi gerada.")
     for observation in observations if isinstance(observations, list) else []:
         observation_ticker = str(observation.get("ticker") or ticker).upper()
