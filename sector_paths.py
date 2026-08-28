@@ -11,6 +11,31 @@ from company_registry import validate_sector
 SECTOR_NAMES = ("saude", "construcao_civil")
 
 
+def resolve_releases_input_dir(base: Path, sector: str, *, create: bool = False) -> Path:
+    path = Path(base).resolve() / "Releases e relatórios" / "Entrada" / validate_sector(sector)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_releases_output_dir(base: Path, sector: str, *, create: bool = False) -> Path:
+    path = Path(base).resolve() / "Releases e relatórios" / "Saída" / validate_sector(sector)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_releases_manifest_path(base: Path, sector: str) -> Path:
+    return Path(base).resolve() / "Releases e relatórios" / f"manifesto_downloads_{validate_sector(sector)}.json"
+
+
+def resolve_operational_results_dir(base: Path, sector: str, *, create: bool = False) -> Path:
+    path = resolve_sector_results_dir(base, sector, create=create) / "dados_operacionais"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def expand_sectors(sector: str) -> tuple[str, ...]:
     return SECTOR_NAMES if validate_sector(sector) == "all" else (validate_sector(sector),)
 

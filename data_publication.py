@@ -63,6 +63,34 @@ def validate_json_file(path: Path, label: str) -> None:
     read_json(path)
 
 
+def validate_operational_snapshot(path: Path, sector: str) -> None:
+    validate_json_file(path, "snapshot operacional")
+    payload = read_json(path)
+    if not isinstance(payload, dict) or not payload:
+        raise SystemExit(f"Snapshot operacional vazio: {path}")
+    ticker = str(payload.get("ticker") or "").upper()
+    allowed = set(tickers_for_sector(sector))
+    if ticker not in allowed:
+        raise SystemExit(f"Ticker {ticker or 'ausente'} não pertence ao setor {sector}.")
+    payload_sector = payload.get("sector")
+    if sector == "construcao_civil" and payload_sector != sector:
+        raise SystemExit(f"Snapshot operacional pertence ao setor {payload_sector or 'não informado'}, mas o setor solicitado é {sector}.")
+    observations = payload.get("observations")
+    if sector == "construcao_civil":
+        required = {"schema_version", "generated_at", "extractor_version", "companies_requested", "documents_processed", "calculation_metadata"}
+        missing = sorted(required - set(payload))
+        if missing:
+            raise SystemExit(f"Snapshot operacional sem campos obrigatórios: {', '.join(missing)}.")
+    if sector == "construcao_civil" and (not isinstance(observations, list) or not observations):
+        raise SystemExit(f"Nenhuma observação válida de {sector} foi gerada.")
+    for observation in observations if isinstance(observations, list) else []:
+        observation_ticker = str(observation.get("ticker") or ticker).upper()
+        if observation.get("sector", sector) != sector:
+            raise SystemExit(f"Snapshot contém observação de outro setor: {observation.get('sector')}.")
+        if observation_ticker not in allowed:
+            raise SystemExit(f"Ticker {observation_ticker} não pertence ao setor {sector}.")
+
+
 def validate_png_file(path: Path, label: str) -> None:
     if not path.exists():
         raise SystemExit(f"Arquivo {label} ausente: {path}")
@@ -281,7 +309,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
         path for path in op_dir.iterdir() if path.is_file() and path.name in allowed_operational_names
     ) if scope in {"all", "operational"} and op_dir.exists() else []
     for path in operational_jsons:
-        validate_json_file(path, "operacional")
+        validate_operational_snapshot(path, sector)
     manual_path = base / MANUAL_OVERRIDES_FILENAME
     manual_exists = manual_path.exists()
     if manual_exists:

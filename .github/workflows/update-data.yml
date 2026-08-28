@@ -86,12 +86,24 @@ jobs:
       - name: Executar pipeline Nerias
         run: |
           EXTRA_ARGS=""
-          if [[ "${{ inputs.update_sector }}" != "construcao_civil" && "${{ inputs.update_scope }}" != "financial" ]]; then EXTRA_ARGS="--diagnostico-ri"; fi
+          if [[ "${{ inputs.update_scope }}" == "operational" || "${{ inputs.update_scope }}" == "all" ]]; then EXTRA_ARGS="--diagnostico-ri"; fi
           python update_data.py --resultados resultados --sector "${{ inputs.update_sector }}" --scope "${{ inputs.update_scope }}" --mode "${{ inputs.update_mode }}" --refresh-cvm-files "${{ inputs.refresh_cvm_files }}" $EXTRA_ARGS
 
       - name: Gerar graficos Matplotlib
         if: ${{ inputs.update_scope != 'operational' }}
         run: python -m chart_generation --resultados resultados --sector "${{ inputs.update_sector }}"
+
+      - name: Diagnosticar artefatos operacionais
+        if: always()
+        run: |
+          echo "JSONs gerados:"
+          find resultados -type f -name "*.json" -print 2>/dev/null | sort || true
+          echo "Diretórios operacionais:"
+          find resultados -type d \( -iname "*operacional*" -o -iname "*operational*" -o -iname "*construcao*" \) -print 2>/dev/null | sort || true
+          echo "Documentos de entrada do setor:"
+          find "Releases e relatórios/Entrada/${{ inputs.update_sector }}" -type f -print 2>/dev/null | sort || true
+          echo "Documentos convertidos do setor:"
+          find "Releases e relatórios/Saída/${{ inputs.update_sector }}" -type f -print 2>/dev/null | sort || true
 
       - name: Validar JSONs gerados
         run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"

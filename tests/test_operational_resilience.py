@@ -206,7 +206,17 @@ class OperationalResilienceTests(unittest.TestCase):
     def test_construction_accepts_operational_publication(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "resultados"
-            write_json(source / "construcao_civil" / "dados_operacionais" / "TEND3.json", {"ticker": "TEND3"})
+            write_json(source / "construcao_civil" / "dados_operacionais" / "TEND3.json", {
+                "schema_version": "construction_operational_v1",
+                "sector": "construcao_civil",
+                "generated_at": "2026-08-28T00:00:00+00:00",
+                "extractor_version": "construction_operational_v1",
+                "companies_requested": 26,
+                "documents_processed": 1,
+                "calculation_metadata": {},
+                "ticker": "TEND3",
+                "observations": [{"sector": "construcao_civil", "ticker": "TEND3", "indicator_id": "launches_vgv", "value": 1}],
+            })
 
             manifest = data_publication.validate_results(source, scope="operational", sector="construcao_civil")
             self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/TEND3.json"])

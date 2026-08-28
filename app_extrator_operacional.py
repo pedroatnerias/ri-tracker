@@ -1581,25 +1581,55 @@ async def run(args: argparse.Namespace) -> int:
         from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, extract_markdown_observations
         markdown_dir = Path(args.md_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        allowed_tickers = {company.ticker for company in operational_companies("construcao_civil")}
         all_observations: list[dict[str, Any]] = []
+        documents_processed: set[str] = set()
         for company in operational_companies("construcao_civil"):
             observations: list[dict[str, Any]] = []
             aliases = (company.ticker, *company.legacy_tickers)
             for path in markdown_dir.rglob("*.md") if markdown_dir.exists() else ():
                 if not any(alias.lower() in path.name.lower() for alias in aliases):
                     continue
-                observations.extend(extract_markdown_observations(path.read_text(encoding="utf-8", errors="replace"), ticker=company.ticker, source_document=path.name))
+                extracted = extract_markdown_observations(path.read_text(encoding="utf-8", errors="replace"), ticker=company.ticker, source_document=path.name)
+                if extracted:
+                    documents_processed.add(str(path))
+                observations.extend(extracted)
             if not observations:
                 continue
             metricas: dict[str, list[dict[str, Any]]] = {}
             for observation in observations:
                 name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
                 metricas.setdefault(name, []).append({"metric": name, "indicator_id": observation["indicator_id"], "confidence": observation["confidence"], "calculated": False, "serie": {observation["period"]: observation["value"]}, "observations": [observation]})
-            payload = {"schema_version": "construction_operational_v1", "sector": "construcao_civil", "ticker": company.ticker, "companhia": company.expected_name, "metricas": metricas, "observations": observations}
+            payload = {
+                "schema_version": "construction_operational_v1", "sector": "construcao_civil",
+                "generated_at": datetime.now(timezone.utc).isoformat(), "extractor_version": "construction_operational_v1",
+                "ticker": company.ticker, "companhia": company.expected_name,
+                "companies_requested": len(allowed_tickers), "documents_processed": len(documents_processed),
+                "metricas": metricas, "observations": observations,
+                "calculation_metadata": {
+                    "roe": {"value": None, "calculation_status": "missing_financial_dependencies"},
+                    "credit_loss_allowance_to_receivables": {"value": None, "calculation_status": "missing_financial_dependencies"},
+                },
+                "warnings": ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
+            }
             write_json(payload, output_dir)
             all_observations.extend(observations)
-        write_observations_json(all_observations, output_dir)
-        return 0
+        result = {
+            "sector": "construcao_civil", "companies_requested": len(allowed_tickers),
+            "documents_processed": len(documents_processed), "observations_candidates": len(all_observations),
+            "observations_valid": len(all_observations), "observations_rejected": 0,
+            "snapshot_generated": bool(all_observations),
+            "snapshot_path": str(output_dir) if all_observations else None,
+            "status": "success_new_snapshot" if all_observations else "no_valid_observations",
+            "errors": [] if all_observations else ["Nenhuma observação válida de construcao_civil foi gerada."],
+            "warnings": [],
+        }
+        if all_observations:
+            write_observations_json(all_observations, output_dir)
+        if args.result_json:
+            Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        safe_print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
+        return 0 if all_observations else 1
     markdown_paths: list[Path] = []
     if not args.no_md_fallback:
         markdown_dir = Path(args.md_dir).expanduser().resolve()
@@ -1665,6 +1695,7 @@ async def run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
+    parser.add_argument("--result-json", default=None)
     parser.add_argument(
         "--output-dir",
         default=".",

@@ -17,6 +17,9 @@ import pymupdf
 import pymupdf4llm
 import requests
 from bs4 import BeautifulSoup
+from company_registry import canonical_ticker, operational_companies
+from operational_sources import operational_sources_for_sector
+from sector_paths import resolve_releases_input_dir, resolve_releases_manifest_path, resolve_releases_output_dir
 
 
 # ============================================================
@@ -202,9 +205,9 @@ class RespostaPlaywright:
 # FUNÇÕES GERAIS
 # ============================================================
 
-def garantir_pastas_padrao() -> None:
-    PASTA_ENTRADA_PADRAO.mkdir(parents=True, exist_ok=True)
-    PASTA_SAIDA_PADRAO.mkdir(parents=True, exist_ok=True)
+def garantir_pastas_padrao(input_dir: Path = PASTA_ENTRADA_PADRAO, output_dir: Path = PASTA_SAIDA_PADRAO) -> None:
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def normalizar_texto(texto: str) -> str:
@@ -925,11 +928,12 @@ def baixar_documento(
     documento: DocumentoEncontrado,
     sessao: requests.Session,
     sobrescrever: bool,
+    input_dir: Path = PASTA_ENTRADA_PADRAO,
 ) -> DownloadRealizado | None:
-    garantir_pastas_padrao()
+    input_dir.mkdir(parents=True, exist_ok=True)
 
     nome_arquivo = nome_arquivo_documento(documento)
-    destino = PASTA_ENTRADA_PADRAO / nome_arquivo
+    destino = input_dir / nome_arquivo
 
     if destino.exists() and not sobrescrever:
         return DownloadRealizado(
@@ -975,13 +979,14 @@ def baixar_documento(
 
 def salvar_manifesto_downloads(
     registros: list[DownloadRealizado],
+    manifest_path: Path = ARQUIVO_MANIFESTO_DOWNLOADS,
 ) -> None:
     existente: list[dict[str, Any]] = []
 
-    if ARQUIVO_MANIFESTO_DOWNLOADS.exists():
+    if manifest_path.exists():
         try:
             existente = json.loads(
-                ARQUIVO_MANIFESTO_DOWNLOADS.read_text(
+                manifest_path.read_text(
                     encoding="utf-8"
                 )
             )
@@ -1017,7 +1022,7 @@ def salvar_manifesto_downloads(
         ),
     )
 
-    ARQUIVO_MANIFESTO_DOWNLOADS.write_text(
+    manifest_path.write_text(
         json.dumps(
             dados,
             ensure_ascii=False,
@@ -1033,14 +1038,21 @@ def baixar_documentos_ri(
     usar_playwright: bool,
     sobrescrever: bool,
     diagnostico_ri: bool = False,
+    *,
+    sector: str = "saude",
+    companies: dict[str, dict[str, Any]] | None = None,
+    input_dir: Path = PASTA_ENTRADA_PADRAO,
+    manifest_path: Path = ARQUIVO_MANIFESTO_DOWNLOADS,
 ) -> list[DownloadRealizado]:
     sessao = criar_sessao_http()
     registros: list[DownloadRealizado] = []
 
+    sector_sources = companies if companies is not None else operational_sources_for_sector(sector)
+    allowed_tickers = {company.ticker for company in operational_companies(sector)}
     empresas_selecionadas = {
         ticker: configuracao
-        for ticker, configuracao in EMPRESAS.items()
-        if not tickers or ticker in tickers
+        for ticker, configuracao in sector_sources.items()
+        if ticker in allowed_tickers and (not tickers or ticker in tickers)
     }
 
     for ticker, configuracao in empresas_selecionadas.items():
@@ -1088,6 +1100,7 @@ def baixar_documentos_ri(
                     documento=documento,
                     sessao=sessao,
                     sobrescrever=sobrescrever,
+                    input_dir=input_dir,
                 )
 
                 if registro:
@@ -1108,7 +1121,7 @@ def baixar_documentos_ri(
 
             time.sleep(INTERVALO_ENTRE_DOWNLOADS)
 
-    salvar_manifesto_downloads(registros)
+    salvar_manifesto_downloads(registros, manifest_path)
     if not registros:
         afetados = ", ".join(sorted(empresas_selecionadas))
         print(
@@ -1123,14 +1136,23 @@ def baixar_documentos_ri(
 # PARSER PDF -> MARKDOWN
 # ============================================================
 
-def listar_pdfs_entrada() -> list[Path]:
-    garantir_pastas_padrao()
+def listar_pdfs_entrada(input_dir: Path = PASTA_ENTRADA_PADRAO, *, sector: str | None = None) -> list[Path]:
+    input_dir.mkdir(parents=True, exist_ok=True)
+    allowed = None if sector is None else {company.ticker for company in operational_companies(sector)}
 
     return sorted(
         arquivo.resolve()
-        for arquivo in PASTA_ENTRADA_PADRAO.glob("*.pdf")
-        if arquivo.is_file()
+        for arquivo in input_dir.glob("*.pdf")
+        if arquivo.is_file() and (allowed is None or _canonical_ticker_from_filename(arquivo.name) in allowed)
     )
+
+
+def _canonical_ticker_from_filename(filename: str) -> str | None:
+    found = filename.split("_", 1)[0].upper()
+    try:
+        return canonical_ticker(found)
+    except ValueError:
+        return None
 
 
 def validar_pdf(caminho_pdf: Path) -> None:
@@ -1610,6 +1632,7 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
+    parser.add_argument("--result-json", default=None, help="Arquivo JSON com o resultado estruturado da etapa.")
 
     parser.add_argument(
         "--diagnostico-ri",
@@ -1671,7 +1694,13 @@ def main() -> int:
     parser = criar_parser_argumentos()
     argumentos = parser.parse_args()
 
-    garantir_pastas_padrao()
+    sector = argumentos.sector
+    sources = operational_sources_for_sector(sector)
+    input_dir = resolve_releases_input_dir(BASE_DIR, sector, create=True)
+    output_dir = Path(argumentos.output).expanduser().resolve() if argumentos.output else resolve_releases_output_dir(BASE_DIR, sector, create=True)
+    manifest_path = resolve_releases_manifest_path(BASE_DIR, sector)
+    garantir_pastas_padrao(input_dir, output_dir)
+    allowed_tickers = {company.ticker for company in operational_companies(sector)}
 
     tickers = (
         {ticker.upper() for ticker in argumentos.tickers}
@@ -1680,7 +1709,19 @@ def main() -> int:
     )
 
     if tickers:
-        invalidos = tickers - set(EMPRESAS)
+        normalized_tickers = set()
+        invalidos = set()
+        for ticker in tickers:
+            try:
+                normalized = canonical_ticker(ticker)
+            except ValueError:
+                invalidos.add(ticker)
+                continue
+            if normalized not in allowed_tickers:
+                invalidos.add(ticker)
+            else:
+                normalized_tickers.add(normalized)
+        tickers = normalized_tickers
 
         if invalidos:
             print(
@@ -1690,6 +1731,7 @@ def main() -> int:
             )
             return 1
 
+    registros: list[DownloadRealizado] = []
     if not argumentos.sem_download and not argumentos.pdf:
         print("\nINICIANDO DOWNLOAD DOS SITES DE RI")
 
@@ -1699,6 +1741,10 @@ def main() -> int:
             usar_playwright=not argumentos.sem_playwright,
             sobrescrever=argumentos.sobrescrever_downloads,
             diagnostico_ri=argumentos.diagnostico_ri,
+            sector=sector,
+            companies=sources,
+            input_dir=input_dir,
+            manifest_path=manifest_path,
         )
 
         print(
@@ -1706,7 +1752,7 @@ def main() -> int:
             f"{len(registros)}"
         )
         print(
-            f"Manifesto: {ARQUIVO_MANIFESTO_DOWNLOADS}"
+            f"Manifesto: {manifest_path}"
         )
 
     if argumentos.somente_download:
@@ -1717,19 +1763,30 @@ def main() -> int:
             Path(argumentos.pdf).expanduser().resolve()
         ]
     else:
-        pdfs = listar_pdfs_entrada()
+        pdfs = listar_pdfs_entrada(input_dir, sector=sector)
 
         if tickers:
             pdfs = [
                 pdf
                 for pdf in pdfs
-                if pdf.name.split("_", 1)[0] in tickers
+                if _canonical_ticker_from_filename(pdf.name) in tickers
             ]
 
     if not pdfs:
+        result = {
+            "sector": sector, "companies_requested": len(tickers or allowed_tickers),
+            "companies_with_sources": len({ticker for ticker in (tickers or allowed_tickers) if ticker in sources}),
+            "documents_discovered": len(registros), "documents_downloaded": 0,
+            "documents_converted": 0, "documents_rejected_wrong_sector": 0,
+            "status": "no_sector_documents", "input_dir": str(input_dir), "output_dir": str(output_dir),
+            "errors": [f"Nenhum documento válido de {sector} foi encontrado."], "warnings": [],
+        }
+        if argumentos.result_json:
+            Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
         print(
             "Nenhum PDF disponível para processamento em:\n"
-            f"{PASTA_ENTRADA_PADRAO}",
+            f"{input_dir}",
             file=sys.stderr,
         )
         return 1
@@ -1741,7 +1798,7 @@ def main() -> int:
         try:
             resultado = converter_pdf_para_markdown(
                 caminho_pdf=pdf,
-                diretorio_saida=argumentos.output,
+                diretorio_saida=output_dir,
                 idioma_ocr=argumentos.ocr_language,
                 forcar_ocr=argumentos.force_ocr,
                 extrair_imagens=not argumentos.no_images,
@@ -1772,7 +1829,22 @@ def main() -> int:
     print(f"Erros: {erros}")
     print("=" * 70)
 
-    return 1 if erros else 0
+    result = {
+        "sector": sector,
+        "companies_requested": len(tickers or allowed_tickers),
+        "companies_with_sources": len({ticker for ticker in (tickers or allowed_tickers) if ticker in sources}),
+        "documents_discovered": len(registros) if not argumentos.sem_download and not argumentos.pdf else len(pdfs),
+        "documents_downloaded": sum(1 for item in (registros if not argumentos.sem_download and not argumentos.pdf else []) if item.status == "baixado"),
+        "documents_converted": sucessos,
+        "documents_rejected_wrong_sector": 0,
+        "status": "success" if sucessos and not erros else ("no_sector_documents" if not pdfs else "conversion_error"),
+        "input_dir": str(input_dir), "output_dir": str(output_dir),
+        "errors": [f"{erros} conversões falharam"] if erros else [], "warnings": [],
+    }
+    if argumentos.result_json:
+        Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
+    return 1 if erros or not sucessos else 0
 
 
 if __name__ == "__main__":

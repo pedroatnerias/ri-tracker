@@ -43,7 +43,7 @@ from manual_operational import (
 from operational_dictionary import TARGET_METRICS, all_metric_names
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
-from sector_paths import find_financial_statement_json
+from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
 
 
 TICKERS = ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")
@@ -491,6 +491,13 @@ def run_update(
     selected_operational = [c.ticker for c in operational_companies(sector)] if run_operational else []
     if run_operational:
         operational_dir.mkdir(parents=True, exist_ok=True)
+        releases_input_dir = resolve_releases_input_dir(BASE_DIR, sector, create=True)
+        releases_output_dir = resolve_releases_output_dir(BASE_DIR, sector, create=True)
+        parser_result_json = resultados / "operational_releases_result.json"
+        extractor_result_json = resultados / "operational_extraction_result.json"
+        for stale_result in (parser_result_json, extractor_result_json):
+            if stale_result.exists():
+                stale_result.unlink()
 
     def skipped_step(label: str) -> dict[str, object]:
         append_update_log(f"[SKIP] {label} - scope={scope}")
@@ -536,7 +543,7 @@ def run_update(
         step_results.extend([skipped_step("Balanço Patrimonial CVM"), skipped_step("DRE CVM"), skipped_step("DFC CVM")])
 
     if run_operational:
-        parser_cmd = [sys.executable, script_path("app_parser_operacional.py"), "--sector", sector]
+        parser_cmd = [sys.executable, script_path("app_parser_operacional.py"), "--sector", sector, "--output", str(releases_output_dir), "--result-json", str(parser_result_json)]
         if full_mode:
             parser_cmd.append("--sobrescrever-downloads")
         if diagnostico_ri:
@@ -548,7 +555,12 @@ def run_update(
         )
         step_results.append(parser_result)
         if command_failed(parser_result):
-            warnings.append("Releases e relatorios operacionais falhou; Dados operacionais foi pulado.")
+            existing_snapshots = [path for path in operational_dir.glob("*.json") if path.name not in {"operational_observations.json"}]
+            manual_exists = (resultados / MANUAL_OVERRIDES_FILENAME).exists()
+            if sector == "construcao_civil" and not existing_snapshots and not manual_exists:
+                raise RuntimeError(f"Nenhum documento setorial e nenhum snapshot operacional válido para {sector}.")
+            warnings.append("Releases operacionais sem novos documentos; snapshot/manual existente preservado.")
+            parser_result["status"] = "preserved_existing_snapshot" if existing_snapshots else "success_manual_only"
             skipped = {
                 "label": "Dados operacionais",
                 "status": "skipped",
@@ -561,12 +573,22 @@ def run_update(
         else:
             extractor_result = run_update_command(
                 "Dados operacionais",
-                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--sector", sector],
+                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--md-dir", str(releases_output_dir), "--sector", sector, "--result-json", str(extractor_result_json)],
                 critical=False,
             )
             step_results.append(extractor_result)
             if command_failed(extractor_result):
-                warnings.append("Dados operacionais falhou; pipeline continuou.")
+                existing_snapshots = [path for path in operational_dir.glob("*.json") if path.name not in {"operational_observations.json"}]
+                manual_exists = (resultados / MANUAL_OVERRIDES_FILENAME).exists()
+                if existing_snapshots or manual_exists:
+                    extractor_result["status"] = "preserved_existing_snapshot" if existing_snapshots else "success_manual_only"
+                    extractor_result["existing_snapshot_preserved"] = bool(existing_snapshots)
+                    extractor_result["manual_file_found"] = manual_exists
+                    warnings.append("Nenhum snapshot novo; dados operacionais existentes foram preservados.")
+                elif sector == "construcao_civil":
+                    raise RuntimeError(f"Nenhum snapshot operacional válido foi produzido para {sector}.")
+                else:
+                    warnings.append("Dados operacionais falhou; pipeline continuou.")
     else:
         step_results.extend([skipped_step("Releases e relatorios operacionais"), skipped_step("Dados operacionais")])
 
