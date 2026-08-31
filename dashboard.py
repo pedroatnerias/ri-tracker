@@ -814,6 +814,71 @@ def migrate_legacy_company_tickers(payload: dict | None) -> dict | None:
     return payload
 
 
+def manifest_operational_jsons(manifest: dict | None, sector: str) -> list[str]:
+    if not isinstance(manifest, dict):
+        return []
+    sector_manifest = manifest
+    if manifest.get("schema_version") == 2 and isinstance(manifest.get("sectors"), dict):
+        sector_manifest = manifest["sectors"].get(sector) or {}
+    paths = sector_manifest.get("operational_jsons")
+    return [str(path).replace("\\", "/") for path in paths] if isinstance(paths, list) else []
+
+
+def validate_operational_manifest_consistency(resultados: Path, sector: str) -> dict[str, object]:
+    manifest = load_optional_json(resultados / "data_manifest.json") or {}
+    metadata = load_optional_json(resultados / "update_metadata.json") or {}
+    listed = set(manifest_operational_jsons(manifest, sector))
+    op_dir = resultados / "dados_operacionais"
+    physical = {f"dados_operacionais/{path.name}" for path in op_dir.glob("*.json")} if op_dir.exists() else set()
+    allowed = {f"dados_operacionais/{ticker}.json" for ticker in tickers_for_sector(sector)}
+    physical &= allowed
+    missing = sorted(path for path in listed if not (resultados / path).exists())
+    unlisted = sorted(physical - listed) if listed else []
+    metadata_paths = set()
+    if isinstance(metadata.get("operational_jsons"), list):
+        metadata_paths = {str(path).replace("\\", "/") for path in metadata["operational_jsons"]}
+    incompatible = bool(metadata_paths and listed and metadata_paths != listed)
+    legacy_health = sector == "saude" and not listed and bool(physical)
+    return {
+        "status": "invalid" if missing or unlisted or incompatible or legacy_health else "valid",
+        "listed": sorted(listed),
+        "physical": sorted(physical),
+        "missing": missing,
+        "unlisted": unlisted,
+        "metadata_manifest_mismatch": incompatible,
+        "legacy_health_requires_migration": legacy_health,
+    }
+
+
+def migrate_legacy_health_operational_files(resultados: Path) -> dict[str, object]:
+    """Copia snapshots legados de Saude para o layout setorial v2 sem apagar a origem."""
+    source_dir = resultados / "dados_operacionais"
+    target = resultados / "sectors" / "saude"
+    target_dir = target / "dados_operacionais"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for ticker in tickers_for_sector("saude"):
+        source = source_dir / f"{ticker}.json"
+        if not source.exists():
+            continue
+        destination = target_dir / source.name
+        if not destination.exists() or source.read_bytes() != destination.read_bytes():
+            destination.write_bytes(source.read_bytes())
+            copied.append(f"dados_operacionais/{source.name}")
+    operational_jsons = [f"dados_operacionais/{ticker}.json" for ticker in tickers_for_sector("saude") if (target_dir / f"{ticker}.json").exists()]
+    sector_manifest = load_optional_json(target / "data_manifest.json") or {}
+    sector_manifest.update({"schema_version": 2, "sector": "saude", "operational_jsons": operational_jsons})
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "data_manifest.json").write_text(json.dumps(sector_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    root_manifest = load_optional_json(resultados / "data_manifest.json") or {"schema_version": 2, "sectors": {}}
+    if root_manifest.get("schema_version") != 2:
+        root_manifest = {"schema_version": 2, "sectors": {"saude": root_manifest}}
+    root_manifest.setdefault("sectors", {})["saude"] = sector_manifest
+    root_manifest["schema_version"] = 2
+    (resultados / "data_manifest.json").write_text(json.dumps(root_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"sector": "saude", "copied": copied, "operational_jsons": operational_jsons, "idempotent": True}
+
+
 def _operational_annual_series(series: dict, indicator_id: str, sector: str) -> tuple[dict, set[str]]:
     result = dict(series)
     derived: set[str] = set()
@@ -896,6 +961,42 @@ def normalize_operational_company(data: dict, sector: str) -> dict:
 
 def load_operational_data(resultados: Path, sector: str = "saude") -> tuple[dict, dict[str, dict]]:
     allowed_tickers = set(tickers_for_sector(sector))
+    manifest = load_optional_json(resultados / "data_manifest.json") or {}
+    manifest_paths = manifest_operational_jsons(manifest, sector)
+    if manifest_paths:
+        companies: dict[str, dict] = {}
+        file_meta: dict[str, dict] = {}
+        for relative in manifest_paths:
+            path = resultados / relative
+            if not path.exists():
+                continue
+            try:
+                data = load_json(path)
+            except Exception:
+                continue
+            ticker = str(data.get("ticker") or "").upper()
+            if ticker in allowed_tickers and "metricas" in data:
+                companies[ticker] = normalize_operational_company(data, sector)
+                file_meta[f"operacional_{ticker}"] = {"path": str(path), "modified_at": path.stat().st_mtime, "exists": True}
+        if companies:
+            return {"companies": companies}, file_meta
+    if sector == "saude" and not manifest_paths and (resultados / "data_manifest.json").exists():
+        legacy_manifest = load_optional_json(resultados / "data_manifest.json") or {}
+        legacy_paths = legacy_manifest.get("operational_jsons") if isinstance(legacy_manifest.get("operational_jsons"), list) else []
+        if legacy_paths:
+            companies: dict[str, dict] = {}
+            file_meta: dict[str, dict] = {}
+            for relative in legacy_paths:
+                path = resultados / str(relative)
+                if not path.exists():
+                    continue
+                data = load_json(path)
+                ticker = str(data.get("ticker") or "").upper()
+                if ticker in allowed_tickers and "metricas" in data:
+                    companies[ticker] = normalize_operational_company(data, sector)
+                    file_meta[f"operacional_{ticker}"] = {"path": str(path), "modified_at": path.stat().st_mtime, "exists": True, "layout": "legacy_health_fallback"}
+            if companies:
+                return {"companies": companies}, file_meta
     candidate_files = [
         resultados / "dados_operacionais.json",
         resultados / "operacional.json",

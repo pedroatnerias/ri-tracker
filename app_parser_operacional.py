@@ -18,7 +18,7 @@ import pymupdf4llm
 import requests
 from bs4 import BeautifulSoup
 from company_registry import canonical_ticker, operational_companies
-from operational_sources import operational_sources_for_sector
+from operational_sources import ACCEPTED_DOCUMENT_TYPES, operational_sources_for_sector
 from sector_paths import resolve_releases_input_dir, resolve_releases_manifest_path, resolve_releases_output_dir
 
 
@@ -106,6 +106,22 @@ EMPRESAS = {
 }
 
 TIPOS_DOCUMENTO = {
+    "PREVIA_OPERACIONAL": (
+        "previa operacional",
+        "pre-operational",
+        "operational preview",
+        "operational data",
+    ),
+    "PLANILHA_RESULTADOS": (
+        "planilha de resultados",
+        "planilha de fundamentos",
+        "dados historicos",
+        "fundamentos",
+        "spreadsheet",
+        "xlsx",
+        "xlsm",
+        "excel",
+    ),
     "DEMONSTRACOES_FINANCEIRAS": (
         "demonstracoes financeiras",
         "demonstração financeira",
@@ -154,10 +170,6 @@ TERMOS_EXCLUIDOS = (
     "calendar",
     "calendario",
     "calendário",
-    "planilha",
-    "spreadsheet",
-    "xlsx",
-    "excel",
 )
 
 
@@ -309,6 +321,8 @@ def classificar_tipo_documento(texto: str) -> str | None:
     # A transcrição precisa ser avaliada primeiro para não ser confundida
     # com outros documentos associados à teleconferência.
     ordem = (
+        "PLANILHA_RESULTADOS",
+        "PREVIA_OPERACIONAL",
         "TRANSCRICAO_WEBCAST",
         "DEMONSTRACOES_FINANCEIRAS",
         "RELEASE_RESULTADOS",
@@ -316,6 +330,8 @@ def classificar_tipo_documento(texto: str) -> str | None:
     )
 
     for tipo in ordem:
+        if tipo not in ACCEPTED_DOCUMENT_TYPES:
+            continue
         termos = TIPOS_DOCUMENTO[tipo]
 
         if any(
@@ -330,13 +346,16 @@ def classificar_tipo_documento(texto: str) -> str | None:
 def parece_pdf(url: str, texto: str = "") -> bool:
     caminho = urlparse(url).path.lower()
 
-    if caminho.endswith(".pdf"):
+    if caminho.endswith((".pdf", ".xlsx", ".xlsm", ".xls")):
         return True
 
     combinado = normalizar_texto(f"{url} {texto}")
 
     return (
         ".pdf" in combinado
+        or ".xlsx" in combinado
+        or ".xlsm" in combinado
+        or ".xls" in combinado
         or "download" in combinado
         or "documento" in combinado
         or "arquivo" in combinado
@@ -384,7 +403,7 @@ def valores_url_atributos(elemento: Any) -> list[str]:
                 or parece_pdf(texto, nome)
                 or any(
                     termo in texto_normalizado
-                    for termo in ("download", "document", "arquivo", "documento", "pdf")
+                    for termo in ("download", "document", "arquivo", "documento", "pdf", "xlsx", "xlsm", "xls", "excel", "planilha", "spreadsheet")
                 )
             ):
                 urls.append(texto)
@@ -401,7 +420,7 @@ def urls_em_texto(texto: str) -> list[str]:
         for url in re.findall(r"""https?://[^"'<>\\\s]+""", texto)
     ]
     relativas = re.findall(
-        r"""(?P<url>/[^"'<>\\\s]*(?:\.pdf|download|document|arquivo|documento)[^"'<>\\\s]*)""",
+        r"""(?P<url>/[^"'<>\\\s]*(?:\.pdf|\.xlsx|\.xlsm|\.xls|download|document|arquivo|documento)[^"'<>\\\s]*)""",
         texto,
         flags=re.IGNORECASE,
     )

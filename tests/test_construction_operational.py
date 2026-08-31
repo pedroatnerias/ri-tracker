@@ -5,8 +5,11 @@ from construction_operational import (
     calculate_credit_loss_proxy,
     calculate_roe,
     calculate_vso,
+    align_periods_and_values,
     extract_markdown_observations,
+    extract_table_observations,
     identify_metric,
+    parse_composite_header,
     parse_brazilian_financial_value,
 )
 from dashboard import normalize_operational_metric_item
@@ -62,6 +65,20 @@ Página 3
         self.assertEqual(parse_brazilian_financial_value("814.000", "R$ mil")["normalized_value"], 814.0)
         self.assertEqual(parse_brazilian_financial_value("24,15", "R$ milhões")["normalized_value"], 24.15)
         self.assertFalse(parse_brazilian_financial_value(7395, "R$ MM")["scale_conversion_applied"])
+
+    def test_billion_scale_and_composite_table_parser(self):
+        self.assertEqual(parse_brazilian_financial_value("24,15", "R$ bilhoes")["normalized_value"], 24150.0)
+        header = parse_composite_header("VGV Lancado (R$ MM)<br>6M26 6M25 Var%")
+        self.assertEqual(header["periods"], ["6M26", "6M25", "VAR%"])
+        aligned = align_periods_and_values(["VGV Lancado (R$ MM)<br>6M26 6M25 Var%"], ["5.154<br>6.302<br>-18%"])
+        self.assertEqual(aligned, [("6M26", "5.154"), ("6M25", "6.302")])
+        rows = extract_table_observations(
+            [["Indicador", "VGV Lancado (R$ MM)<br>6M26 6M25 Var%"], ["VGV lancado", "5.154<br>6.302<br>-18%"]],
+            {"ticker": "CYRE3", "source_document": "CYRE3.xlsx", "table_title": "Previa operacional"},
+        )
+        self.assertEqual([row["period"] for row in rows], ["6M26", "6M25"])
+        self.assertEqual(rows[0]["indicator_id"], "launches_vgv")
+        self.assertEqual(rows[0]["unit"], "BRL_million")
 
     def test_canonical_item_and_annual_rules(self):
         flow = normalize_operational_metric_item({

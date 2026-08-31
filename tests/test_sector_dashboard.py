@@ -67,3 +67,38 @@ class SectorDashboardTests(unittest.TestCase):
             (op / "AALR3.json").write_text(json.dumps({"ticker": "AALR3", "metricas": {}}), encoding="utf-8")
             data, _meta = dashboard.load_operational_data(Path(tmp), "saude")
         self.assertEqual(set(data["companies"]), {"AALR3"})
+
+    def test_health_v2_empty_manifest_uses_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            op = root / "dados_operacionais"
+            op.mkdir()
+            for ticker in ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3"):
+                (op / f"{ticker}.json").write_text(json.dumps({"ticker": ticker, "metricas": {"Receita Bruta": []}}), encoding="utf-8")
+            (root / "data_manifest.json").write_text(json.dumps({"schema_version": 2, "sectors": {"saude": {"operational_jsons": []}}, "operational_jsons": [f"dados_operacionais/{ticker}.json" for ticker in ("AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3")]}), encoding="utf-8")
+            data, meta = dashboard.load_operational_data(root, "saude")
+        self.assertEqual(len(data["companies"]), 7)
+        self.assertTrue(all(item.get("layout") == "legacy_health_fallback" for item in meta.values()))
+
+    def test_health_migration_is_idempotent_and_preserves_legacy_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            op = root / "dados_operacionais"
+            op.mkdir()
+            (op / "AALR3.json").write_text(json.dumps({"ticker": "AALR3", "metricas": {"Receita Bruta": []}}), encoding="utf-8")
+            first = dashboard.migrate_legacy_health_operational_files(root)
+            second = dashboard.migrate_legacy_health_operational_files(root)
+            self.assertTrue((root / "dados_operacionais" / "AALR3.json").exists())
+            self.assertTrue((root / "sectors" / "saude" / "dados_operacionais" / "AALR3.json").exists())
+            self.assertEqual(second["operational_jsons"], first["operational_jsons"])
+
+    def test_manifest_consistency_flags_unlisted_publishable_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            op = root / "dados_operacionais"
+            op.mkdir()
+            (op / "AALR3.json").write_text(json.dumps({"ticker": "AALR3", "metricas": {}}), encoding="utf-8")
+            (root / "data_manifest.json").write_text(json.dumps({"schema_version": 2, "sectors": {"saude": {"operational_jsons": []}}}), encoding="utf-8")
+            result = dashboard.validate_operational_manifest_consistency(root, "saude")
+        self.assertEqual(result["status"], "invalid")
+        self.assertTrue(result["legacy_health_requires_migration"])

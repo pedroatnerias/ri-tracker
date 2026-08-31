@@ -45,8 +45,13 @@ def _build_sector_sources(sector: str, urls: dict[str, str]) -> dict[str, dict[s
         ticker: {
             "ticker": ticker, "legacy_tickers": list(company.legacy_tickers),
             "empresa": company.expected_name, "aliases": list(company.aliases),
-            "url": urls[ticker], "official_domain": urls[ticker].split("/", 3)[2],
+            "url": urls[ticker],
+            "results_pages": [urls[ticker]],
+            "api_endpoints": [],
+            "official_domain": urls[ticker].split("/", 3)[2],
+            "allowed_domains": [urls[ticker].split("/", 3)[2]],
             "discovery_method": "official_results_page",
+            "discovery_methods": ["static_html", "known_file_manager", "playwright"],
             "accepted_document_types": list(ACCEPTED_DOCUMENT_TYPES),
         }
         for ticker, company in companies.items() if ticker in urls

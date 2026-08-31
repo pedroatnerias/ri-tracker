@@ -353,6 +353,68 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     return manifest
 
 
+def build_operational_quality_report(base: Path, sector: str = "saude") -> dict[str, object]:
+    sector = validate_sector(sector)
+    base = resolve_sector_results_dir(base.resolve(), sector)
+    manifest = read_json_if_exists(base / "data_manifest.json")
+    listed = set(manifest.get("operational_jsons") or []) if isinstance(manifest, dict) else set()
+    op_dir = base / "dados_operacionais"
+    files = sorted(op_dir.glob("*.json")) if op_dir.exists() else []
+    allowed = {company.ticker for company in operational_companies(sector)}
+    report = {
+        "sector": sector,
+        "companies_requested": len(allowed),
+        "manifest_operational_jsons": sorted(listed),
+        "manifest_missing_files": sorted(path for path in listed if not (base / path).exists()),
+        "publishable_unlisted_files": [],
+        "companies_with_valid_observations": 0,
+        "companies_not_found": 0,
+        "companies_quarantined_only": 0,
+        "valid_observations": 0,
+        "quarantined_observations": 0,
+        "zero_observations": 0,
+        "scales_detected": {},
+        "periods_coverage_by_company": {},
+        "metrics_coverage_by_company": {},
+        "status": "success",
+        "warnings": [],
+    }
+    for path in files:
+        if path.name not in {f"{ticker}.json" for ticker in allowed}:
+            continue
+        relative = f"dados_operacionais/{path.name}"
+        if listed and relative not in listed:
+            report["publishable_unlisted_files"].append(relative)
+        payload = read_existing_json(path) or {}
+        ticker = str(payload.get("ticker") or path.stem).upper()
+        observations = payload.get("observations") if isinstance(payload.get("observations"), list) else []
+        valid = [item for item in observations if item.get("validation_status", "valid") == "valid" and item.get("confidence") in {"high", "medium"}]
+        quarantined = [item for item in observations if str(item.get("validation_status", "")).startswith("quarantined")]
+        if payload.get("status") == "not_found":
+            report["companies_not_found"] += 1
+        elif valid:
+            report["companies_with_valid_observations"] += 1
+        elif quarantined:
+            report["companies_quarantined_only"] += 1
+        report["valid_observations"] += len(valid)
+        report["quarantined_observations"] += len(quarantined)
+        report["zero_observations"] += sum(1 for item in valid if item.get("value") == 0)
+        report["periods_coverage_by_company"][ticker] = sorted({str(item.get("period")) for item in valid if item.get("period")})
+        report["metrics_coverage_by_company"][ticker] = sorted({str(item.get("indicator_id")) for item in valid if item.get("indicator_id")})
+        for item in valid:
+            unit = str(item.get("raw_unit") or item.get("unit") or "unknown")
+            report["scales_detected"][unit] = report["scales_detected"].get(unit, 0) + 1
+    if report["manifest_missing_files"] or report["publishable_unlisted_files"]:
+        report["status"] = "blocked"
+        report["warnings"].append("Manifest e arquivos operacionais nao reconciliam.")
+    if report["companies_with_valid_observations"] < len(allowed):
+        report["warnings"].append(
+            f"Cobertura parcial: {report['companies_with_valid_observations']}/{len(allowed)} empresas com observacoes validas."
+        )
+    (base / "operational_quality_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
 def validate_results(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
     if validate_sector(sector) == "all":
         health = validate_results(base, scope=scope, sector="saude")

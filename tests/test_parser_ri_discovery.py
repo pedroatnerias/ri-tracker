@@ -80,6 +80,16 @@ class ParserRiDiscoveryTests(unittest.TestCase):
         found = docs('<a href="/download?id=1">Download</a>')
         self.assertEqual(found, [])
 
+    def test_operational_preview_is_accepted(self):
+        found = docs('<a href="/previa-operacional-1T26.pdf">Previa operacional 1T26</a>')
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].tipo, "PREVIA_OPERACIONAL")
+
+    def test_official_xlsx_spreadsheet_is_accepted(self):
+        found = docs('<a href="/fundamentos-2T26.xlsx">Planilha de fundamentos 2T26 Excel</a>')
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].tipo, "PLANILHA_RESULTADOS")
+
 
 if __name__ == "__main__":
     unittest.main()

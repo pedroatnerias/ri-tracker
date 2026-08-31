@@ -92,6 +92,29 @@ def normalize_money(value: float, unit_text: str) -> tuple[float, str, str]:
     return number, "BRL", "million"
 
 
+def resolve_financial_unit(unit_text: str, source: str = "column_header") -> dict[str, Any]:
+    unit = normalize_text(unit_text)
+    if "bilh" in unit or "billion" in unit:
+        multiplier = 1000
+    elif re.search(r"\bmil\b|thousand", unit) and "milhao" not in unit and "million" not in unit:
+        multiplier = .001
+    elif re.search(r"(?:r\$|brl)\s*mm\b", unit) or "milhoes" in unit or "milhao" in unit or "million" in unit:
+        multiplier = 1
+    elif "r$" in unit or "brl" in unit:
+        multiplier = .000001
+    else:
+        multiplier = 1
+        source = "unknown"
+    return {
+        "currency": "BRL",
+        "raw_scale": unit_text,
+        "normalized_unit": "BRL_million",
+        "multiplier": multiplier,
+        "source": source,
+        "confidence": "high" if source != "unknown" else "low",
+    }
+
+
 def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale: str) -> dict[str, Any]:
     raw = str(raw_value).strip()
     if isinstance(raw_value, (int, float)):
@@ -105,13 +128,93 @@ def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale
         elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", cleaned):
             cleaned = cleaned.replace(".", "")
         parsed = float(cleaned)
-    normalized, currency, scale = normalize_money(parsed, declared_scale)
+    unit = resolve_financial_unit(declared_scale)
+    normalized = parsed * float(unit["multiplier"])
     return {
         "raw_value": raw, "raw_unit": declared_scale, "parsed_value": parsed,
         "normalized_value": normalized, "normalized_unit": "BRL_million",
-        "currency": currency, "scale": scale,
+        "currency": unit["currency"], "scale": "million",
+        "multiplier": unit["multiplier"], "unit_source": unit["source"],
+        "conversion_steps": [{"from": raw, "parsed_value": parsed}, {"multiplier": unit["multiplier"], "normalized_unit": "BRL_million"}],
         "scale_conversion_applied": not math.isclose(parsed, normalized),
     }
+
+
+def parse_composite_header(cell: str) -> dict[str, Any]:
+    parts = [part.strip() for part in re.split(r"<br\s*/?>|\n", str(cell), flags=re.I) if part.strip()]
+    title = parts[0] if parts else ""
+    periods: list[str] = []
+    for part in parts[1:] or parts:
+        for token in re.findall(r"(?:\b(?:[1-4]T\d{2,4}|[69]M\d{2,4}|FY\d{2,4}|20\d{2})\b|Var%)", part, flags=re.I):
+            periods.append(token.upper())
+    return {"title": title, "periods": periods, "unit": title}
+
+
+def split_composite_cell(cell: str) -> list[str]:
+    return [part.strip() for part in re.split(r"<br\s*/?>|\n", str(cell), flags=re.I) if part.strip()]
+
+
+def align_periods_and_values(headers: list[str], values: list[str]) -> list[tuple[str, str]]:
+    expanded_headers: list[str] = []
+    for header in headers:
+        parsed = parse_composite_header(header)
+        expanded_headers.extend(parsed["periods"] or [header])
+    expanded_values: list[str] = []
+    for value in values:
+        expanded_values.extend(split_composite_cell(value))
+    aligned: list[tuple[str, str]] = []
+    for period, value in zip(expanded_headers, expanded_values):
+        if normalize_text(period) in {"var", "var%"} or "%" in period and not re.search(r"\d", period):
+            continue
+        if "%" in str(value):
+            continue
+        aligned.append((period, value))
+    return aligned
+
+
+def validate_observation_evidence(observation: dict[str, Any]) -> dict[str, Any]:
+    missing = [key for key in ("ticker", "indicator_id", "period", "value", "unit", "source_document") if not observation.get(key)]
+    status = "valid" if not missing and observation.get("confidence") in {"high", "medium"} else "low_confidence"
+    if observation.get("validation_flags"):
+        status = "quarantined_scope" if "breakdown_without_explicit_total" in observation["validation_flags"] else status
+    return {**observation, "validation_status": status, "validation_missing_fields": missing}
+
+
+def extract_table_observations(table: list[list[str]], context: dict[str, Any]) -> list[dict[str, Any]]:
+    if not table:
+        return []
+    headers = table[0]
+    observations: list[dict[str, Any]] = []
+    for row in table[1:]:
+        if not row:
+            continue
+        label = row[0]
+        context_text = str(context.get("table_title") or "")
+        indicator_id, flags = identify_metric(label, context_text, " ".join(headers))
+        if not indicator_id or flags:
+            continue
+        for period, raw_value in align_periods_and_values(headers[1:], row[1:]):
+            try:
+                parsed = parse_brazilian_financial_value(raw_value, " ".join(headers))
+                observation = build_evidence_observation(
+                    ticker=str(context.get("ticker") or ""),
+                    indicator_id=indicator_id,
+                    value=parsed["parsed_value"],
+                    period=period,
+                    label=label,
+                    unit=" ".join(headers),
+                    context=context_text,
+                    source_document=str(context.get("source_document") or ""),
+                    source_url=str(context.get("source_url") or ""),
+                    table_title=context_text,
+                    column_label=period,
+                    raw_value=raw_value,
+                    raw_unit=" ".join(headers),
+                )
+            except (ValueError, KeyError):
+                continue
+            observations.append(validate_observation_evidence(observation))
+    return observations
 
 
 def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str | None, list[str]]:
