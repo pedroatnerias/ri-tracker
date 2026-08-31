@@ -76,12 +76,13 @@ def validate_operational_snapshot(path: Path, sector: str) -> None:
     if sector == "construcao_civil" and payload_sector != sector:
         raise SystemExit(f"Snapshot operacional pertence ao setor {payload_sector or 'não informado'}, mas o setor solicitado é {sector}.")
     observations = payload.get("observations")
+    empty_statuses = {"not_found", "not_found_no_previous_data", "source_unavailable", "unsupported_document"}
     if sector == "construcao_civil":
         required = {"schema_version", "generated_at", "extractor_version", "companies_requested", "documents_processed", "calculation_metadata"}
         missing = sorted(required - set(payload))
         if missing:
             raise SystemExit(f"Snapshot operacional sem campos obrigatórios: {', '.join(missing)}.")
-    if sector == "construcao_civil" and (not isinstance(observations, list) or (not observations and payload.get("status") != "not_found")):
+    if sector == "construcao_civil" and (not isinstance(observations, list) or (not observations and payload.get("status") not in empty_statuses)):
         raise SystemExit(f"Nenhuma observação válida de {sector} foi gerada.")
     for observation in observations if isinstance(observations, list) else []:
         observation_ticker = str(observation.get("ticker") or ticker).upper()
@@ -310,6 +311,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     ) if scope in {"all", "operational"} and op_dir.exists() else []
     for path in operational_jsons:
         validate_operational_snapshot(path, sector)
+    operational_quality = build_operational_quality_report(base, sector) if scope in {"all", "operational"} and sector == "construcao_civil" else {}
     manual_path = base / MANUAL_OVERRIDES_FILENAME
     manual_exists = manual_path.exists()
     if manual_exists:
@@ -330,6 +332,14 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     for path in chart_pngs:
         validate_png_file(path, "grafico")
 
+    warnings = [] if operational_jsons or scope == "financial" else [
+        "Nenhum JSON operacional novo validado; snapshot operacional anterior sera preservado."
+    ]
+    if operational_quality.get("warnings"):
+        warnings.extend(str(item) for item in operational_quality["warnings"])
+    status = "success_with_warnings" if warnings else "success"
+    if scope in {"all", "operational"} and sector == "construcao_civil" and operational_quality.get("companies_with_valid_observations", 0) == 0:
+        status = "failed_quality_gate"
     manifest = {
         "root_jsons": [path.relative_to(base).as_posix() for path in financial_paths],
         "operational_jsons": [path.relative_to(base).as_posix() for path in operational_jsons],
@@ -337,9 +347,9 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
         "chart_pngs": [path.relative_to(base).as_posix() for path in chart_pngs],
         "scope": scope,
         "sector": sector,
-        "warnings": [] if operational_jsons or scope == "financial" else [
-            "Nenhum JSON operacional novo validado; snapshot operacional anterior sera preservado."
-        ],
+        "warnings": warnings,
+        "status": status,
+        "operational_quality": operational_quality,
     }
     (base / "publish_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -355,7 +365,10 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
 
 def build_operational_quality_report(base: Path, sector: str = "saude") -> dict[str, object]:
     sector = validate_sector(sector)
-    base = resolve_sector_results_dir(base.resolve(), sector)
+    base = base.resolve()
+    if base.name != sector:
+        base = resolve_sector_results_dir(base, sector)
+    base.mkdir(parents=True, exist_ok=True)
     manifest = read_json_if_exists(base / "data_manifest.json")
     listed = set(manifest.get("operational_jsons") or []) if isinstance(manifest, dict) else set()
     op_dir = base / "dados_operacionais"
@@ -411,6 +424,8 @@ def build_operational_quality_report(base: Path, sector: str = "saude") -> dict[
         report["warnings"].append(
             f"Cobertura parcial: {report['companies_with_valid_observations']}/{len(allowed)} empresas com observacoes validas."
         )
+    if report["companies_with_valid_observations"] == 0:
+        report["status"] = "failed_quality_gate"
     (base / "operational_quality_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
 
@@ -421,6 +436,8 @@ def validate_results(base: Path, scope: str = "all", sector: str = "saude") -> d
         construction = validate_results(base, scope="financial" if scope != "operational" else "operational", sector="construcao_civil") if scope != "operational" else None
         return {"sector": "all", "scope": scope, "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
     manifest = build_publish_manifest(base, scope, sector)
+    if manifest.get("status") == "failed_quality_gate":
+        raise SystemExit("Quality gate operacional falhou: nenhuma observacao valida auditavel foi encontrada.")
     print(
         "Validacao concluida: "
         f"{len(manifest['root_jsons'])} JSONs financeiros validos; "
@@ -570,8 +587,9 @@ def publish_validated_data(
         "scope": scope,
         "sector": sector,
         "mode": os.environ.get("UPDATE_MODE", ""),
-        "status": "success_with_warnings" if manifest.get("warnings") else "success",
+        "status": manifest.get("status") or ("success_with_warnings" if manifest.get("warnings") else "success"),
         "warnings": manifest.get("warnings", []),
+        "operational_quality": manifest.get("operational_quality", {}),
         "components": {
             "financial": component_metadata("financial", financial_updated, financial_skipped_status),
             "operational": component_metadata("operational", operational_updated, operational_skipped_status),

@@ -1578,20 +1578,36 @@ async def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     if args.sector == "construcao_civil":
         from company_registry import operational_companies
-        from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, extract_markdown_observations
+        from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, extract_markdown_observations, extract_workbook_observations
         markdown_dir = Path(args.md_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         allowed_tickers = {company.ticker for company in operational_companies("construcao_civil")}
+        source_files = [path for pattern in ("*.md", "*.xlsx", "*.xlsm") for path in (markdown_dir.rglob(pattern) if markdown_dir.exists() else ())]
         all_observations: list[dict[str, Any]] = []
         documents_processed: set[str] = set()
+        snapshots_preserved = 0
         for company in operational_companies("construcao_civil"):
             observations: list[dict[str, Any]] = []
             company_documents: set[str] = set()
-            aliases = (company.ticker, *company.legacy_tickers)
-            for path in markdown_dir.rglob("*.md") if markdown_dir.exists() else ():
-                if not any(alias.lower() in path.name.lower() for alias in aliases):
+            aliases = tuple(normalise_text(alias) for alias in (company.ticker, *company.legacy_tickers, company.expected_name, *company.aliases))
+            for path in source_files:
+                path_text = normalise_text(path.name)
+                text = ""
+                if path.suffix.lower() == ".md":
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                    doc_text = normalise_text(f"{path_text} {text[:2000]}")
+                else:
+                    doc_text = path_text
+                company_resolution_method = "metadata_or_content"
+                if not any(alias and alias in doc_text for alias in aliases):
                     continue
-                extracted = extract_markdown_observations(path.read_text(encoding="utf-8", errors="replace"), ticker=company.ticker, source_document=path.name)
+                if path.suffix.lower() == ".md":
+                    extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
+                else:
+                    extracted = extract_workbook_observations(path, ticker=company.ticker, source_document=path.name)
+                    company_resolution_method = "workbook_filename_or_alias"
+                for observation in extracted:
+                    observation["company_resolution_method"] = company_resolution_method
                 if extracted:
                     documents_processed.add(str(path))
                     company_documents.add(str(path))
@@ -1600,21 +1616,35 @@ async def run(args: argparse.Namespace) -> int:
             for observation in observations:
                 name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
                 metricas.setdefault(name, []).append({"metric": name, "indicator_id": observation["indicator_id"], "confidence": observation["confidence"], "calculated": False, "serie": {observation["period"]: observation["value"]}, "observations": [observation]})
+            previous_payload = {}
+            previous_path = output_dir / f"{company.ticker}.json"
+            if previous_path.exists():
+                try:
+                    previous_payload = json.loads(previous_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    previous_payload = {}
+            preserved = bool(not observations and previous_payload.get("observations"))
             payload = {
                 "schema_version": "construction_operational_v1", "sector": "construcao_civil",
                 "generated_at": datetime.now(timezone.utc).isoformat(), "extractor_version": "construction_operational_v1",
                 "ticker": company.ticker, "companhia": company.expected_name,
                 "companies_requested": len(allowed_tickers), "documents_processed": len(company_documents),
                 "metricas": metricas, "observations": observations,
-                "status": "found" if observations else "not_found",
+                "status": "found_new_data" if observations else "not_found_no_previous_data",
                 "calculation_metadata": {
                     "roe": {"value": None, "calculation_status": "missing_financial_dependencies"},
                     "credit_loss_allowance_to_receivables": {"value": None, "calculation_status": "missing_financial_dependencies"},
+                    "net_vso": {"value": None, "calculation_status": "missing_components"},
                 },
                 "warnings": (["Nenhuma métrica operacional válida encontrada nos documentos processados."] if not observations else []) + ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
             }
+            if preserved:
+                payload = previous_payload
+                payload["status"] = "preserved_existing_data"
+                payload.setdefault("warnings", []).append("Snapshot anterior preservado: nenhuma observação válida nova encontrada.")
+                snapshots_preserved += 1
             write_json(payload, output_dir)
-            all_observations.extend(observations)
+            all_observations.extend(payload.get("observations") or observations)
         observations_by_metric: dict[str, int] = {}
         observations_by_confidence: dict[str, int] = {}
         for observation in all_observations:
@@ -1635,6 +1665,7 @@ async def run(args: argparse.Namespace) -> int:
             "companies_with_observations": companies_with_observations,
             "companies_without_observations": len(allowed_tickers) - companies_with_observations,
             "operational_files_generated": len(allowed_tickers),
+            "snapshots_preserved": snapshots_preserved,
             "observations_by_metric": observations_by_metric,
             "observations_by_confidence": observations_by_confidence,
         }

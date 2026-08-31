@@ -189,7 +189,7 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
         if not row:
             continue
         label = row[0]
-        context_text = str(context.get("table_title") or "")
+        context_text = " ".join((str(context.get("table_title") or ""), " ".join(headers)))
         indicator_id, flags = identify_metric(label, context_text, " ".join(headers))
         if not indicator_id or flags:
             continue
@@ -215,6 +215,61 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
                 continue
             observations.append(validate_observation_evidence(observation))
     return observations
+
+
+def _markdown_page_for_line(lines: list[str], index: int) -> int | None:
+    for line in reversed(lines[: index + 1]):
+        match = re.search(r"(?:pagina|page)\s*(\d+)", normalize_text(line))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _markdown_tables(lines: list[str]) -> list[tuple[list[list[str]], int, str]]:
+    tables: list[tuple[list[list[str]], int, str]] = []
+    current: list[list[str]] = []
+    start = 0
+    title = ""
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if line.startswith("#"):
+            title = line.lstrip("# ").strip()
+        if line.startswith("|") and line.endswith("|"):
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                continue
+            if not current:
+                start = index
+            current.append(cells)
+            continue
+        if current:
+            tables.append((current, start, title))
+            current = []
+    if current:
+        tables.append((current, start, title))
+    return tables
+
+
+def _dedupe_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for observation in observations:
+        key = (observation["ticker"], observation["indicator_id"], observation["period"], observation["ownership_basis"], observation["segment"])
+        current = unique.get(key)
+        score = (
+            observation["consolidated_or_breakdown"] == "consolidated",
+            observation["ownership_basis"] == "company_share",
+            {"high": 2, "medium": 1}.get(observation["confidence"], 0),
+            observation.get("source_type") == "official_spreadsheet",
+        )
+        current_score = (-1, -1, -1, -1) if current is None else (
+            current["consolidated_or_breakdown"] == "consolidated",
+            current["ownership_basis"] == "company_share",
+            {"high": 2, "medium": 1}.get(current["confidence"], 0),
+            current.get("source_type") == "official_spreadsheet",
+        )
+        if current is None or score > current_score:
+            unique[key] = observation
+    return list(unique.values())
 
 
 def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str | None, list[str]]:
@@ -281,6 +336,17 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
     """Extrai linhas de tabelas Markdown; exige rotulo, periodo e valor explicitos."""
     lines = text.splitlines()
     observations: list[dict[str, Any]] = []
+    for table, start, title in _markdown_tables(lines):
+        rows = extract_table_observations(
+            table,
+            {"ticker": ticker, "source_document": source_document, "source_url": source_url, "table_title": title},
+        )
+        page = _markdown_page_for_line(lines, start)
+        for row in rows:
+            if page and not row.get("page"):
+                row["page"] = page
+            row["extraction_method"] = "markdown_composite_table"
+            observations.append(row)
     table_title = ""
     page: int | None = None
     headers: list[str] = []
@@ -331,15 +397,56 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
             except (ValueError, KeyError):
                 continue
             observations.append(observation)
-    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for observation in observations:
-        key = (observation["ticker"], observation["indicator_id"], observation["period"], observation["ownership_basis"], observation["segment"])
-        current = unique.get(key)
-        score = (observation["consolidated_or_breakdown"] == "consolidated", observation["ownership_basis"] == "company_share", {"high": 2, "medium": 1}.get(observation["confidence"], 0))
-        current_score = (-1, -1, -1) if current is None else (current["consolidated_or_breakdown"] == "consolidated", current["ownership_basis"] == "company_share", {"high": 2, "medium": 1}.get(current["confidence"], 0))
-        if current is None or score > current_score:
-            unique[key] = observation
-    return list(unique.values())
+    return _dedupe_observations(observations)
+
+
+def extract_workbook_observations(workbook_path: Any, *, ticker: str, source_document: str = "", source_url: str = "") -> list[dict[str, Any]]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(workbook_path, data_only=True, read_only=False)
+    observations: list[dict[str, Any]] = []
+    try:
+        for sheet in workbook.worksheets:
+            merged_values: dict[str, Any] = {}
+            for merged in sheet.merged_cells.ranges:
+                value = sheet.cell(merged.min_row, merged.min_col).value
+                for row in range(merged.min_row, merged.max_row + 1):
+                    for column in range(merged.min_col, merged.max_col + 1):
+                        merged_values[sheet.cell(row, column).coordinate] = value
+            rows: list[list[str]] = []
+            cells_by_row: list[list[str]] = []
+            for row in sheet.iter_rows(min_row=1, max_row=min(sheet.max_row or 0, 300), min_col=1, max_col=min(sheet.max_column or 0, 80)):
+                values: list[str] = []
+                refs: list[str] = []
+                for cell in row:
+                    value = cell.value
+                    if value is None:
+                        value = merged_values.get(cell.coordinate)
+                    values.append("" if value is None else str(value))
+                    refs.append(cell.coordinate)
+                if any(value.strip() for value in values):
+                    rows.append(values)
+                    cells_by_row.append(refs)
+            for index in range(max(0, len(rows) - 1)):
+                header = rows[index]
+                data = rows[index + 1]
+                if not any(parse_composite_header(cell)["periods"] for cell in header):
+                    continue
+                context = {
+                    "ticker": ticker,
+                    "source_document": source_document or str(workbook_path),
+                    "source_url": source_url,
+                    "table_title": sheet.title,
+                }
+                extracted = extract_table_observations([header, data], context)
+                for observation in extracted:
+                    observation["source_type"] = "official_spreadsheet"
+                    observation["sheet"] = sheet.title
+                    observation["source_cell"] = ",".join(cells_by_row[index + 1][: len(data)])
+                    observations.append(observation)
+    finally:
+        workbook.close()
+    return _dedupe_observations(observations)
 
 
 def calculate_roe(net_income_ltm: float | None, equity_begin: float | None, equity_end: float | None,

@@ -215,7 +215,12 @@ class OperationalResilienceTests(unittest.TestCase):
                 "documents_processed": 1,
                 "calculation_metadata": {},
                 "ticker": "TEND3",
-                "observations": [{"sector": "construcao_civil", "ticker": "TEND3", "indicator_id": "launches_vgv", "value": 1}],
+                "observations": [{
+                    "sector": "construcao_civil", "ticker": "TEND3", "indicator_id": "launches_vgv",
+                    "period": "1T26", "value": 1, "unit": "BRL_million",
+                    "source_document": "TEND3_release.pdf", "confidence": "high",
+                    "validation_status": "valid",
+                }],
             })
 
             manifest = data_publication.validate_results(source, scope="operational", sector="construcao_civil")

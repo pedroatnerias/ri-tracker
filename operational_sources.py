@@ -23,12 +23,12 @@ _HEALTH_URLS = {
 
 # URLs ficam centralizadas aqui; falhas de descoberta são explícitas e jamais usam outro setor.
 _CONSTRUCTION_URLS = {
-    "AVLL3": "https://ri.alphaville.com.br/", "CALI3": "https://ri.cal.com.br/",
+    "AVLL3": "https://ri.alphaville.com.br/", "CALI3": "https://lindenberg.com.br/ri/",
     "CURY3": "https://ri.cury.net/", "CYRE3": "https://ri.cyrela.com.br/",
     "DIRR3": "https://ri.direcional.com.br/", "EVEN3": "https://ri.even.com.br/",
-    "EZTC3": "https://ri.eztec.com.br/", "FIEI3": "https://ri.ficaempreendimentos.com.br/",
+    "EZTC3": "https://ri.eztec.com.br/", "FIEI3": "https://ri.fica.net.br/",
     "GFSA3": "https://ri.gafisa.com.br/", "HBOR3": "https://ri.helbor.com.br/",
-    "INNC3": "https://ri.incorporadorainc.com.br/", "JFEN3": "https://ri.joaofortes.com.br/",
+    "INNC3": "http://ri.interconstrutora.net.br/ri/index.php", "JFEN3": "http://ri.joaofortes.com.br/",
     "JHSF3": "https://ri.jhsf.com.br/", "LAVV3": "https://ri.lavvi.com.br/",
     "MDNE3": "https://ri.mouradubeux.com.br/", "MELK3": "https://ri.melnick.com.br/",
     "MRVE3": "https://ri.mrv.com.br/", "MTRE3": "https://ri.mitrerealty.com.br/",
@@ -45,13 +45,14 @@ def _build_sector_sources(sector: str, urls: dict[str, str]) -> dict[str, dict[s
         ticker: {
             "ticker": ticker, "legacy_tickers": list(company.legacy_tickers),
             "empresa": company.expected_name, "aliases": list(company.aliases),
+            "homepage": urls[ticker],
             "url": urls[ticker],
             "results_pages": [urls[ticker]],
             "api_endpoints": [],
             "official_domain": urls[ticker].split("/", 3)[2],
             "allowed_domains": [urls[ticker].split("/", 3)[2]],
-            "discovery_method": "official_results_page",
-            "discovery_methods": ["static_html", "known_file_manager", "playwright"],
+            "discovery_method": "controlled_results_discovery",
+            "discovery_methods": ["static_html", "known_file_manager", "mziq_api", "playwright"],
             "accepted_document_types": list(ACCEPTED_DOCUMENT_TYPES),
         }
         for ticker, company in companies.items() if ticker in urls

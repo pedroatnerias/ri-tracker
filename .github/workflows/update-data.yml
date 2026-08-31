@@ -83,6 +83,20 @@ jobs:
             cvm-zips-${{ inputs.update_sector }}-
             cvm-zips-
 
+      - name: Checkout ri-tracker-data para hidratacao
+        if: ${{ inputs.publish || inputs.update_scope == 'operational' || inputs.update_scope == 'all' }}
+        uses: actions/checkout@v6
+        with:
+          repository: pedroatnerias/ri-tracker-data
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: data-repo
+
+      - name: Hidratar dados persistidos do setor
+        if: ${{ inputs.update_scope == 'operational' || inputs.update_scope == 'all' }}
+        env:
+          EXTERNAL_FETCH_ENABLED: "false"
+        run: python -m pipeline_tasks hydrate-existing-data --data-repo data-repo --resultados resultados --sector "${{ inputs.update_sector }}" --requirements dashboard
+
       - name: Executar pipeline Nerias
         run: |
           EXTRA_ARGS=""
@@ -107,14 +121,6 @@ jobs:
 
       - name: Validar JSONs gerados
         run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
-
-      - name: Checkout ri-tracker-data
-        if: ${{ inputs.publish }}
-        uses: actions/checkout@v6
-        with:
-          repository: pedroatnerias/ri-tracker-data
-          token: ${{ secrets.DATA_REPO_TOKEN }}
-          path: data-repo
 
       - name: Publicar JSONs no repositorio de dados
         if: ${{ inputs.publish }}

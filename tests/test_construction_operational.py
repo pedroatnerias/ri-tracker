@@ -7,11 +7,15 @@ from construction_operational import (
     calculate_vso,
     align_periods_and_values,
     extract_markdown_observations,
+    extract_workbook_observations,
     extract_table_observations,
     identify_metric,
     parse_composite_header,
     parse_brazilian_financial_value,
 )
+from openpyxl import Workbook
+import tempfile
+from pathlib import Path
 from dashboard import normalize_operational_metric_item
 
 
@@ -79,6 +83,33 @@ Página 3
         self.assertEqual([row["period"] for row in rows], ["6M26", "6M25"])
         self.assertEqual(rows[0]["indicator_id"], "launches_vgv")
         self.assertEqual(rows[0]["unit"], "BRL_million")
+
+    def test_markdown_extraction_uses_composite_table_parser(self):
+        text = """# Previa operacional
+Pagina 2
+| Indicador | VGV Lancado (R$ MM)<br>6M26 6M25 Var% |
+|---|---:|
+| VGV lancado | 5.154<br>6.302<br>-18% |
+"""
+        rows = extract_markdown_observations(text, ticker="CYRE3", source_document="CYRE3_release.md")
+        self.assertEqual([(row["period"], row["value"]) for row in rows], [("6M26", 5154.0), ("6M25", 6302.0)])
+        self.assertTrue(all(row["extraction_method"] == "markdown_composite_table" for row in rows))
+
+    def test_workbook_extraction_preserves_sheet_and_cell_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cyre_operacional.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Operacional"
+            sheet["A1"] = "Indicador"
+            sheet["B1"] = "VGV Lancado (R$ MM)<br>1T26 1T25 Var%"
+            sheet["A2"] = "VGV lancado"
+            sheet["B2"] = "7.395<br>6.302<br>17%"
+            workbook.save(path)
+            rows = extract_workbook_observations(path, ticker="CYRE3", source_document=path.name)
+        self.assertEqual([(row["period"], row["value"]) for row in rows], [("1T26", 7395.0), ("1T25", 6302.0)])
+        self.assertEqual(rows[0]["sheet"], "Operacional")
+        self.assertIn("B2", rows[0]["source_cell"])
 
     def test_canonical_item_and_annual_rules(self):
         flow = normalize_operational_metric_item({
