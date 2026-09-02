@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from company_registry import canonical_ticker, company_by_ticker
+from construction_company_profiles import profile_for
 
 EXTRACTOR_VERSION = "construction_operational_v1"
 OWNERSHIP_BASES = {"company_share", "one_hundred_percent", "unknown"}
@@ -189,7 +190,7 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
         if not row:
             continue
         label = row[0]
-        context_text = " ".join((str(context.get("table_title") or ""), " ".join(headers)))
+        context_text = " ".join((str(context.get("ticker") or ""), str(context.get("table_title") or ""), " ".join(headers)))
         indicator_id, flags = identify_metric(label, context_text, " ".join(headers))
         if not indicator_id or flags:
             continue
@@ -279,10 +280,14 @@ def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str 
     for metric_id, definition in CONSTRUCTION_OPERATIONAL_DICTIONARY.items():
         if definition["classification"] != "extracted":
             continue
-        alias_hits = [a for a in definition["aliases"] if normalize_text(a) in haystack]
+        profile = profile_for(_ticker_from_context(context))
+        rules = profile.get("metrics", {}).get(metric_id, {})
+        aliases = tuple(definition["aliases"]) + tuple(rules.get("positive_aliases", []))
+        forbidden = tuple(definition["negative_context"]) + tuple(rules.get("negative_aliases", []))
+        alias_hits = [a for a in aliases if normalize_text(a) in haystack]
         if not alias_hits:
             continue
-        negatives = [n for n in definition["negative_context"] if normalize_text(n) in haystack]
+        negatives = [n for n in forbidden if normalize_text(n) in haystack]
         if negatives:
             flags.extend(f"negative_context:{normalize_text(n)}" for n in negatives)
             continue
@@ -293,6 +298,16 @@ def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str 
         matches.append((score, metric_id))
     matches.sort(reverse=True)
     return (matches[0][1] if matches else None), flags
+
+
+def _ticker_from_context(context: str) -> str:
+    """Resolve an optional ticker embedded in extraction context.
+
+    Keeping this lookup tolerant preserves the generic parser for documents
+    without metadata while allowing declarative company rules when available.
+    """
+    match = re.search(r"\b([A-Z]{4,5}3)\b", str(context or "").upper())
+    return match.group(1) if match else ""
 
 
 def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, period: str,

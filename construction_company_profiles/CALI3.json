@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "ticker": "CALI3",
+  "metrics": {},
+  "calibration_status": "not_started",
+  "notes": "A matriz está sem documentos e evidências preenchidos; nenhuma regra específica foi inferida."
+}

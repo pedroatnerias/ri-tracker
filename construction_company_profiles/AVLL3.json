@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "ticker": "AVLL3",
+  "metrics": {
+    "landbank_vgv": {
+      "positive_aliases": ["Landbank %AVLL", "Posição do Landbank atribuível à Alphaville"],
+      "negative_aliases": ["estoque de unidades disponíveis", "valor contábil"],
+      "preferred_sources": ["operational_detail_table"],
+      "preferred_ownership_basis": "company_share",
+      "notes": "VGV potencial atribuível à Alphaville; não é estoque de unidades."
+    },
+    "launches_vgv": {
+      "positive_aliases": ["VGV Lançado AVLL", "Lançamentos"],
+      "negative_aliases": ["unidades lançadas", "acumulado"],
+      "preferred_sources": ["operational_detail_table"],
+      "preferred_ownership_basis": "company_share"
+    },
+    "net_sales_vgv": {
+      "positive_aliases": ["Vendas Líquidas - VGV %AVLL"],
+      "negative_aliases": ["receita líquida"],
+      "preferred_sources": ["operational_detail_table"],
+      "preferred_ownership_basis": "company_share",
+      "notes": "Vendas brutas menos VGV distratado na mesma base."
+    },
+    "cancellations_vgv": {
+      "positive_aliases": ["VGV Distratado %AVLL"],
+      "negative_aliases": ["taxa de distrato", "provisão"],
+      "preferred_sources": ["operational_detail_table"],
+      "preferred_ownership_basis": "company_share",
+      "expected_sign": "negative"
+    },
+    "units_sold": {
+      "positive_aliases": ["# Lotes Vendidos — Vendas Totais", "# Lotes Vendidos"],
+      "negative_aliases": ["unidades lançadas", "entregues", "estoque"],
+      "preferred_sources": ["operational_detail_table"],
+      "notes": "Publicar apenas a quantidade explicitamente informada."
+    },
+    "units_under_construction": {
+      "positive_aliases": ["Obras em Andamento — soma de #Lotes"],
+      "negative_aliases": ["número de obras", "empreendimentos", "canteiros ativos"],
+      "preferred_sources": ["reconciled_project_table"],
+      "notes": "Total calculado pela soma dos lotes dos projetos em andamento; não confundir com número de obras."
+    },
+    "ending_inventory_vgv": {
+      "positive_aliases": ["Estoque EoP (VGV %AVLL)"],
+      "negative_aliases": ["estoque contábil", "banco de terras"],
+      "preferred_sources": ["operational_detail_table"],
+      "preferred_ownership_basis": "company_share"
+    },
+    "net_vso": {
+      "positive_aliases": ["VSO de Vendas (# Lotes)"],
+      "negative_aliases": [],
+      "preferred_sources": [],
+      "publication": "ambiguous",
+      "notes": "A matriz informa VSO por lotes, incompatível automaticamente com VSO líquida em VGV. Preservar como evidência, não publicar como métrica canônica."
+    },
+    "roe": {"publication": "not_disclosed", "notes": "Não divulgado nos releases analisados."},
+    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed", "notes": "Não há PCLD e recebíveis brutos compatíveis para cálculo."}
+  },
+  "documents": ["AVLL_4T25", "AVLL_1T26", "AVLL_2T26"],
+  "calibration_status": "mapped",
+  "notes": "Regras derivadas da matriz AVLL3. VGVs priorizam a base de participação da companhia; VSO reportada por lotes não é a VSO líquida canônica."
+}
