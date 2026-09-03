@@ -131,6 +131,7 @@ class ChartAssetTests(unittest.TestCase):
         self.assertIn("comparison-ticker-select", dashboard.HTML)
         self.assertIn("changeComparisonTicker", dashboard.HTML)
         self.assertNotIn("comparisonSelectedTickers.includes(ticker)", dashboard.HTML)
+        self.assertIn("formatQuoteVariation(quote, 90)", dashboard.HTML)
         self.assertNotIn('"Unidade", ...tickers', dashboard.HTML)
         self.assertIn("predominantPeriod", dashboard.HTML)
 
@@ -163,7 +164,7 @@ class ChartAssetTests(unittest.TestCase):
             }
         }
         self.assertEqual(chart_generation.comparison_chart_tickers(payload, "construcao_civil", ("A", "B", "C", "D", "E", "F", "G", "H")), ("C", "G", "H", "E", "F"))
-        self.assertEqual(chart_generation.comparison_chart_tickers(payload, "saude", ("A", "B")), ("A", "B"))
+        self.assertEqual(chart_generation.comparison_chart_tickers(payload, "saude", ("A", "B")), ("A",))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,22 @@
 # Nerias RI Tracker V2
 
+## Atualização estrutural — setembro de 2026
+
+- A atualização financeira segue a mesma regra para Saúde e Construção Civil.
+- O Yahoo Finance é a fonte primária da quantidade histórica de ações; a CVM
+  valida a informação e funciona como fallback quando o Yahoo não retorna dado
+  válido.
+- Divergências acima de 5% recebem `shares_discrepancy`, preservam ambas as
+  fontes e bloqueiam o market cap/EV/EBITDA automático daquele período.
+- Retornos setoriais excluem períodos com divergência não resolvida e informam
+  a cobertura utilizada.
+- Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
+  somente PDFs oficiais de RI; planilhas não participam desse fluxo.
+- A auditoria é setorial: Saúde exibe o bloco operacional; Construção Civil
+  exibe a auditoria financeira e informa que o bloco operacional não se aplica.
+- O tracking transversal registra cada etapa documental e gera manifesto
+  detalhado por execução, além do resumo seguro publicado.
+
 ## Objetivo
 
 O Nerias RI Tracker V2, ou Acompanhador de Mercado, consolida demonstrativos financeiros CVM, cotacoes de mercado e dados operacionais de RI para acompanhar AALR3, DASA3, FLRY3, HAPV3, MATD3, ONCO3 e RDOR3.
@@ -19,7 +36,6 @@ python update_data.py --sector construcao_civil --scope financial --mode full
 python update_data.py --sector all --scope financial --mode incremental
 python -m data_publication validate resultados --sector saude --scope financial
 python -m data_publication publish resultados data-repo/data --sector saude --scope financial
-python dashboard.py --export-html painel.html --sector construcao_civil
 ```
 
 Sem `--sector`, o padrão retrocompatível é `saude`. A combinação construção +
@@ -233,14 +249,6 @@ O pipeline pesado deve ser executado manualmente no GitHub Actions, nao no Rende
 
 O workflow usa o secret `DATA_REPO_TOKEN` configurado no GitHub. O valor do token nao deve ser exposto em logs, codigo ou documentacao.
 
-## Exportacao HTML
-
-Para gerar uma versao HTML estatica compartilhavel:
-
-```bash
-python dashboard.py --export-html acompanhador_de_mercado.html
-```
-
 ## Estrutura Principal
 
 - `app_balancos.py`: extrai BP a partir de ITR/DFP CVM.
@@ -255,7 +263,7 @@ python dashboard.py --export-html acompanhador_de_mercado.html
 - `app_indicadores.py`: calcula indicadores financeiros derivados.
 - `app_reconciliacao.py`: gera relatorio tecnico de reconciliacao.
 - `metric_definitions.py`: centraliza definicoes metodologicas e regras por companhia.
-- `dashboard.py`: aplicacao Flask e exportacao HTML.
+- `dashboard.py`: aplicacao Flask do dashboard.
 - `wsgi.py`: entrypoint WSGI para producao.
 
 ## Dados Nao Versionados
@@ -269,7 +277,6 @@ Os seguintes itens sao gerados em runtime e nao entram no Git:
 - planilhas baixadas;
 - Markdown e imagens gerados de releases;
 - temporarios;
-- HTMLs estaticos exportados.
 
 O codigo cria diretorios de saida quando necessario. Em cloud, o filesystem pode ser efemero; para persistencia duravel sera necessario configurar storage externo em uma etapa futura.
 

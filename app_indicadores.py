@@ -512,7 +512,7 @@ def calcular_cagr(valores: list[float], periodos_por_ano: float = 1.0) -> tuple[
     return taxa, None
 
 
-def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> dict[str, float]:
+def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> dict[str, dict[str, Any]]:
     if not isinstance(payload, dict):
         return {}
     empresa = (payload.get("empresas") or {}).get(ticker) or (payload.get("companies") or {}).get(ticker)
@@ -525,7 +525,17 @@ def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> di
         if market_cap is None and periodo.get("preco_acao") is not None and periodo.get("quantidade_acoes_total") is not None:
             market_cap = _numero(periodo["preco_acao"]) * _numero(periodo["quantidade_acoes_total"])
         if data and market_cap is not None:
-            result[str(data)] = float(market_cap)
+            result[str(data)] = {
+                "market_cap": float(market_cap),
+                "quantidade_acoes_yahoo": periodo.get("quantidade_acoes_yahoo"),
+                "data_acoes_yahoo": periodo.get("data_acoes_yahoo"),
+                "quantidade_acoes_cvm": periodo.get("quantidade_acoes_cvm"),
+                "data_acoes_cvm": periodo.get("data_acoes_cvm"),
+                "fonte_acoes_utilizada": periodo.get("fonte_acoes_utilizada"),
+                "diferenca_acoes_pct": periodo.get("diferenca_acoes_pct"),
+                "status_validacao_acoes": periodo.get("status_validacao_acoes"),
+                "justificativa_acoes": periodo.get("justificativa_acoes"),
+            }
     return result
 
 
@@ -580,10 +590,11 @@ def _ev_ebitda_base_map(
     market = _market_cap_historico_map(market_payload, ticker)
     divida = _divida_liquida_map(divida_payload, ticker)
     result: dict[str, dict[str, Any]] = {}
-    for data, market_cap in market.items():
+    for data, market_data in market.items():
         if data not in divida:
             continue
         net_debt = divida[data]
+        market_cap = market_data["market_cap"]
         result[data] = {
             "market_cap_historico": market_cap,
             "divida_liquida": net_debt,
@@ -592,6 +603,7 @@ def _ev_ebitda_base_map(
             "data_divida_liquida": data,
             "fonte": "app_market_cap_historico + app_divida_liquida",
             "quality_flag": "validated",
+            "shares_validation": {key: value for key, value in market_data.items() if key != "market_cap"},
         }
     return result
 

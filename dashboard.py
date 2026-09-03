@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import io
 import json
 import os
@@ -77,9 +76,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--atualizar", action="store_true", help="Roda os apps antes de iniciar o servidor.")
     parser.add_argument("--update-scope", choices=tuple(sorted(UPDATE_SCOPES)), default="all", help="Escopo usado com --atualizar.")
     parser.add_argument("--update-sector", choices=("saude", "construcao_civil", "all"), default="saude", help="Setor usado com --atualizar.")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude", help="Setor usado na exportacao HTML.")
+    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude", help="Setor exibido no dashboard.")
     parser.add_argument("--update-mode", choices=tuple(sorted(UPDATE_MODES)), default="full", help="Modo usado com --atualizar.")
-    parser.add_argument("--export-html", type=Path, help="Exporta uma versao HTML estatica e encerra.")
     parser.add_argument(
         "--nao-liberar-porta",
         action="store_true",
@@ -1580,7 +1578,20 @@ def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str, sec
     ax.set_facecolor("#FFFFFF")
 
     if df.empty:
-        ax.text(0.5, 0.5, "Sem dados", ha="center", va="center", color="#52625d")
+        if chart_key == "ev_ebitda":
+            records = filter_records_for_view(company.get("periodos") or [], view)
+            has_ebitda = any(record.get("ebitda_contabil_ltm") not in (None, "") for record in records)
+            has_ev = any(record.get("enterprise_value") not in (None, "") for record in records)
+            if not has_ebitda and not has_ev:
+                message = "EV/EBITDA indisponível: EBITDA LTM e EV não calculáveis"
+            elif not has_ebitda:
+                message = "EV/EBITDA indisponível: EBITDA LTM não calculável"
+            else:
+                message = "EV/EBITDA indisponível: Market Cap/EV não calculável"
+            ax.text(0.5, 0.54, message, ha="center", va="center", color="#52625d", fontsize=10, wrap=True)
+            ax.text(0.5, 0.42, "Sem substituição ou anualização silenciosa", ha="center", va="center", color="#7a8580", fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "Sem dados", ha="center", va="center", color="#52625d")
         ax.axis("off")
     else:
         x = range(len(df))
@@ -1650,30 +1661,6 @@ def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str, sec
     fig.savefig(output, format="png", bbox_inches="tight")
     plt.close(fig)
     return output.getvalue()
-
-
-def static_export_html(resultados: Path, sector: str = "saude") -> str:
-    payload = dashboard_payload(resultados, sector=sector)
-    charts: dict[str, str] = {}
-    for ticker in tickers_for_sector(sector):
-        for view in ("annual", "quarterly"):
-            for chart_key in CHARTS:
-                try:
-                    png = make_chart_png(resultados, ticker, view, chart_key, sector)
-                except Exception:
-                    continue
-                charts[f"{ticker}|{view}|{chart_key}"] = (
-                    "data:image/png;base64,"
-                    + base64.b64encode(png).decode("ascii")
-                )
-
-    static_script = (
-        "<script>\n"
-        f"window.__STATIC_DATA__ = {json.dumps(payload, ensure_ascii=False, allow_nan=False)};\n"
-        f"window.__STATIC_CHARTS__ = {json.dumps(charts, ensure_ascii=False, allow_nan=False)};\n"
-        "</script>\n"
-    )
-    return HTML.replace("<script>\n    let DATA = null;", static_script + "<script>\n    let DATA = null;", 1)
 
 
 def manual_auth_ok() -> bool:
@@ -1893,6 +1880,9 @@ HTML = """<!doctype html>
     .chart-card { min-width: 0; }
     .chart-card h2 { margin: 0 0 10px; }
     .chart-card .table-wrap { max-height: none; }
+    .historical-data-table { margin-top: 8px; font-size: 11px; }
+    .historical-data-table table { width: 100%; }
+    .historical-data-table th, .historical-data-table td { padding: 5px 7px; }
     .chart-card svg { width: 100%; height: auto; }
     .chart-legend {
       display: flex;
@@ -1975,6 +1965,22 @@ HTML = """<!doctype html>
       color: var(--nerias-green-deep);
       z-index: 1;
       font-weight: 700;
+    }
+    /* Mantém o código da conta visível durante a rolagem horizontal das
+       tabelas de balanço, DRE e DFC, como a opção Congelar do Excel. */
+    .statement-table th:first-child,
+    .statement-table td:first-child {
+      position: sticky;
+      left: 0;
+      min-width: 120px;
+      width: 120px;
+      background: var(--nerias-surface);
+      box-shadow: 3px 0 5px rgba(16,26,42,0.08);
+      z-index: 2;
+    }
+    .statement-table th:first-child {
+      background: #eee8d5;
+      z-index: 3;
     }
     td { background: var(--nerias-surface); }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -2200,18 +2206,14 @@ HTML = """<!doctype html>
     }
 
     async function loadData() {
-      if (window.__STATIC_DATA__) {
-        DATA = window.__STATIC_DATA__;
-        currentTicker = DATA.tickers.includes(currentTicker) ? currentTicker : DATA.tickers[0];
-        render();
-        updateStatusText(DATA.update_status);
-        return;
-      }
       if (!currentSector) return;
       const response = await fetch(`/api/data?sector=${encodeURIComponent(currentSector)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await response.text());
       DATA = await response.json();
       operationalMetrics = DATA.operational_metrics || operationalMetrics;
+      if (currentSector === "construcao_civil") {
+        operationalMetrics = operationalMetrics.filter(metric => !["Receita Bruta", "Glosa/PCLD"].includes(metric));
+      }
       document.getElementById("active-sector").textContent = DATA.sector_label || "";
       currentTicker = DATA.tickers.includes(currentTicker) ? currentTicker : DATA.tickers[0];
       render();
@@ -2333,7 +2335,6 @@ HTML = """<!doctype html>
     }
 
     function renderUpdateButtons() {
-      if (window.__STATIC_DATA__) return [];
       const scopes = (DATA?.operational_enabled ? [
         ["financial", "Atualizar Financeiro"],
         ["operational", "Atualizar Operacional"],
@@ -2371,6 +2372,17 @@ HTML = """<!doctype html>
       if (value === null || value === undefined || Number.isNaN(value)) return "";
       if (typeof value !== "number") return value;
       return value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    }
+
+    function quoteVariation(quote, days) {
+      const keys = [`variacao_${days}d_pct`, `variacao_${days}_dias_pct`, `delta_preco_${days}d`, `delta_preco_${days}_dias`];
+      for (const key of keys) if (typeof quote?.[key] === "number" && Number.isFinite(quote[key])) return quote[key];
+      return null;
+    }
+
+    function formatQuoteVariation(quote, days) {
+      const value = quoteVariation(quote, days);
+      return value === null ? "N/D" : `${value >= 0 ? "+" : ""}${formatPercent(value)}%`;
     }
 
     function escapeHtml(value) {
@@ -2796,14 +2808,8 @@ HTML = """<!doctype html>
           render();
         }));
       });
-      if (!window.__STATIC_DATA__) {
-        viewTabs.appendChild(button("Recarregar JSONs", false, isRemoteConfigured() ? refreshRemoteData : loadData));
-        const exportButton = button("Exportar HTML", false, () => {
-          window.location.href = "/export/dashboard.html";
-        });
-        viewTabs.appendChild(exportButton);
-        renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
-      }
+      viewTabs.appendChild(button("Recarregar JSONs", false, isRemoteConfigured() ? refreshRemoteData : loadData));
+      renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
     }
 
     function dashboardRecords(ticker, view) {
@@ -2882,9 +2888,9 @@ HTML = """<!doctype html>
         <div class="quote-logo-card"><img src="/logos/${escapeHtml(ticker)}.png" alt="${escapeHtml(ticker)}"></div>
         <div class="quote-price-card">
           <strong>${escapeHtml(ticker)} ${escapeHtml(quote.ultimo_preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }))}</strong>
-          <div>30 dias: ${escapeHtml(formatPercent(quote.variacao_30d_pct))}%</div>
-          <div>90 dias: ${escapeHtml(formatPercent(quote.variacao_90d_pct))}%</div>
-          <div>360 dias: ${escapeHtml(formatPercent(quote.variacao_360d_pct))}%</div>
+          <div>30 dias: ${escapeHtml(formatQuoteVariation(quote, 30))}</div>
+          <div>90 dias: ${escapeHtml(formatQuoteVariation(quote, 90))}</div>
+          <div>360 dias: ${escapeHtml(formatQuoteVariation(quote, 360))}</div>
         </div>
       `;
     }
@@ -2908,14 +2914,13 @@ HTML = """<!doctype html>
     }
 
     function renderPyplotChart(chartKey, title, ticker, view) {
-      const staticKey = `${ticker}|${view}|${chartKey}`;
       const assetKey = `${view}_${chartKey}`;
       const remoteAsset = DATA.chart_assets?.individual?.[ticker]?.[assetKey]?.url;
       const localVersion = DATA.chart_assets?.version || DATA.files?.indicadores?.modified_at || "";
       const dynamicSrc = DATA.data_source_mode === "local"
         ? `/chart/${encodeURIComponent(ticker)}/${encodeURIComponent(view)}/${encodeURIComponent(chartKey)}${localVersion ? `?v=${encodeURIComponent(localVersion)}` : ""}`
         : "";
-      const src = window.__STATIC_CHARTS__?.[staticKey] || remoteAsset || dynamicSrc;
+      const src = remoteAsset || dynamicSrc;
       if (!src) {
         return `<h2>${escapeHtml(title)}</h2><div class="empty">Gráfico indisponível para esta atualização.</div>`;
       }
@@ -3582,7 +3587,7 @@ HTML = """<!doctype html>
       const colgroup = `<colgroup><col style="width:220px"><col style="width:300px"><col style="width:150px">${periods.map(() => '<col style="width:130px">').join("")}</colgroup>`;
       const disclaimer = '<div class="disclaimer"><strong>Aviso:</strong> os dados operacionais são capturados de forma experimental a partir de planilhas de fundamentos, releases e documentos convertidos para Markdown. Eles podem estar incompletos, classificados incorretamente ou conter erros de leitura. Use estes dados como apoio exploratório e valide contra os documentos originais antes de qualquer decisão.</div>';
       const coverageWarning = DATA.operational_coverage?.warning ? `<div class="disclaimer"><strong>Cobertura:</strong> ${escapeHtml(DATA.operational_coverage.warning)}</div>` : "";
-      const manualToolbar = window.__STATIC_DATA__ ? "" : '<div class="manual-toolbar"><button class="update-button" onclick="openManualModal()">Adicionar dado manual</button></div>';
+      const manualToolbar = '<div class="manual-toolbar"><button class="update-button" onclick="openManualModal()">Adicionar dado manual</button></div>';
       return `<h2>Dados Operacionais</h2>${disclaimer}${coverageWarning}${manualToolbar}<div class="table-wrap"><table class="fixed-layout operational-table">${colgroup}<thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>${renderOperationalWarnings(company)}${renderManualAudit(company)}`;
     }
 
@@ -3603,7 +3608,7 @@ HTML = """<!doctype html>
       const rows = overrides.map(item => {
         const status = item.status === "active" ? "MANUAL_ACTIVE" : item.status === "superseded" ? "MANUAL_SUPERSEDED" : item.status;
         const auto = item.automatic_confidence ? `${item.automatic_confidence}: ${formatOperationalValue(item.automatic_value, item.unit)}` : "";
-        const actions = !window.__STATIC_DATA__ && item.status === "active"
+        const actions = item.status === "active"
           ? `<button onclick="editManualOverride('${escapeHtml(item.id)}')">Editar</button> <button onclick="deleteManualOverride('${escapeHtml(item.id)}')">Excluir</button>`
           : "";
         return `<tr><td>${escapeHtml(item.metric)}</td><td>${escapeHtml(item.period)}</td><td class="num">${escapeHtml(formatOperationalValue(item.value, item.unit))}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(item.updated_at || "")}</td><td>${escapeHtml(auto)}</td><td>${actions}</td></tr>`;
@@ -3699,7 +3704,19 @@ HTML = """<!doctype html>
     function renderComparisonChartImage(chartKey, chart) {
       const asset = DATA.chart_assets?.comparison?.[chartKey]?.url;
       if (!asset) return "";
-      return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(chart.title || chartKey)}"></div>`;
+      const marketCompanies = DATA.indicators?.market_cap?.companies || {};
+      const ranked = Object.entries(marketCompanies)
+        .filter(([, item]) => typeof item?.market_cap === "number" && item.market_cap > 0)
+        .sort((a, b) => b[1].market_cap - a[1].market_cap)
+        .slice(0, 5)
+        .map(([ticker]) => ticker);
+      const rows = ranked.map(ticker => {
+        const points = (chart.series?.[ticker] || []).filter(item => typeof item?.value === "number");
+        const latest = points.slice().sort((a, b) => comparisonPeriodSort(a.period) - comparisonPeriodSort(b.period)).at(-1);
+        return latest ? `<tr><td>${escapeHtml(ticker)}</td><td>${escapeHtml(latest.period || "")}</td><td class="num">${escapeHtml(formatComparisonValue(latest.value, chart.format || "percent"))}</td></tr>` : "";
+      }).join("");
+      const table = rows ? `<div class="table-wrap historical-data-table"><table><thead><tr><th>Empresa</th><th>Último período</th><th>Valor</th></tr></thead><tbody>${rows}</tbody></table></div>` : "";
+      return `<h2>${escapeHtml(chart.title || chartKey)}</h2><div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="${escapeHtml(chart.title || chartKey)}"></div>${table}`;
     }
 
     function renderSectorAggregateChart(key, title) {
@@ -3836,6 +3853,7 @@ HTML = """<!doctype html>
     }
 
     function renderAudit(ticker) {
+      const isHealthSector = currentSector === "saude";
       const op = DATA.operational?.companies?.[ticker] || {};
       const indicatorErrors = DATA.indicators?.indicadores?.errors?.[ticker] || {};
       const auditRow = (block, item, status, period, code, source, note) => ({ block, item, status, period, code, source, note });
@@ -3861,7 +3879,10 @@ HTML = """<!doctype html>
         const companyData = source?.companies?.[ticker];
         financialRows.push(auditRow("Cálculos", key, companyData ? "OK" : "Dado faltante", "", "", file, ""));
       });
-      const opRows = Object.entries(op.metricas || {}).map(([metric, items]) => {
+      const hiddenConstructionMetrics = new Set(["Receita Bruta", "Glosa/PCLD"]);
+      const opRows = isHealthSector ? Object.entries(op.metricas || {})
+        .filter(([metric]) => currentSector !== "construcao_civil" || !hiddenConstructionMetrics.has(metric))
+        .map(([metric, items]) => {
         const sources = (items || []).map(item => item.fonte_documento || item.fonte_linha || item.escopo || "").filter(Boolean).join(" | ");
         const validItems = (items || []).filter(item => item?.confidence !== "low");
         const missing = !validItems.some(item => item?.serie && Object.keys(item.serie).length);
@@ -3869,17 +3890,21 @@ HTML = """<!doctype html>
         const note = validItems.map(item => `${item.nature || "reported"} / ${item.confidence || ""} / ${item.fonte_linha || ""}`).join(" | ");
         return auditRow("Operacional", metric, status, "", "", sources || op.fonte_planilha || op.fonte_alternativa || "", note || op.erro_planilha || "");
       });
-      (op.warnings || []).forEach(item => {
+      : [];
+      if (isHealthSector) (op.warnings || []).forEach(item => {
         const status = item.status === "not_found" ? "NOT_FOUND" : item.status === "medium_confidence" ? "MEDIUM" : item.status;
         opRows.push(auditRow("Operacional", item.metric || "", status, item.period || "", "", item.fonte_linha || item.escopo || op.fonte_planilha || op.fonte_alternativa || "", item.message || ""));
       });
       const defaultOperationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
       const existingOp = new Set(Object.keys(op.metricas || {}));
-      defaultOperationalMetrics.forEach(metric => {
+      if (isHealthSector) defaultOperationalMetrics.forEach(metric => {
         if (!existingOp.has(metric)) opRows.push(auditRow("Operacional", metric, "Dado faltante", "", "", op.fonte_alternativa || "", ""));
       });
       const errorRows = Object.entries(indicatorErrors).map(([period, message]) => auditRow("Erros", "Indicadores", "Erro", period, "", DATA.files?.indicadores?.path || "", message));
-      const rows = [...financialRows, ...opRows, ...errorRows];
+      const sectorRows = isHealthSector
+        ? [auditRow("Setor", "Saúde", "Aplicável", "", "", "", "Auditoria operacional habilitada; saúde utiliza planilhas e documentos de RI.")]
+        : [auditRow("Setor", "Construção Civil", "Aplicável", "", "", "", "Auditoria operacional não aplicável; construção civil utiliza exclusivamente PDFs oficiais de RI.")];
+      const rows = [...sectorRows, ...financialRows, ...opRows, ...errorRows];
       if (!rows.length) return `<div class="empty">Sem mensagens de auditoria para ${escapeHtml(ticker)}.</div>`;
       const body = rows.map(row => `<tr><td>${escapeHtml(row.block)}</td><td class="desc">${escapeHtml(row.item)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.period)}</td><td>${escapeHtml(row.code)}</td><td class="desc">${escapeHtml(row.source)}</td><td class="desc">${escapeHtml(row.note)}</td></tr>`).join("");
       const colgroup = '<colgroup><col style="width:150px"><col style="width:260px"><col style="width:130px"><col style="width:120px"><col style="width:130px"><col style="width:460px"><col style="width:460px"></colgroup>';
@@ -3912,9 +3937,7 @@ HTML = """<!doctype html>
         const viewTabs = document.getElementById("view-tabs");
         viewTabs.innerHTML = "";
         viewTabs.style.display = "flex";
-        if (!window.__STATIC_DATA__) {
-          renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
-        }
+        renderUpdateButtons().forEach(updateButton => viewTabs.appendChild(updateButton));
         document.getElementById("meta").textContent = "Sem dados carregados";
         document.getElementById("content").innerHTML = '<div class="empty">Nenhum dado carregado. Execute a atualização para gerar os dados.</div>';
         return;
@@ -3940,7 +3963,7 @@ HTML = """<!doctype html>
         return;
       }
       const sections = [];
-      if (currentStatement === "dre" && DATA.operational_enabled === true) {
+      if (currentStatement === "dre" && DATA.operational_enabled === true && currentSector !== "construcao_civil") {
         sections.push(renderOperationalDreTable(company, currentView));
       }
       sections.push(renderTable(company, currentStatement, currentView));
@@ -4136,17 +4159,6 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
         except Exception as exc:
             return jsonify({"error": sanitize_log_message(str(exc))}), 500
 
-    @app.get("/export/dashboard.html")
-    def export_dashboard() -> Response:
-        try:
-            sector = validate_sector(request.args.get("sector", "saude"))
-            response = Response(static_export_html(resultados, sector=sector), mimetype="text/html")
-            response.headers["Content-Disposition"] = "attachment; filename=acompanhador_de_mercado.html"
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
-
     @app.get("/logos/<path:filename>")
     def logos(filename: str) -> Response:
         logo_root = (BASE_DIR / "Logos").resolve()
@@ -4176,8 +4188,6 @@ def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:
 def main() -> int:
     args = parse_args()
     args.resultados = resolve_app_path(args.resultados)
-    if args.export_html:
-        args.export_html = resolve_app_path(args.export_html)
     args.resultados.mkdir(parents=True, exist_ok=True)
     paths = {
         "dre": args.resultados / "DRE_ITR_CVM_ultimos_5_anos.json",
@@ -4186,13 +4196,6 @@ def main() -> int:
 
     if args.atualizar:
         run_update(args.resultados, args.anos, mode=args.update_mode, scope=args.update_scope, sector=args.update_sector)
-
-    if args.export_html:
-        html = static_export_html(args.resultados, sector=args.sector)
-        args.export_html.parent.mkdir(parents=True, exist_ok=True)
-        args.export_html.write_text(html, encoding="utf-8")
-        print(f"HTML exportado em {args.export_html}")
-        return 0
 
     if not args.nao_liberar_porta:
         liberar_porta_dashboard(args.port)

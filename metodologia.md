@@ -1,12 +1,30 @@
 ---
 title: "Metodologia do Acompanhador de Mercado"
-version: "3.0"
-date: "2026-08-27"
+version: "4.0"
+date: "2026-09-03"
 language: "pt-BR"
 purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações analíticas"
 ---
 
 # Metodologia do Acompanhador de Mercado
+
+> **Atualização metodológica 4.0 — 03/09/2026**
+>
+> Esta versão incorpora as mudanças recentes do pipeline. A quantidade histórica
+> de ações é buscada primeiro no Yahoo Finance e comparada com a CVM. Diferenças
+> superiores a 5% recebem o status `shares_discrepancy`; os dois valores ficam
+> preservados para auditoria e o market cap, EV e EV/EBITDA do período não são
+> calculados automaticamente. Se o Yahoo não fornecer uma quantidade válida, a
+> CVM é usada como fallback.
+>
+> A regra financeira é idêntica para Saúde e Construção Civil. A separação por
+> setor aplica-se somente ao bloco operacional: Saúde pode usar planilhas e
+> documentos de RI; Construção Civil usa exclusivamente PDFs oficiais de RI.
+>
+> O tracking transversal registra descoberta, importação, conversão, leitura,
+> resolução, parsing, validação, publicação e preservação de cada documento.
+> Os contadores de documentos são derivados dos eventos, inclusive quando um
+> documento foi processado sem gerar observações.
 
 ## 1. Objetivo e princípios
 
@@ -781,4 +799,3 @@ O objetivo da reconciliação é explicar diferenças, e não forçar igualdade 
 O Acompanhador de Mercado deve ser entendido como uma ferramenta de **padronização e apoio analítico**, não como substituto da leitura dos demonstrativos e documentos originais.
 
 Quanto maior a dependência de documentos não estruturados, proxies ou diferenças de escopo, maior a necessidade de validação da fonte antes do uso decisório.
-

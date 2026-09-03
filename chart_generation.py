@@ -21,11 +21,11 @@ COMPARISON_CHARTS: dict[str, dict[str, str]] = {
     "margem_bruta": {"title": "Margem Bruta", "ylabel": "Margem Bruta (%)"},
     "margem_operacional": {"title": "Margem Operacional", "ylabel": "Margem Operacional (%)"},
     "margem_ebitda": {"title": "Margem EBITDA", "ylabel": "Margem EBITDA (%)"},
-    "margem_liquida": {"title": "Margem Liquida", "ylabel": "Margem Liquida (%)"},
+    "margem_liquida": {"title": "Margem Líquida", "ylabel": "Margem Líquida (%)"},
     "ev_ebitda_agregado": {"title": "EV/EBITDA Agregado", "ylabel": "EV/EBITDA (x)"},
-    "retorno_preco_setorial_30d": {"title": "Retorno Setorial de Preco - 30 dias", "ylabel": "Retorno (%)"},
-    "retorno_preco_setorial_90d": {"title": "Retorno Setorial de Preco - 90 dias", "ylabel": "Retorno (%)"},
-    "retorno_preco_setorial_360d": {"title": "Retorno Setorial de Preco - 360 dias", "ylabel": "Retorno (%)"},
+    "retorno_preco_setorial_30d": {"title": "Retorno Setorial de Preço - 30 dias", "ylabel": "Retorno (%)"},
+    "retorno_preco_setorial_90d": {"title": "Retorno Setorial de Preço - 90 dias", "ylabel": "Retorno (%)"},
+    "retorno_preco_setorial_360d": {"title": "Retorno Setorial de Preço - 360 dias", "ylabel": "Retorno (%)"},
 }
 SPECIAL_COMPARISON_CHARTS = {"market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_90d", "retorno_preco_setorial_360d"}
 STANDARD_COMPARISON_CHART_KEYS = ("ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida")
@@ -72,6 +72,8 @@ def _comparison_period_sort(period: str) -> tuple[int, int]:
 
 def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Path, tickers: tuple[str, ...]) -> Path | None:
     config = COMPARISON_CHARTS[chart_key]
+    if not tickers:
+        return None
     series = chart.get("series") or {}
     periods = sorted(
         {point.get("period") for rows in series.values() for point in rows if point.get("period")},
@@ -91,7 +93,9 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
     fig.patch.set_facecolor("#FFFFFF")
     ax.set_facecolor("#FFFFFF")
     ax.axhline(0, color="#d8d0b0", linewidth=1.1)
-    colors = ["#006341", "#23AC81", "#6B7C3A", "#B08A3C", "#6C8CA6", "#8A6F98", "#4D5D53"]
+    # Paleta Okabe-Ito: séries simultâneas permanecem distinguíveis também
+    # para pessoas com deficiência de visão de cores e em impressão.
+    colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00"]
     x_by_period = {period: index for index, period in enumerate(periods)}
 
     for index, ticker in enumerate(tickers):
@@ -127,13 +131,10 @@ def generate_comparison_chart(chart_key: str, chart: dict[str, Any], output: Pat
 def comparison_chart_tickers(payload: dict[str, Any], sector: str, tickers: tuple[str, ...]) -> tuple[str, ...]:
     """Seleciona tickers exibidos nos gráficos históricos comparativos.
 
-    Construção civil usa Top 5 por market cap atual para reduzir poluição visual.
-    Se não houver market caps válidos, mantém o conjunto original como fallback
-    seguro para não quebrar a geração dos gráficos.
+    Todos os setores usam Top 5 por market cap atual para manter a comparação
+    histórica legível. Sem market caps válidos, nenhum ticker é escolhido: o
+    gráfico não deve sugerir uma seleção arbitrária.
     """
-
-    if sector != "construcao_civil":
-        return tickers
     market_companies = (((payload.get("indicators") or {}).get("market_cap") or {}).get("companies") or {})
     ranked = []
     for ticker in tickers:
@@ -141,7 +142,7 @@ def comparison_chart_tickers(payload: dict[str, Any], sector: str, tickers: tupl
         if isinstance(value, (int, float)) and value > 0:
             ranked.append((ticker, float(value)))
     if not ranked:
-        return tickers
+        return ()
     return tuple(ticker for ticker, _value in sorted(ranked, key=lambda item: item[1], reverse=True)[:5])
 
 
@@ -155,8 +156,8 @@ def generate_market_cap_share_chart(share: dict[str, Any], output: Path) -> Path
     fig, ax = plt.subplots(figsize=(7.2, 5.2), dpi=150)
     ax.pie(values, labels=labels, colors=colors, startangle=90, counterclock=False, textprops={"fontsize": 7})
     total = share.get("total_market_cap")
-    title = "Participacao no market cap setorial"
-    subtitle = f"Total incluido: R$ {total / 1_000_000_000:.1f} bi | Cobertura: {share.get('companies_included')}/{share.get('companies_registered')}"
+    title = "Participação no market cap setorial"
+    subtitle = f"Total incluído: R$ {total / 1_000_000_000:.1f} bi | Cobertura: {share.get('companies_included')}/{share.get('companies_registered')}"
     ax.set_title(f"{title}\n{subtitle}", color="#00513F", fontsize=10, fontweight="bold")
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, format="png", bbox_inches="tight")
@@ -218,9 +219,9 @@ def generate_sector_aggregate_charts(aggregates: dict[str, Any], output_dir: Pat
     jobs = [
         ("market_cap_share", lambda path: generate_market_cap_share_chart(aggregates.get("market_cap_share") or {}, path)),
         ("ev_ebitda_agregado", lambda path: _generate_single_series_chart((aggregates.get("ev_ebitda_agregado") or {}).get("series") or [], path, "EV/EBITDA agregado do setor", "EV/EBITDA (x)")),
-        ("retorno_preco_setorial_30d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("30d") or [], path, "Retorno setorial de preco - 30 dias")),
-        ("retorno_preco_setorial_90d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("90d") or [], path, "Retorno setorial de preco - 90 dias")),
-        ("retorno_preco_setorial_360d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("360d") or [], path, "Retorno setorial de preco - 360 dias")),
+        ("retorno_preco_setorial_30d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("30d") or [], path, "Retorno setorial de preço - 30 dias")),
+        ("retorno_preco_setorial_90d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("90d") or [], path, "Retorno setorial de preço - 90 dias")),
+        ("retorno_preco_setorial_360d", lambda path: _generate_return_chart(((aggregates.get("retornos_preco") or {}).get("series") or {}).get("360d") or [], path, "Retorno setorial de preço - 360 dias")),
     ]
     for key, factory in jobs:
         path = target_dir / f"{key}.png"
