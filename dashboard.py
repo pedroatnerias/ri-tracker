@@ -3889,8 +3889,7 @@ HTML = """<!doctype html>
         const status = missing ? "NOT_FOUND" : validItems.some(item => item?.confidence === "medium") ? "MEDIUM" : "HIGH";
         const note = validItems.map(item => `${item.nature || "reported"} / ${item.confidence || ""} / ${item.fonte_linha || ""}`).join(" | ");
         return auditRow("Operacional", metric, status, "", "", sources || op.fonte_planilha || op.fonte_alternativa || "", note || op.erro_planilha || "");
-      });
-      : [];
+      }) : [];
       if (isHealthSector) (op.warnings || []).forEach(item => {
         const status = item.status === "not_found" ? "NOT_FOUND" : item.status === "medium_confidence" ? "MEDIUM" : item.status;
         opRows.push(auditRow("Operacional", item.metric || "", status, item.period || "", "", item.fonte_linha || item.escopo || op.fonte_planilha || op.fonte_alternativa || "", item.message || ""));
