@@ -1570,6 +1570,8 @@ def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str, se
 
 def make_chart_png(resultados: Path, ticker: str, view: str, chart_key: str, sector: str = "saude") -> bytes:
     config = CHARTS[chart_key]
+    payload = dashboard_payload(resultados, sector=sector)
+    company = (((payload.get("indicators") or {}).get("indicadores") or {}).get("companies") or {}).get(ticker) or {}
     df = chart_dataframe(resultados, ticker, view, chart_key, sector)
     fig_width = max(8.0, min(16.0, 0.65 * max(len(df), 1) + 5.5))
     fig_height = 4.2 if view == "quarterly" else 3.6
@@ -1978,7 +1980,21 @@ HTML = """<!doctype html>
       box-shadow: 3px 0 5px rgba(16,26,42,0.08);
       z-index: 2;
     }
+    .statement-table th:nth-child(2),
+    .statement-table td:nth-child(2) {
+      position: sticky;
+      left: 120px;
+      min-width: 360px;
+      width: 360px;
+      background: var(--nerias-surface);
+      box-shadow: 3px 0 5px rgba(16,26,42,0.08);
+      z-index: 2;
+    }
     .statement-table th:first-child {
+      background: #eee8d5;
+      z-index: 3;
+    }
+    .statement-table th:nth-child(2) {
       background: #eee8d5;
       z-index: 3;
     }
@@ -3710,8 +3726,16 @@ HTML = """<!doctype html>
         .sort((a, b) => b[1].market_cap - a[1].market_cap)
         .slice(0, 5)
         .map(([ticker]) => ticker);
+      const showAllHistoricalValues = ["ciclo_financeiro", "margem_bruta", "margem_operacional", "margem_ebitda", "margem_liquida"].includes(chartKey);
       const rows = ranked.map(ticker => {
         const points = (chart.series?.[ticker] || []).filter(item => typeof item?.value === "number");
+        if (showAllHistoricalValues) {
+          return points
+            .slice()
+            .sort((a, b) => comparisonPeriodSort(a.period) - comparisonPeriodSort(b.period))
+            .map(point => `<tr><td>${escapeHtml(ticker)}</td><td>${escapeHtml(point.period || "")}</td><td class="num">${escapeHtml(formatComparisonValue(point.value, chart.format || "percent"))}</td></tr>`)
+            .join("");
+        }
         const latest = points.slice().sort((a, b) => comparisonPeriodSort(a.period) - comparisonPeriodSort(b.period)).at(-1);
         return latest ? `<tr><td>${escapeHtml(ticker)}</td><td>${escapeHtml(latest.period || "")}</td><td class="num">${escapeHtml(formatComparisonValue(latest.value, chart.format || "percent"))}</td></tr>` : "";
       }).join("");
