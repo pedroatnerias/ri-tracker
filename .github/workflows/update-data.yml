@@ -119,6 +119,28 @@ jobs:
           echo "Documentos convertidos do setor:"
           find "Releases e relatórios/Saída/${{ inputs.update_sector }}" -type f -print 2>/dev/null | sort || true
 
+      - name: Publicar tracking detalhado como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extraction-tracking-${{ github.run_id }}
+          path: |
+            resultados/**/tracking/*.json
+            resultados/**/app_*_result.json
+            resultados/**/publish_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Resumo do tracking
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Tracking da extração"
+            find resultados -type f -path '*/tracking/*.json' -print 2>/dev/null | sort || true
+            echo "Os manifestos detalhados foram anexados como artefato desta execução."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Validar JSONs gerados
         run: python -m data_publication validate resultados --scope "${{ inputs.update_scope }}" --sector "${{ inputs.update_sector }}"
 

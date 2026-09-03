@@ -1625,7 +1625,9 @@ async def run(args: argparse.Namespace) -> int:
         from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, calculate_derived_from_observations, extract_markdown_observations, extract_workbook_observations
         from construction_company_profiles import resolve_company_for_document
         from document_catalog import catalog_record, write_catalog
+        from tracking import TrackingRun
         markdown_dir = Path(args.md_dir).expanduser().resolve()
+        tracker = TrackingRun(sector="construcao_civil", pipeline="operational_extractor", extractor_version="construction_tracking_v1")
         output_dir.mkdir(parents=True, exist_ok=True)
         # Local review PDFs are valid offline fixtures. Convert them to the
         # same Markdown representation used by the production parser.
@@ -1662,10 +1664,13 @@ async def run(args: argparse.Namespace) -> int:
             company_documents: set[str] = set()
             aliases = tuple(normalise_text(alias) for alias in (company.ticker, *company.legacy_tickers, company.expected_name, *company.aliases))
             for path in source_files:
+                document_id = tracker.document(path, source_type="PDF" if path.suffix.lower() == ".pdf" else "Markdown", ticker_hint=path.parent.name if path.parent.name.upper() in allowed_tickers else None)
+                tracker.event(document_id, "accepted", source_policy="official_ri_pdf_only")
                 path_text = normalise_text(path.name)
                 text = ""
                 if path.suffix.lower() == ".md":
                     text = path.read_text(encoding="utf-8", errors="replace")
+                    tracker.event(document_id, "read", characters=len(text))
                     doc_text = normalise_text(f"{path_text} {text[:2000]}")
                 else:
                     # A PDF is a candidate source, but extraction happens via
@@ -1676,8 +1681,13 @@ async def run(args: argparse.Namespace) -> int:
                 if not resolution or resolution["ticker"] != company.ticker:
                     if path.suffix.lower() == ".md" and not resolution:
                         unresolved_documents.append({"document": str(path), "reason": "company_unresolved"})
+                        tracker.event(document_id, "unresolved", reason="company_unresolved")
                     continue
                 company_resolution_method = resolution["method"]
+                tracker.event(document_id, "company_resolved", ticker=resolution["ticker"], resolution_method=company_resolution_method, confidence=resolution.get("confidence"))
+                # Processamento é contabilizado independentemente de haver
+                # observações: ausência de divulgação é um estado auditável.
+                company_documents.add(str(path))
                 if path.suffix.lower() == ".md":
                     extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
                 else:
@@ -1687,8 +1697,11 @@ async def run(args: argparse.Namespace) -> int:
                     observation["company_resolution_method"] = company_resolution_method
                     observation["company_resolution"] = resolution
                 if extracted:
-                    documents_processed.add(str(path))
-                    company_documents.add(str(path))
+                    tracker.event(document_id, "parsed", observations_count=len(extracted))
+                else:
+                    tracker.event(document_id, "validated", observations_count=0, document_without_disclosure=True)
+                documents_processed.add(str(path))
+                tracker._documents[document_id]["observations_count"] = len(extracted)
                 observations.extend(extracted)
             metricas: dict[str, list[dict[str, Any]]] = {}
             for observation in observations:
@@ -1711,6 +1724,7 @@ async def run(args: argparse.Namespace) -> int:
                 "status": "found_new_data" if observations else "not_found_no_previous_data",
                 "coverage_status": "found" if observations else ("unresolved" if any(item.get("document", "") in {str(p) for p in source_files} for item in unresolved_documents) else "not_found"),
                 "discovery": {"source_policy": "official_ri_pdf_only", "documents_processed": sorted(company_documents)},
+                "tracking": tracker.summary(),
                 "calculation_metadata": calculate_derived_from_observations(observations),
                 "warnings": (["Nenhuma métrica operacional válida encontrada nos documentos processados."] if not observations else []) + ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
             }
@@ -1746,6 +1760,7 @@ async def run(args: argparse.Namespace) -> int:
             "snapshots_preserved": snapshots_preserved,
             "observations_by_metric": observations_by_metric,
             "observations_by_confidence": observations_by_confidence,
+            "tracking": tracker.summary(),
         }
         if 0 < companies_with_observations < len(allowed_tickers):
             result["status"] = "success_with_warnings"
@@ -1754,6 +1769,7 @@ async def run(args: argparse.Namespace) -> int:
             write_observations_json(all_observations, output_dir)
         if args.result_json:
             Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tracker.write(output_dir / "tracking" / f"{tracker.run_id}.json")
         safe_print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
         return 0 if all_observations else 1
     markdown_paths: list[Path] = []

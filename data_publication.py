@@ -225,7 +225,7 @@ def data_manifest_payload(manifest: dict[str, object], data_version: str | None 
     }
     if manifest.get("manual_operational_overrides"):
         files["manual_operational_overrides"] = MANUAL_OVERRIDES_FILENAME
-    return {
+    payload = {
         "files": files,
         "operational_jsons": manifest["operational_jsons"],
         "charts": {
@@ -234,6 +234,9 @@ def data_manifest_payload(manifest: dict[str, object], data_version: str | None 
         },
         "data_version": data_version if data_version is not None else os.environ.get("SOURCE_COMMIT") or os.environ.get("GITHUB_SHA") or "",
     }
+    if isinstance(manifest.get("tracking_summary"), dict):
+        payload["tracking"] = manifest["tracking_summary"]
+    return payload
 
 
 def merge_data_manifest(previous: dict[str, object] | None, current: dict[str, object], scope: str) -> dict[str, object]:
@@ -340,6 +343,12 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     status = "success_with_warnings" if warnings else "success"
     if scope in {"all", "operational"} and sector == "construcao_civil" and operational_quality.get("companies_with_valid_observations", 0) == 0:
         status = "failed_quality_gate"
+    tracking_files = sorted((base / "tracking").glob("*.json")) if (base / "tracking").exists() else []
+    tracking_summary = {}
+    if tracking_files:
+        latest = read_json_if_exists(tracking_files[-1])
+        if isinstance(latest, dict) and isinstance(latest.get("summary"), dict):
+            tracking_summary = {key: latest["summary"].get(key) for key in ("run_id", "sector", "pipeline", "extractor_version", "started_at", "finished_at", "documents_found", "documents_processed", "documents_with_observations", "documents_unresolved", "documents_with_errors", "coverage_status") if key in latest["summary"]}
     manifest = {
         "root_jsons": [path.relative_to(base).as_posix() for path in financial_paths],
         "operational_jsons": [path.relative_to(base).as_posix() for path in operational_jsons],
@@ -350,6 +359,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
         "warnings": warnings,
         "status": status,
         "operational_quality": operational_quality,
+        "tracking_summary": tracking_summary,
     }
     (base / "publish_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",

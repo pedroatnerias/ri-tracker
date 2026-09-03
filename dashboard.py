@@ -45,6 +45,7 @@ from operational_dictionary import TARGET_METRICS, all_metric_names
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
+from tracking import TrackingRun
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -380,6 +381,7 @@ UPDATE_STATE: dict[str, object] = {
     "error": None,
 }
 UPDATE_LOCK = threading.Lock()
+ACTIVE_TRACKER: TrackingRun | None = None
 
 
 def append_update_log(message: str) -> None:
@@ -398,6 +400,10 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
     with UPDATE_LOCK:
         UPDATE_STATE["current_step"] = label
     started = time.monotonic()
+    tracker_document = None
+    if ACTIVE_TRACKER is not None:
+        tracker_document = ACTIVE_TRACKER.document(label, source_type="calculation", pipeline_step=label)
+        ACTIVE_TRACKER.event(tracker_document, "accepted", pipeline_step=label)
     result = subprocess.run(
         command,
         cwd=BASE_DIR,
@@ -410,6 +416,8 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
     if output:
         append_update_log(output[-8000:])
     if result.returncode != 0:
+        if ACTIVE_TRACKER is not None and tracker_document:
+            ACTIVE_TRACKER.event(tracker_document, "extraction_error", pipeline_step=label, returncode=result.returncode, error=output[-2000:])
         message = f"{label} falhou com codigo {result.returncode}"
         if critical:
             raise RuntimeError(message)
@@ -422,6 +430,8 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
             "duration_seconds": round(time.monotonic() - started, 3),
         }
     append_update_log(f"Concluido: {label}")
+    if ACTIVE_TRACKER is not None and tracker_document:
+        ACTIVE_TRACKER.event(tracker_document, "published", pipeline_step=label, returncode=0)
     return {
         "label": label,
         "status": "ok",
@@ -444,6 +454,7 @@ def run_update(
     diagnostico_ri: bool = False,
     refresh_cvm_files: str = "auto",
 ) -> dict[str, object]:
+    global ACTIVE_TRACKER
     mode = validate_update_mode(mode)
     scope = validate_update_scope(scope)
     sector = validate_sector(sector)
@@ -471,6 +482,9 @@ def run_update(
     if sector != "saude" or (resultados / "saude").exists():
         resultados = resultados / sector
     resultados.mkdir(parents=True, exist_ok=True)
+    tracker = TrackingRun(sector=sector, pipeline="dashboard_update", extractor_version="dashboard_tracking_v1")
+    previous_tracker = ACTIVE_TRACKER
+    ACTIVE_TRACKER = tracker
     operational_dir = resultados / "dados_operacionais"
     dre_path = resultados / "DRE_ITR_CVM_ultimos_5_anos.json"
     dfc_path = resultados / "DFC_ITR_CVM.json"
@@ -660,7 +674,11 @@ def run_update(
     else:
         append_update_log("Pipeline concluido com sucesso.")
     append_update_log(f"TOTAL {round(time.monotonic() - started_total, 3)}s")
-    return {"status": global_status, "warnings": warnings, "steps": step_results, "scope": scope, "mode": mode, "sector": sector, "companies": {"financial": selected_financial, "operational": selected_operational}}
+    tracking_path = resultados / "tracking" / f"{tracker.run_id}.json"
+    tracker.write(tracking_path)
+    result = {"status": global_status, "warnings": warnings, "steps": step_results, "scope": scope, "mode": mode, "sector": sector, "companies": {"financial": selected_financial, "operational": selected_operational}, "tracking": tracker.summary(), "tracking_path": str(tracking_path)}
+    ACTIVE_TRACKER = previous_tracker
+    return result
 
 
 def run_full_update(
