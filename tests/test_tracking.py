@@ -48,6 +48,12 @@ class TrackingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run.event(document_id, "published")
 
+    def test_reserved_event_fields_are_rejected(self):
+        run = TrackingRun(sector="saude", pipeline="test", extractor_version="test")
+        document_id = run.document(source_url="https://example.test/file.xlsx", source_type="XLSX")
+        with self.assertRaises(ValueError):
+            run.event(document_id, "accepted", run_id="another-id")
+
 
 if __name__ == "__main__":
     unittest.main()

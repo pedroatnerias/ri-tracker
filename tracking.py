@@ -22,6 +22,7 @@ EVENTS = frozenset({
     "rejected", "unresolved", "extraction_error",
 })
 TERMINAL_EVENTS = frozenset({"published", "preserved_existing", "rejected", "unresolved", "extraction_error"})
+RESERVED_EVENT_FIELDS = frozenset({"run_id", "document_id", "state", "at"})
 ALLOWED_TRANSITIONS = {
     None: {"discovered"},
     "discovered": {"discovered", "accepted", "rejected", "extraction_error"},
@@ -63,6 +64,9 @@ class TrackingRun:
     def event(self, document_id: str, state: str, **fields: Any) -> dict[str, Any]:
         if state not in EVENTS:
             raise ValueError(f"tracking state invalid: {state}")
+        collisions = RESERVED_EVENT_FIELDS.intersection(fields)
+        if collisions:
+            raise ValueError(f"tracking fields reserved: {', '.join(sorted(collisions))}")
         previous = self._documents.get(document_id, {}).get("last_state")
         if previous in TERMINAL_EVENTS:
             raise ValueError(f"tracking document is terminal: {document_id}")
@@ -91,9 +95,10 @@ class TrackingRun:
         if source_type:
             record["source_type"] = source_type
         is_new = document_id not in self._documents
-        self._documents.setdefault(document_id, {"document_id": document_id, **record, "events": []})
+        document_record = {key: value for key, value in record.items() if key != "document_id"}
+        self._documents.setdefault(document_id, {"document_id": document_id, **document_record, "events": []})
         if is_new:
-            self.event(document_id, "discovered", **record)
+            self.event(document_id, "discovered", **document_record)
         return document_id
 
     def summary(self) -> dict[str, Any]:
