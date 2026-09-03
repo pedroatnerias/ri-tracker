@@ -1,95 +1,90 @@
 {
     "schema_version":  1,
-    "ticker":  "INNC3",
+    "ticker":  "LAVV3",
     "calibration_status":  "mapped",
     "metrics":  {
                     "landbank_vgv":  {
                                          "positive_aliases":  [
-                                                                  "Landbank (em R$ mil)",
-                                                                  "Landbank (R$ mil)"
+                                                                  "Landbank %Co"
                                                               ],
                                          "preferred_sources":  [
-                                                                   "operational_table"
+                                                                   "narrative"
                                                                ],
                                          "preferred_ownership_basis":  "company_share"
                                      },
                     "launches_vgv":  {
                                          "positive_aliases":  [
-                                                                  "VGV lanÃ§ado (em R$ mil)"
+                                                                  "VGV LÃ­quido %Lavvi"
                                                               ],
                                          "preferred_sources":  [
-                                                                   "operational_table"
+                                                                   "operational_highlights"
                                                                ],
-                                         "preferred_ownership_basis":  "company_share"
+                                         "preferred_ownership_basis":  "company_share",
+                                         "notes":  "Zero sÃ³ quando ausÃªncia de lanÃ§amentos for explicitamente informada."
                                      },
                     "net_sales_vgv":  {
                                           "positive_aliases":  [
-                                                                   "Vendas lÃ­quidas (em R$ mil)",
-                                                                   "Vendas LÃ­quidas (R$ mil)"
+                                                                   "Vendas LÃ­quidas %Lavvi"
                                                                ],
                                           "preferred_sources":  [
-                                                                    "sales_table"
+                                                                    "operational_highlights"
                                                                 ],
                                           "preferred_ownership_basis":  "company_share"
                                       },
                     "cancellations_vgv":  {
                                               "positive_aliases":  [
-                                                                       "VGV distratado",
-                                                                       "Distratos do trimestre"
+                                                                       "Distratos 100%"
                                                                    ],
                                               "preferred_sources":  [
-                                                                        "operational_table"
+                                                                        "sales_table"
                                                                     ],
-                                              "preferred_ownership_basis":  "company_share",
-                                              "expected_sign":  "positive",
-                                              "notes":  "Preservar magnitude positiva quando assim reportada; nÃ£o criar valor por diferenÃ§a."
+                                              "preferred_ownership_basis":  "one_hundred_percent",
+                                              "expected_sign":  "positive"
                                           },
                     "units_sold":  {
                                        "positive_aliases":  [
-                                                                "Vendas lÃ­quidas (Unidades)"
+                                                                "NÃºmero de Unidades Vendidas"
                                                             ],
                                        "preferred_sources":  [
-                                                                 "sales_table"
+                                                                 "operational_highlights"
                                                              ],
-                                       "preferred_ownership_basis":  "company_share"
+                                       "preferred_ownership_basis":  "one_hundred_percent"
                                    },
                     "units_under_construction":  {
                                                      "positive_aliases":  [
-                                                                              "Unidades em produÃ§Ã£o"
+                                                                              "Soma das unidades dos projetos com status Em Obras"
                                                                           ],
                                                      "preferred_sources":  [
-                                                                               "production_table"
+                                                                               "project_table"
                                                                            ],
-                                                     "preferred_ownership_basis":  "company_share"
+                                                     "preferred_ownership_basis":  "one_hundred_percent",
+                                                     "notes":  "Somar exclusivamente projetos com status Em Obras."
                                                  },
                     "ending_inventory_vgv":  {
                                                  "positive_aliases":  [
-                                                                          "Estoque (em VGV)"
+                                                                          "Estoque a valor de mercado â€” VGV Lavvi"
                                                                       ],
                                                  "preferred_sources":  [
-                                                                           "production_table"
+                                                                           "inventory_table"
                                                                        ],
-                                                 "preferred_ownership_basis":  "company_share",
-                                                 "notes":  "Registrar divergÃªncias de reapresentaÃ§Ã£o entre releases."
+                                                 "preferred_ownership_basis":  "company_share"
                                              },
                     "roe":  {
                                 "publication":  "reported_reference",
-                                "preferred_sources":  [
-                                                          "debt_indicators"
-                                                      ],
-                                "notes":  "Reportado como benchmark; cÃ¡lculo canÃ´nico permanece separado."
+                                "reported_temporality":  "annualized",
+                                "notes":  "Manter como benchmark do cÃ¡lculo canÃ´nico."
                             },
                     "credit_loss_allowance_to_receivables":  {
-                                                                 "publication":  "not_disclosed",
-                                                                 "notes":  "Exigir saldo de provisÃ£o segregado e compatÃ­vel."
+                                                                 "publication":  "ambiguous",
+                                                                 "notes":  "Numerador Ã© fluxo, nÃ£o saldo de PCLD."
                                                              },
                     "net_vso":  {
-                                    "publication":  "ambiguous",
+                                    "publication":  "reported_reference",
                                     "preferred_sources":  [
                                                               "reported_vso"
                                                           ],
-                                    "notes":  "GlossÃ¡rio define VSO por unidades; manter apenas como benchmark, nÃ£o normalizar para VGV."
+                                    "notes":  "Usar como benchmark; recalcular apenas com componentes homogÃªneos."
                                 }
                 },
-    "notes":  "Regras derivadas da matriz INNC3; base de participaÃ§Ã£o 100% companhia e escala recorrente R$ milhar."
+    "notes":  "Regras derivadas da matriz LAVV3; VGV operacional prioriza participaÃ§Ã£o da companhia, enquanto distratos e unidades sÃ£o reportados em base 100%."
 }

@@ -36,22 +36,41 @@ def _metric(identifier: str, name: str, classification: str, definition: str, un
 
 CONSTRUCTION_OPERATIONAL_DICTIONARY: dict[str, dict[str, Any]] = {
     "landbank_vgv": _metric("landbank_vgv", "Banco de terras", "extracted", "VGV potencial do banco de terrenos ainda nao lancado.", "BRL_million", "stock", ("banco de terras", "landbank", "land bank", "estoque de terrenos", "vgv potencial", "potential sales value", "psv do landbank"), ("vgv", "psv", "potencial"), ("estoque de unidades", "valor contabil", "aquisicao de terrenos")),
-    "launches_vgv": _metric("launches_vgv", "Lançamentos", "extracted", "VGV de empreendimentos ou fases lancados no periodo.", "BRL_million", "flow", ("lancamentos", "vgv lancado", "launches", "launched psv", "volume lancado"), ("realizado", "periodo", "vgv"), ("guidance", "futuro", "unidades lancadas", "vendas")),
-    "net_sales_vgv": _metric("net_sales_vgv", "VGV líquido — vendas líquidas", "extracted", "VGV de vendas apos distratos.", "BRL_million", "flow", ("vendas liquidas", "vgv liquido", "vendas liquidas contratadas", "net sales", "net contracted sales", "net psv sales"), ("contratadas", "vgv", "net"), ("receita liquida", "vendas brutas")),
+    "launches_vgv": _metric("launches_vgv", "LanÃ§amentos", "extracted", "VGV de empreendimentos ou fases lancados no periodo.", "BRL_million", "flow", ("lancamentos", "vgv lancado", "launches", "launched psv", "volume lancado"), ("realizado", "periodo", "vgv"), ("guidance", "futuro", "unidades lancadas", "vendas")),
+    "net_sales_vgv": _metric("net_sales_vgv", "VGV lÃ­quido â€” vendas lÃ­quidas", "extracted", "VGV de vendas apos distratos.", "BRL_million", "flow", ("vendas liquidas", "vgv liquido", "vendas liquidas contratadas", "net sales", "net contracted sales", "net psv sales"), ("contratadas", "vgv", "net"), ("receita liquida", "vendas brutas")),
     "cancellations_vgv": _metric("cancellations_vgv", "VGV distratado", "extracted", "VGV de contratos distratados no periodo.", "BRL_million", "flow", ("distratos", "vgv distratado", "cancelamentos", "cancellations", "terminated sales"), ("vgv", "periodo"), ("taxa de distrato", "provisao", "contingencia")),
     "units_sold": _metric("units_sold", "Lotes/unidades vendidas", "extracted", "Quantidade de lotes ou unidades vendidas no periodo.", "units", "flow", ("unidades vendidas", "lotes vendidos", "vendas em unidades", "unidades comercializadas", "units sold", "lots sold"), ("liquidas", "vendidas"), ("unidades lancadas", "entregues", "concluidas", "estoque")),
-    "units_under_construction": _metric("units_under_construction", "Unidades em obras/em construção", "extracted", "Unidades com construcao iniciada e em andamento na data.", "units", "stock", ("unidades em obras", "unidades em construcao", "unidades em andamento", "unidades em producao", "units under construction", "units in progress"), ("unidades", "em obras"), ("numero de obras", "empreendimentos", "vgv", "unidades lancadas", "concluidas", "entregues")),
+    "units_under_construction": _metric("units_under_construction", "Unidades em obras/em construÃ§Ã£o", "extracted", "Unidades com construcao iniciada e em andamento na data.", "units", "stock", ("unidades em obras", "unidades em construcao", "unidades em andamento", "unidades em producao", "units under construction", "units in progress"), ("unidades", "em obras"), ("numero de obras", "empreendimentos", "vgv", "unidades lancadas", "concluidas", "entregues")),
     "ending_inventory_vgv": _metric("ending_inventory_vgv", "Estoque EoP", "extracted", "VGV de unidades lancadas disponiveis ao fim do periodo.", "BRL_million", "stock", ("estoque eop", "estoque ao final do periodo", "estoque disponivel", "estoque a valor de mercado", "vgv em estoque", "inventory at market value", "ending inventory", "inventory psv"), ("vgv", "valor de mercado", "disponivel"), ("estoque contabil", "balanco patrimonial", "banco de terras", "terrenos")),
     "roe": _metric("roe", "ROE", "calculated", "Lucro liquido atribuivel LTM sobre PL atribuivel medio.", "percent", "flow", ("roe", "return on equity"), (), (), components=("controller_net_income_ltm", "controller_equity_begin", "controller_equity_end"), preferred_source="CVM_standardized_statements"),
-    "credit_loss_allowance_to_receivables": _metric("credit_loss_allowance_to_receivables", "PCLD/Recebíveis — proxy de inadimplência", "calculated", "Proxy de perdas esperadas sobre recebiveis brutos.", "percent", "stock", ("pcld sobre recebiveis", "allowance to receivables", "expected credit loss"), ("saldo", "contas a receber"), ("despesa", "dre", "contingencia"), components=("pcld_balance", "receivables_gross", "receivables_net"), preferred_source="CVM_balance_and_notes"),
-    "net_vso": _metric("net_vso", "VSO líquida", "calculated", "Vendas liquidas sobre estoque inicial mais lancamentos.", "percent", "flow", ("vso liquida", "net vso", "sales over supply"), (), (), components=("net_sales_vgv", "beginning_inventory_vgv", "launches_vgv", "ending_inventory_vgv")),
+    "credit_loss_allowance_to_receivables": _metric("credit_loss_allowance_to_receivables", "PCLD/RecebÃ­veis â€” proxy de inadimplÃªncia", "calculated", "Proxy de perdas esperadas sobre recebiveis brutos.", "percent", "stock", ("pcld sobre recebiveis", "allowance to receivables", "expected credit loss"), ("saldo", "contas a receber"), ("despesa", "dre", "contingencia"), components=("pcld_balance", "receivables_gross", "receivables_net"), preferred_source="CVM_balance_and_notes"),
+    "net_vso": _metric("net_vso", "VSO lÃ­quida", "calculated", "Vendas liquidas sobre estoque inicial mais lancamentos.", "percent", "flow", ("vso liquida", "net vso", "sales over supply"), (), (), components=("net_sales_vgv", "beginning_inventory_vgv", "launches_vgv", "ending_inventory_vgv")),
 }
 
 CONSTRUCTION_METRIC_IDS = tuple(CONSTRUCTION_OPERATIONAL_DICTIONARY)
 
 
+def repair_mojibake(value: Any) -> str:
+    """Repairs the common UTF-8-read-as-Windows-1252 corruption.
+
+    The conversion is applied only when typical mojibake markers exist and
+    produces fewer markers, so normal Portuguese text is left untouched.
+    """
+    text = str(value or "")
+    markers = ("\u00c3", "\u00c2", "\u00e2", "\u00f0", "\ufffd")
+    if not any(marker in text for marker in markers):
+        return text
+    try:
+        repaired = text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    marker_count = sum(text.count(marker) for marker in markers)
+    repaired_count = sum(repaired.count(marker) for marker in markers)
+    return repaired if repaired_count < marker_count else text
+
+
 def normalize_text(value: Any) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = unicodedata.normalize("NFKD", repair_mojibake(value))
     return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).lower().split())
 
 
@@ -65,6 +84,8 @@ def normalize_period(period: str) -> tuple[str, str]:
         return f"{match.group(1)}M{match.group(2)[-2:]}", "ytd_6m" if match.group(1) == "6" else "ytd_9m"
     if re.fullmatch(r"(?:FY)?20\d{2}", text):
         return text[-4:], "fy"
+    if re.fullmatch(r"FY\d{2}", text):
+        return f"20{text[-2:]}", "fy"
     if text.startswith("LTM"):
         return text, "ltm"
     raise ValueError(f"periodo operacional invalido: {period}")
@@ -123,7 +144,7 @@ def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale
     else:
         cleaned = re.sub(r"[^\d,.-]", "", raw)
         if not cleaned:
-            raise ValueError(f"valor financeiro inválido: {raw_value}")
+            raise ValueError(f"valor financeiro invÃ¡lido: {raw_value}")
         if "," in cleaned:
             cleaned = cleaned.replace(".", "").replace(",", ".")
         elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", cleaned):
@@ -163,6 +184,11 @@ def align_periods_and_values(headers: list[str], values: list[str]) -> list[tupl
     expanded_values: list[str] = []
     for value in values:
         expanded_values.extend(split_composite_cell(value))
+    # A positional association is unsafe when the table has been truncated or
+    # a cell contains an unlabelled extra value. Reject it instead of silently
+    # pairing values with the wrong period.
+    if len(expanded_headers) != len(expanded_values):
+        return []
     aligned: list[tuple[str, str]] = []
     for period, value in zip(expanded_headers, expanded_values):
         if normalize_text(period) in {"var", "var%"} or "%" in period and not re.search(r"\d", period):
@@ -177,7 +203,10 @@ def validate_observation_evidence(observation: dict[str, Any]) -> dict[str, Any]
     missing = [key for key in ("ticker", "indicator_id", "period", "value", "unit", "source_document") if not observation.get(key)]
     status = "valid" if not missing and observation.get("confidence") in {"high", "medium"} else "low_confidence"
     if observation.get("validation_flags"):
-        status = "quarantined_scope" if "breakdown_without_explicit_total" in observation["validation_flags"] else status
+        if "breakdown_without_explicit_total" in observation["validation_flags"]:
+            status = "quarantined_scope"
+        elif any(flag.startswith(("profile_publication:", "ownership_basis_expected:", "unexpected_")) for flag in observation["validation_flags"]):
+            status = "quarantined"
     return {**observation, "validation_status": status, "validation_missing_fields": missing}
 
 
@@ -324,6 +353,18 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
     if basis not in OWNERSHIP_BASES:
         raise ValueError(f"ownership_basis invalida: {basis}")
     normalized_value, currency, scale = (normalize_money(value, unit) if indicator_id.endswith("_vgv") else (float(value), None, "units"))
+    rules = profile_for(ticker).get("metrics", {}).get(indicator_id, {})
+    validation_flags: list[str] = []
+    expected_basis = rules.get("preferred_ownership_basis")
+    if expected_basis and basis != expected_basis:
+        validation_flags.append(f"ownership_basis_expected:{expected_basis}")
+    expected_sign = rules.get("expected_sign")
+    if expected_sign == "negative" and normalized_value > 0:
+        validation_flags.append("unexpected_positive_sign")
+    if expected_sign == "positive" and normalized_value < 0:
+        validation_flags.append("unexpected_negative_sign")
+    if rules.get("publication") in {"ambiguous", "not_disclosed", "not_applicable"}:
+        validation_flags.append(f"profile_publication:{rules['publication']}")
     confidence_reasons = ["official_source" if source_type not in {"manual", "secondary"} else source_type, "indicator_explicit", "period_confirmed"]
     confidence = "high" if basis != "unknown" and unit else "medium"
     return {
@@ -338,7 +379,7 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
         "page": page, "table_title": table_title, "row_label": label, "column_label": column_label or period,
         "evidence_text": context or label, "extraction_method": "contextual_table",
         "reported_or_derived": reported_or_derived, "confidence": confidence,
-        "confidence_reasons": confidence_reasons, "validation_flags": [] if basis != "unknown" else ["unknown_ownership_basis"],
+        "confidence_reasons": confidence_reasons, "validation_flags": validation_flags + ([] if basis != "unknown" else ["unknown_ownership_basis"]),
         "raw_value": raw_value if raw_value is not None else str(value), "raw_unit": raw_unit or unit,
         "normalized_value": normalized_value, "normalized_unit": definition["unit"],
         "scale_conversion_applied": not math.isclose(float(value), normalized_value) if indicator_id.endswith("_vgv") else False,
@@ -382,7 +423,7 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
             continue
         if not headers or len(cells) < 2:
             continue
-        context = " ".join(lines[max(0, index - 3): min(len(lines), index + 4)])
+        context = " ".join((ticker, *lines[max(0, index - 3): min(len(lines), index + 4)]))
         indicator_id, flags = identify_metric(cells[0], context, context)
         normalized_context = normalize_text(context)
         normalized_label = normalize_text(cells[0])
@@ -391,7 +432,7 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
         if not indicator_id or flags:
             continue
         for column, raw_value in enumerate(cells[1:], start=1):
-            if column >= len(headers) or raw_value in {"", "-", "—", "N/A"}:
+            if column >= len(headers) or raw_value in {"", "-", "â€”", "N/A"}:
                 continue
             cleaned = re.sub(r"[^\d,.-]", "", raw_value)
             if not cleaned:
@@ -487,7 +528,7 @@ def calculate_credit_loss_proxy(pcld_balance: float | None, *, receivables_gross
     payload = {"indicator_id": "credit_loss_allowance_to_receivables", "pcld_balance": allowance,
                "receivables_net": receivables_net, "receivables_gross": gross,
                "gross_receivables_reconstructed": reconstructed,
-               "methodology_warning": "PCLD/Recebíveis é uma proxy baseada em perdas esperadas e pode refletir tanto risco de crédito quanto diferenças nas políticas de provisionamento."}
+               "methodology_warning": "PCLD/RecebÃ­veis Ã© uma proxy baseada em perdas esperadas e pode refletir tanto risco de crÃ©dito quanto diferenÃ§as nas polÃ­ticas de provisionamento."}
     if allowance is None or gross is None:
         return {**payload, "value": None, "calculation_status": "missing_components"}
     if not same_scope:
@@ -529,3 +570,27 @@ def calculate_vso(net_sales_vgv: float | None, beginning_inventory_vgv: float | 
             "implicit_adjustments": adjustment, "reconciliation_status": reconciliation,
             "reported_calculated_difference": None if reported_vso is None else value - float(reported_vso),
             "confidence": "medium" if reconciliation == "material_difference" else "high"}
+
+
+def calculate_derived_from_observations(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Calculate only metrics with compatible components in the same snapshot."""
+    by_key = {(item.get("indicator_id"), item.get("period"), item.get("ownership_basis")): item.get("value") for item in observations}
+    vso: dict[str, Any] = {}
+    periods = {item.get("period") for item in observations if item.get("period")}
+    def period_key(value: str) -> tuple[int, int] | None:
+        match = re.fullmatch(r"([1-4])T(\d{2})", str(value))
+        return (2000 + int(match.group(2)), int(match.group(1))) if match else None
+    for period in periods:
+        bases = {item.get("ownership_basis") for item in observations if item.get("period") == period}
+        for basis in bases - {None, "unknown"}:
+            key = period_key(str(period))
+            previous = None
+            if key:
+                previous_periods = [candidate for candidate in periods if period_key(str(candidate)) and period_key(str(candidate)) < key]
+                if previous_periods:
+                    previous = max(previous_periods, key=lambda candidate: period_key(str(candidate)))
+            beginning_inventory = by_key.get(("ending_inventory_vgv", previous, basis)) if previous else None
+            result = calculate_vso(by_key.get(("net_sales_vgv", period, basis)), beginning_inventory, by_key.get(("launches_vgv", period, basis)), ownership_bases=(basis,), compatible_periods=beginning_inventory is not None)
+            if result["calculation_status"] == "derived":
+                vso[period] = result
+    return {"roe": {"value": None, "calculation_status": "missing_components"}, "credit_loss_allowance_to_receivables": {"value": None, "calculation_status": "missing_components"}, "net_vso": vso or {"value": None, "calculation_status": "missing_components"}}

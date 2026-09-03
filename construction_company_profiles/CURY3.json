@@ -1,18 +1,115 @@
 {
-  "schema_version": 1,
-  "ticker": "CURY3",
-  "metrics": {
-    "landbank_vgv": {"positive_aliases": ["Banco de Terrenos (VGV, R$ milhões)", "Banco de Terrenos"], "negative_aliases": ["estoque disponível"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent"},
-    "launches_vgv": {"positive_aliases": ["VGV (R$ milhões)", "Tabela Lançamentos"], "negative_aliases": ["unidades lançadas"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent"},
-    "net_sales_vgv": {"positive_aliases": ["Vendas Líquidas (R$ milhões VGV)"], "negative_aliases": ["receita líquida"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent"},
-    "cancellations_vgv": {"positive_aliases": ["Distratos (R$ milhões)"], "negative_aliases": ["taxa de distrato", "provisão"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent", "expected_sign": "positive", "notes": "Preservar positivo conforme tabela."},
-    "units_sold": {"positive_aliases": ["Número de Unidades"], "negative_aliases": ["unidades líquidas", "unidades lançadas"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent", "notes": "Quantidade associada às vendas brutas; não interpretar como unidades líquidas."},
-    "units_under_construction": {"positive_aliases": ["Unidades em construção"], "negative_aliases": ["Obras em Andamento", "número de obras"], "preferred_sources": ["narrative"], "preferred_ownership_basis": "one_hundred_percent", "notes": "Usar unidades explícitas; não confundir com quantidade de obras."},
-    "ending_inventory_vgv": {"positive_aliases": ["Estoque — Total", "Tabela Estoque"], "negative_aliases": ["banco de terrenos"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "one_hundred_percent"},
-    "net_vso": {"publication": "reported_reference", "preferred_sources": ["reported_vso"], "notes": "VSO reportada deve permanecer separada da VSO líquida canônica quando a metodologia não for explicitamente compatível."},
-    "roe": {"publication": "not_disclosed"},
-    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed"}
-  },
-  "calibration_status": "mapped",
-  "notes": "Regras derivadas da matriz CURY3 preenchida. Indicadores operacionais monetários estão em 100% do projeto; distratos preservam sinal positivo reportado."
+    "schema_version":  1,
+    "ticker":  "CURY3",
+    "metrics":  {
+                    "landbank_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "Banco de Terrenos (VGV, R$ milhÃµes)",
+                                                                  "Banco de Terrenos"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "estoque disponÃ­vel"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "operational_detail_table"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "launches_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "VGV (R$ milhÃµes)",
+                                                                  "Tabela LanÃ§amentos"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "unidades lanÃ§adas"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "operational_detail_table"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "net_sales_vgv":  {
+                                          "positive_aliases":  [
+                                                                   "Vendas LÃ­quidas (R$ milhÃµes VGV)"
+                                                               ],
+                                          "negative_aliases":  [
+                                                                   "receita lÃ­quida"
+                                                               ],
+                                          "preferred_sources":  [
+                                                                    "operational_detail_table"
+                                                                ],
+                                          "preferred_ownership_basis":  "one_hundred_percent"
+                                      },
+                    "cancellations_vgv":  {
+                                              "positive_aliases":  [
+                                                                       "Distratos (R$ milhÃµes)"
+                                                                   ],
+                                              "negative_aliases":  [
+                                                                       "taxa de distrato",
+                                                                       "provisÃ£o"
+                                                                   ],
+                                              "preferred_sources":  [
+                                                                        "operational_detail_table"
+                                                                    ],
+                                              "preferred_ownership_basis":  "one_hundred_percent",
+                                              "expected_sign":  "positive",
+                                              "notes":  "Preservar positivo conforme tabela."
+                                          },
+                    "units_sold":  {
+                                       "positive_aliases":  [
+                                                                "NÃºmero de Unidades"
+                                                            ],
+                                       "negative_aliases":  [
+                                                                "unidades lÃ­quidas",
+                                                                "unidades lanÃ§adas"
+                                                            ],
+                                       "preferred_sources":  [
+                                                                 "operational_detail_table"
+                                                             ],
+                                       "preferred_ownership_basis":  "one_hundred_percent",
+                                       "notes":  "Quantidade associada Ã s vendas brutas; nÃ£o interpretar como unidades lÃ­quidas."
+                                   },
+                    "units_under_construction":  {
+                                                     "positive_aliases":  [
+                                                                              "Unidades em construÃ§Ã£o"
+                                                                          ],
+                                                     "negative_aliases":  [
+                                                                              "Obras em Andamento",
+                                                                              "nÃºmero de obras"
+                                                                          ],
+                                                     "preferred_sources":  [
+                                                                               "narrative"
+                                                                           ],
+                                                     "preferred_ownership_basis":  "one_hundred_percent",
+                                                     "notes":  "Usar unidades explÃ­citas; nÃ£o confundir com quantidade de obras."
+                                                 },
+                    "ending_inventory_vgv":  {
+                                                 "positive_aliases":  [
+                                                                          "Estoque â€” Total",
+                                                                          "Tabela Estoque"
+                                                                      ],
+                                                 "negative_aliases":  [
+                                                                          "banco de terrenos"
+                                                                      ],
+                                                 "preferred_sources":  [
+                                                                           "operational_detail_table"
+                                                                       ],
+                                                 "preferred_ownership_basis":  "one_hundred_percent"
+                                             },
+                    "net_vso":  {
+                                    "publication":  "reported_reference",
+                                    "preferred_sources":  [
+                                                              "reported_vso"
+                                                          ],
+                                    "notes":  "VSO reportada deve permanecer separada da VSO lÃ­quida canÃ´nica quando a metodologia nÃ£o for explicitamente compatÃ­vel."
+                                },
+                    "roe":  {
+                                "publication":  "not_disclosed"
+                            },
+                    "credit_loss_allowance_to_receivables":  {
+                                                                 "publication":  "not_disclosed"
+                                                             }
+                },
+    "calibration_status":  "mapped",
+    "notes":  "Regras derivadas da matriz CURY3 preenchida. Indicadores operacionais monetÃ¡rios estÃ£o em 100% do projeto; distratos preservam sinal positivo reportado."
 }

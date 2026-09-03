@@ -63,6 +63,8 @@ releases e relatórios/manifesto_downloads.json
 acompanhador_de_mercado*.html
 
 # Arquivos de dados/downloads que nao devem ser versionados por padrao
+Indicadores para Revisão/
+indicadores para revisão/
 *.zip
 *.pdf
 *.xlsx

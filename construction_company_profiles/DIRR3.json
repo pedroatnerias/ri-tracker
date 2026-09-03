@@ -1,18 +1,106 @@
 {
-  "schema_version": 1,
-  "ticker": "DIRR3",
-  "calibration_status": "mapped",
-  "metrics": {
-    "landbank_vgv": {"positive_aliases": ["Landbank (VGV 100%)"], "negative_aliases": ["estoque contábil"], "preferred_sources": ["key_indicators"], "preferred_ownership_basis": "one_hundred_percent"},
-    "launches_vgv": {"positive_aliases": ["VGV Lançado (VGV 100%)"], "negative_aliases": ["Programa Pode Entrar"], "preferred_sources": ["key_indicators"], "preferred_ownership_basis": "one_hundred_percent"},
-    "net_sales_vgv": {"positive_aliases": ["VGV Líquido Contratado (VGV 100%)"], "preferred_sources": ["reconciled_operational_table"], "preferred_ownership_basis": "one_hundred_percent", "notes": "Desconsidera projetos vendidos no Programa Pode Entrar."},
-    "cancellations_vgv": {"positive_aliases": ["Distratos (VGV 100%)"], "negative_aliases": ["cessão de crédito"], "preferred_sources": ["cancellations_table"], "preferred_ownership_basis": "one_hundred_percent", "expected_sign": "negative"},
-    "units_sold": {"positive_aliases": ["Unidades Contratadas"], "preferred_sources": ["net_sales_table"], "preferred_ownership_basis": "one_hundred_percent"},
-    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["unidades totais de estoque"], "notes": "Não usar unidades totais de estoque como proxy."},
-    "ending_inventory_vgv": {"positive_aliases": ["Estoque (VGV 100%)"], "negative_aliases": ["estoques contábeis"], "preferred_sources": ["key_indicators"], "preferred_ownership_basis": "one_hundred_percent"},
-    "roe": {"publication": "reported_reference", "reported_temporality": "annualized_adjusted", "preferred_sources": ["key_indicators"], "notes": "ROE anualizado ajustado é benchmark; não substituir o cálculo canônico."},
-    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed", "negative_aliases": ["cessão de recebíveis"], "notes": "Cessão de recebíveis não é PCLD."},
-    "net_vso": {"publication": "reported_reference", "preferred_sources": ["reported_vso"], "preferred_ownership_basis": "one_hundred_percent", "notes": "Direcional define VSO como vendas líquidas sobre oferta; usar como benchmark."}
-  },
-  "notes": "Regras derivadas da matriz DIRR3. Base principal 100%; projetos do Programa Pode Entrar são excluídos quando indicado."
+    "schema_version":  1,
+    "ticker":  "DIRR3",
+    "calibration_status":  "mapped",
+    "metrics":  {
+                    "landbank_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "Landbank (VGV 100%)"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "estoque contÃ¡bil"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "key_indicators"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "launches_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "VGV LanÃ§ado (VGV 100%)"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "Programa Pode Entrar"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "key_indicators"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "net_sales_vgv":  {
+                                          "positive_aliases":  [
+                                                                   "VGV LÃ­quido Contratado (VGV 100%)"
+                                                               ],
+                                          "preferred_sources":  [
+                                                                    "reconciled_operational_table"
+                                                                ],
+                                          "preferred_ownership_basis":  "one_hundred_percent",
+                                          "notes":  "Desconsidera projetos vendidos no Programa Pode Entrar."
+                                      },
+                    "cancellations_vgv":  {
+                                              "positive_aliases":  [
+                                                                       "Distratos (VGV 100%)"
+                                                                   ],
+                                              "negative_aliases":  [
+                                                                       "cessÃ£o de crÃ©dito"
+                                                                   ],
+                                              "preferred_sources":  [
+                                                                        "cancellations_table"
+                                                                    ],
+                                              "preferred_ownership_basis":  "one_hundred_percent",
+                                              "expected_sign":  "negative"
+                                          },
+                    "units_sold":  {
+                                       "positive_aliases":  [
+                                                                "Unidades Contratadas"
+                                                            ],
+                                       "preferred_sources":  [
+                                                                 "net_sales_table"
+                                                             ],
+                                       "preferred_ownership_basis":  "one_hundred_percent"
+                                   },
+                    "units_under_construction":  {
+                                                     "publication":  "not_disclosed",
+                                                     "negative_aliases":  [
+                                                                              "unidades totais de estoque"
+                                                                          ],
+                                                     "notes":  "NÃ£o usar unidades totais de estoque como proxy."
+                                                 },
+                    "ending_inventory_vgv":  {
+                                                 "positive_aliases":  [
+                                                                          "Estoque (VGV 100%)"
+                                                                      ],
+                                                 "negative_aliases":  [
+                                                                          "estoques contÃ¡beis"
+                                                                      ],
+                                                 "preferred_sources":  [
+                                                                           "key_indicators"
+                                                                       ],
+                                                 "preferred_ownership_basis":  "one_hundred_percent"
+                                             },
+                    "roe":  {
+                                "publication":  "reported_reference",
+                                "reported_temporality":  "annualized_adjusted",
+                                "preferred_sources":  [
+                                                          "key_indicators"
+                                                      ],
+                                "notes":  "ROE anualizado ajustado Ã© benchmark; nÃ£o substituir o cÃ¡lculo canÃ´nico."
+                            },
+                    "credit_loss_allowance_to_receivables":  {
+                                                                 "publication":  "not_disclosed",
+                                                                 "negative_aliases":  [
+                                                                                          "cessÃ£o de recebÃ­veis"
+                                                                                      ],
+                                                                 "notes":  "CessÃ£o de recebÃ­veis nÃ£o Ã© PCLD."
+                                                             },
+                    "net_vso":  {
+                                    "publication":  "reported_reference",
+                                    "preferred_sources":  [
+                                                              "reported_vso"
+                                                          ],
+                                    "preferred_ownership_basis":  "one_hundred_percent",
+                                    "notes":  "Direcional define VSO como vendas lÃ­quidas sobre oferta; usar como benchmark."
+                                }
+                },
+    "notes":  "Regras derivadas da matriz DIRR3. Base principal 100%; projetos do Programa Pode Entrar sÃ£o excluÃ­dos quando indicado."
 }

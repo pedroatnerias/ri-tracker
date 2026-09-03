@@ -1,0 +1,9 @@
+{
+    "schema_version":  1,
+    "ticker":  "MDNE3",
+    "calibration_status":  "not_started",
+    "metrics":  {
+
+                },
+    "notes":  "A matriz fornecida nÃ£o contÃ©m evidÃªncias operacionais preenchidas; nenhuma regra especÃ­fica foi inferida."
+}

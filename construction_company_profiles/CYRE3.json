@@ -1,19 +1,102 @@
 {
-  "schema_version": 1,
-  "ticker": "CYRE3",
-  "calibration_status": "mapped",
-  "metrics": {
-    "landbank_vgv": {"positive_aliases": ["Landbank — VGV equivalente à participação Cyrela"], "negative_aliases": ["estoque de unidades disponíveis"], "preferred_sources": ["narrative"], "preferred_ownership_basis": "company_share", "notes": "Usar o valor explicitamente narrado; não aplicar percentuais arredondados para criar falsa precisão."},
-    "launches_vgv": {"positive_aliases": ["VGV lançado ex-permuta (%CBR)"], "negative_aliases": ["VGV 100% com permuta"], "preferred_sources": ["operational_highlights"], "preferred_ownership_basis": "company_share", "notes": "Fluxo do período, ex-permuta e na participação Cyrela."},
-    "net_sales_vgv": {"positive_aliases": ["Vendas ex-permuta (%CBR)"], "negative_aliases": ["receita líquida"], "preferred_sources": ["sales_table"], "preferred_ownership_basis": "company_share", "notes": "Vendas já são líquidas de distratos; usar ex-permuta/%CBR."},
-    "cancellations_vgv": {"publication": "not_disclosed", "negative_aliases": ["diferença entre métricas em bases distintas"], "notes": "Não inferir distratos a partir de métricas com bases diferentes."},
-    "units_sold": {"positive_aliases": ["Unidades vendidas"], "preferred_sources": ["product_sales_appendix"], "notes": "A quantidade é 100% e com permuta; não é diretamente comparável ao VGV ex-permuta/%CBR. Não estimar por preço médio."},
-    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["Canteiros de obras", "VGV em construção"], "notes": "Canteiros e VGV não são quantidade de unidades em obras."},
-    "ending_inventory_vgv": {"positive_aliases": ["Estoque a valor de mercado (%CBR)"], "negative_aliases": ["landbank"], "preferred_sources": ["inventory_table"], "preferred_ownership_basis": "company_share"},
-    "roe": {"publication": "reported_reference", "reported_temporality": "ltm", "preferred_sources": ["roe"], "notes": "ROE LTM reportado e ajustado; usar para validação do ROE canônico."},
-    "credit_loss_allowance_to_receivables": {"publication": "ambiguous", "notes": "Numerador mistura distratos e perdas de crédito, é fluxo e não está claramente ligado ao saldo bruto; não calcular."},
-    "net_vso": {"publication": "ambiguous", "notes": "VSO 12 meses não deve preencher VSO canônica trimestral; mudança de base no 2T26 quebra comparabilidade histórica."}
-  },
-  "documents": ["CYRE_4T25"],
-  "notes": "Regras derivadas da matriz CYRE3. VGV operacional prioriza participação Cyrela e ex-permuta; diferenças de base e temporalidade devem ser preservadas."
+    "schema_version":  1,
+    "ticker":  "CYRE3",
+    "calibration_status":  "mapped",
+    "metrics":  {
+                    "landbank_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "Landbank â€” VGV equivalente Ã  participaÃ§Ã£o Cyrela"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "estoque de unidades disponÃ­veis"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "narrative"
+                                                               ],
+                                         "preferred_ownership_basis":  "company_share",
+                                         "notes":  "Usar o valor explicitamente narrado; nÃ£o aplicar percentuais arredondados para criar falsa precisÃ£o."
+                                     },
+                    "launches_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "VGV lanÃ§ado ex-permuta (%CBR)"
+                                                              ],
+                                         "negative_aliases":  [
+                                                                  "VGV 100% com permuta"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "operational_highlights"
+                                                               ],
+                                         "preferred_ownership_basis":  "company_share",
+                                         "notes":  "Fluxo do perÃ­odo, ex-permuta e na participaÃ§Ã£o Cyrela."
+                                     },
+                    "net_sales_vgv":  {
+                                          "positive_aliases":  [
+                                                                   "Vendas ex-permuta (%CBR)"
+                                                               ],
+                                          "negative_aliases":  [
+                                                                   "receita lÃ­quida"
+                                                               ],
+                                          "preferred_sources":  [
+                                                                    "sales_table"
+                                                                ],
+                                          "preferred_ownership_basis":  "company_share",
+                                          "notes":  "Vendas jÃ¡ sÃ£o lÃ­quidas de distratos; usar ex-permuta/%CBR."
+                                      },
+                    "cancellations_vgv":  {
+                                              "publication":  "not_disclosed",
+                                              "negative_aliases":  [
+                                                                       "diferenÃ§a entre mÃ©tricas em bases distintas"
+                                                                   ],
+                                              "notes":  "NÃ£o inferir distratos a partir de mÃ©tricas com bases diferentes."
+                                          },
+                    "units_sold":  {
+                                       "positive_aliases":  [
+                                                                "Unidades vendidas"
+                                                            ],
+                                       "preferred_sources":  [
+                                                                 "product_sales_appendix"
+                                                             ],
+                                       "notes":  "A quantidade Ã© 100% e com permuta; nÃ£o Ã© diretamente comparÃ¡vel ao VGV ex-permuta/%CBR. NÃ£o estimar por preÃ§o mÃ©dio."
+                                   },
+                    "units_under_construction":  {
+                                                     "publication":  "not_disclosed",
+                                                     "negative_aliases":  [
+                                                                              "Canteiros de obras",
+                                                                              "VGV em construÃ§Ã£o"
+                                                                          ],
+                                                     "notes":  "Canteiros e VGV nÃ£o sÃ£o quantidade de unidades em obras."
+                                                 },
+                    "ending_inventory_vgv":  {
+                                                 "positive_aliases":  [
+                                                                          "Estoque a valor de mercado (%CBR)"
+                                                                      ],
+                                                 "negative_aliases":  [
+                                                                          "landbank"
+                                                                      ],
+                                                 "preferred_sources":  [
+                                                                           "inventory_table"
+                                                                       ],
+                                                 "preferred_ownership_basis":  "company_share"
+                                             },
+                    "roe":  {
+                                "publication":  "reported_reference",
+                                "reported_temporality":  "ltm",
+                                "preferred_sources":  [
+                                                          "roe"
+                                                      ],
+                                "notes":  "ROE LTM reportado e ajustado; usar para validaÃ§Ã£o do ROE canÃ´nico."
+                            },
+                    "credit_loss_allowance_to_receivables":  {
+                                                                 "publication":  "ambiguous",
+                                                                 "notes":  "Numerador mistura distratos e perdas de crÃ©dito, Ã© fluxo e nÃ£o estÃ¡ claramente ligado ao saldo bruto; nÃ£o calcular."
+                                                             },
+                    "net_vso":  {
+                                    "publication":  "ambiguous",
+                                    "notes":  "VSO 12 meses nÃ£o deve preencher VSO canÃ´nica trimestral; mudanÃ§a de base no 2T26 quebra comparabilidade histÃ³rica."
+                                }
+                },
+    "documents":  [
+                      "CYRE_4T25"
+                  ],
+    "notes":  "Regras derivadas da matriz CYRE3. VGV operacional prioriza participaÃ§Ã£o Cyrela e ex-permuta; diferenÃ§as de base e temporalidade devem ser preservadas."
 }

@@ -12,7 +12,10 @@ from construction_operational import (
     identify_metric,
     parse_composite_header,
     parse_brazilian_financial_value,
+    normalize_text,
+    repair_mojibake,
 )
+from construction_company_profiles import resolve_company_for_document
 from openpyxl import Workbook
 import tempfile
 from pathlib import Path
@@ -20,6 +23,17 @@ from dashboard import normalize_operational_metric_item
 
 
 class ConstructionOperationalTests(unittest.TestCase):
+    def test_text_normalization_repairs_mojibake_and_preserves_accents(self):
+        self.assertEqual(repair_mojibake("construÃ§Ã£o"), "construção")
+        self.assertEqual(normalize_text("lançamentos"), "lancamentos")
+        self.assertEqual(normalize_text("lanÃ§amentos"), "lancamentos")
+
+    def test_document_resolution_uses_company_alias_not_generic_words(self):
+        result = resolve_company_for_document("release_final.pdf", "Resultados da Cyrela Brazil Realty")
+        self.assertEqual(result["ticker"], "CYRE3")
+        self.assertEqual(result["method"], "content_alias")
+        self.assertIsNone(resolve_company_for_document("release_final.pdf", "vendas estoque lançamentos"))
+
     def test_dictionary_has_exact_final_scope(self):
         self.assertEqual(len(CONSTRUCTION_OPERATIONAL_DICTIONARY), 10)
         self.assertEqual(CONSTRUCTION_OPERATIONAL_DICTIONARY["units_under_construction"]["unit"], "units")

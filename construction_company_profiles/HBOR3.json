@@ -1,18 +1,66 @@
 {
-  "schema_version": 1,
-  "ticker": "HBOR3",
-  "calibration_status": "mapped_with_limits",
-  "metrics": {
-    "landbank_vgv": {"positive_aliases": ["Landbank — VGV Bruto Total Potencial"], "preferred_sources": ["highlights"], "preferred_ownership_basis": "one_hundred_percent"},
-    "launches_vgv": {"positive_aliases": ["VGV Total líquido de permuta"], "preferred_sources": ["highlights"], "preferred_ownership_basis": "one_hundred_percent"},
-    "net_sales_vgv": {"publication": "not_disclosed", "notes": "Vendas contratadas não são automaticamente líquidas de distratos."},
-    "cancellations_vgv": {"publication": "not_disclosed"},
-    "units_sold": {"publication": "not_disclosed"},
-    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["empreendimentos em construção", "unidades não concluídas"]},
-    "ending_inventory_vgv": {"positive_aliases": ["Estoque Total"], "preferred_sources": ["inventory_by_segment"], "preferred_ownership_basis": "one_hundred_percent"},
-    "roe": {"publication": "not_disclosed", "notes": "Não inferir PL atribuível a partir de alavancagem."},
-    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed"},
-    "net_vso": {"publication": "derived_benchmark", "preferred_sources": ["reported_vso_and_offer"], "notes": "VSO calculada usa vendas contratadas/brutas; benchmark operacional, não necessariamente VSO líquida."}
-  },
-  "notes": "Regras derivadas da matriz HBOR3. Priorizar base total/100%; não converter empreendimentos em unidades."
+    "schema_version":  1,
+    "ticker":  "HBOR3",
+    "calibration_status":  "mapped_with_limits",
+    "metrics":  {
+                    "landbank_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "Landbank â€” VGV Bruto Total Potencial"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "highlights"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "launches_vgv":  {
+                                         "positive_aliases":  [
+                                                                  "VGV Total lÃ­quido de permuta"
+                                                              ],
+                                         "preferred_sources":  [
+                                                                   "highlights"
+                                                               ],
+                                         "preferred_ownership_basis":  "one_hundred_percent"
+                                     },
+                    "net_sales_vgv":  {
+                                          "publication":  "not_disclosed",
+                                          "notes":  "Vendas contratadas nÃ£o sÃ£o automaticamente lÃ­quidas de distratos."
+                                      },
+                    "cancellations_vgv":  {
+                                              "publication":  "not_disclosed"
+                                          },
+                    "units_sold":  {
+                                       "publication":  "not_disclosed"
+                                   },
+                    "units_under_construction":  {
+                                                     "publication":  "not_disclosed",
+                                                     "negative_aliases":  [
+                                                                              "empreendimentos em construÃ§Ã£o",
+                                                                              "unidades nÃ£o concluÃ­das"
+                                                                          ]
+                                                 },
+                    "ending_inventory_vgv":  {
+                                                 "positive_aliases":  [
+                                                                          "Estoque Total"
+                                                                      ],
+                                                 "preferred_sources":  [
+                                                                           "inventory_by_segment"
+                                                                       ],
+                                                 "preferred_ownership_basis":  "one_hundred_percent"
+                                             },
+                    "roe":  {
+                                "publication":  "not_disclosed",
+                                "notes":  "NÃ£o inferir PL atribuÃ­vel a partir de alavancagem."
+                            },
+                    "credit_loss_allowance_to_receivables":  {
+                                                                 "publication":  "not_disclosed"
+                                                             },
+                    "net_vso":  {
+                                    "publication":  "derived_benchmark",
+                                    "preferred_sources":  [
+                                                              "reported_vso_and_offer"
+                                                          ],
+                                    "notes":  "VSO calculada usa vendas contratadas/brutas; benchmark operacional, nÃ£o necessariamente VSO lÃ­quida."
+                                }
+                },
+    "notes":  "Regras derivadas da matriz HBOR3. Priorizar base total/100%; nÃ£o converter empreendimentos em unidades."
 }

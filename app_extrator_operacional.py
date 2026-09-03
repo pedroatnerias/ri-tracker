@@ -1522,6 +1522,50 @@ async def download_latest_fundamentals(company: Company, target_dir: Path) -> tu
             await browser.close()
 
 
+async def discover_latest_operational_pdf(ticker: str, target_dir: Path) -> tuple[Path, str]:
+    """Discover one recent operational PDF on the company's official RI."""
+    from operational_sources import operational_sources_for_sector
+    source = operational_sources_for_sector("construcao_civil")[ticker]
+    allowed_domain = source["official_domain"].lower()
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise RuntimeError("Playwright não está instalado para descoberta de PDFs") from exc
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(locale="pt-BR")
+        page = await context.new_page()
+        candidates: list[tuple[int, str, str]] = []
+        try:
+            for page_url in source["results_pages"]:
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+                for text, href in await collect_links(page):
+                    parsed = urlparse(href)
+                    if parsed.netloc.lower() != allowed_domain or not re.search(r"\.pdf(?:$|\?)", parsed.path, re.I):
+                        continue
+                    haystack = normalise_text(f"{text} {href}")
+                    score = 100
+                    if any(term in haystack for term in ("release", "resultados", "previa", "apresentacao")): score += 50
+                    periods = re.findall(r"([1-4])[tq](\d{2,4})", haystack)
+                    if periods: score += max(int(y) for _, y in periods) * 10 + max(int(q) for q, _ in periods)
+                    candidates.append((score, href, text))
+            if not candidates:
+                raise RuntimeError(f"nenhum PDF oficial encontrado para {ticker}")
+            _, href, label = max(candidates, key=lambda item: item[0])
+            response = await context.request.get(href, timeout=60000, fail_on_status_code=False)
+            if not response.ok or not (await response.body()).startswith(b"%PDF"):
+                raise RuntimeError(f"PDF oficial inválido ou indisponível: HTTP {response.status}")
+            data = await response.body()
+            target_dir.mkdir(parents=True, exist_ok=True)
+            name = Path(unquote(urlparse(href).path)).name or f"{ticker}_operacional.pdf"
+            output = target_dir / f"{ticker}_{name}"
+            output.write_bytes(data)
+            safe_print(f"[{ticker}] PDF operacional encontrado: {label or href}")
+            return output, href
+        finally:
+            await browser.close()
+
+
 def write_json(payload: dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"{payload['ticker']}.json"
@@ -1578,13 +1622,40 @@ async def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     if args.sector == "construcao_civil":
         from company_registry import operational_companies
-        from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, extract_markdown_observations, extract_workbook_observations
+        from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, calculate_derived_from_observations, extract_markdown_observations, extract_workbook_observations
+        from construction_company_profiles import resolve_company_for_document
+        from document_catalog import catalog_record, write_catalog
         markdown_dir = Path(args.md_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Local review PDFs are valid offline fixtures. Convert them to the
+        # same Markdown representation used by the production parser.
+        if converter_pdf_para_markdown is not None and markdown_dir.exists():
+            for review_pdf in markdown_dir.rglob("*.pdf"):
+                try:
+                    converter_pdf_para_markdown(review_pdf, diretorio_saida=markdown_dir, extrair_imagens=False, mostrar_progresso=False)
+                except Exception as exc:
+                    safe_print(f"[PDF] aviso: falha ao converter {review_pdf.name}: {exc}")
         allowed_tickers = {company.ticker for company in operational_companies("construcao_civil")}
-        source_files = [path for pattern in ("*.md", "*.xlsx", "*.xlsm") for path in (markdown_dir.rglob(pattern) if markdown_dir.exists() else ())]
+        # Construction civil is PDF-only. Markdown is accepted only as the
+        # local, inspectable text derivative of a PDF; spreadsheets are never
+        # an operational source for this sector.
+        source_files = [path for pattern in ("*.md", "*.pdf") for path in (markdown_dir.rglob(pattern) if markdown_dir.exists() else ())]
+        catalog_records = [catalog_record(path, method="local_official_ri_pdf") for path in source_files if path.suffix.lower() == ".pdf"]
+        if not source_files:
+            for company in operational_companies("construcao_civil"):
+                try:
+                    pdf_path, _source_url = await discover_latest_operational_pdf(company.ticker, markdown_dir)
+                    if converter_pdf_para_markdown is not None:
+                        converter_pdf_para_markdown(pdf_path, diretorio_saida=markdown_dir, extrair_imagens=False, mostrar_progresso=False)
+                except Exception as exc:
+                    safe_print(f"[{company.ticker}] descoberta de PDF não concluída: {exc}")
+            source_files = [path for path in markdown_dir.rglob("*.md") if path.is_file()]
+            catalog_records = [catalog_record(path, method="discovered_official_ri_pdf") for path in markdown_dir.rglob("*.pdf") if path.is_file()]
+        if catalog_records:
+            write_catalog(catalog_records, output_dir / "construction_document_catalog.json")
         all_observations: list[dict[str, Any]] = []
         documents_processed: set[str] = set()
+        unresolved_documents: list[dict[str, Any]] = []
         snapshots_preserved = 0
         for company in operational_companies("construcao_civil"):
             observations: list[dict[str, Any]] = []
@@ -1597,10 +1668,16 @@ async def run(args: argparse.Namespace) -> int:
                     text = path.read_text(encoding="utf-8", errors="replace")
                     doc_text = normalise_text(f"{path_text} {text[:2000]}")
                 else:
-                    doc_text = path_text
-                company_resolution_method = "metadata_or_content"
-                if not any(alias and alias in doc_text for alias in aliases):
+                    # A PDF is a candidate source, but extraction happens via
+                    # its Markdown derivative. Do not pass binary PDF bytes to
+                    # the textual parser.
                     continue
+                resolution = resolve_company_for_document(path.name, text if path.suffix.lower() == ".md" else doc_text, "construcao_civil")
+                if not resolution or resolution["ticker"] != company.ticker:
+                    if path.suffix.lower() == ".md" and not resolution:
+                        unresolved_documents.append({"document": str(path), "reason": "company_unresolved"})
+                    continue
+                company_resolution_method = resolution["method"]
                 if path.suffix.lower() == ".md":
                     extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
                 else:
@@ -1608,6 +1685,7 @@ async def run(args: argparse.Namespace) -> int:
                     company_resolution_method = "workbook_filename_or_alias"
                 for observation in extracted:
                     observation["company_resolution_method"] = company_resolution_method
+                    observation["company_resolution"] = resolution
                 if extracted:
                     documents_processed.add(str(path))
                     company_documents.add(str(path))
@@ -1631,11 +1709,9 @@ async def run(args: argparse.Namespace) -> int:
                 "companies_requested": len(allowed_tickers), "documents_processed": len(company_documents),
                 "metricas": metricas, "observations": observations,
                 "status": "found_new_data" if observations else "not_found_no_previous_data",
-                "calculation_metadata": {
-                    "roe": {"value": None, "calculation_status": "missing_financial_dependencies"},
-                    "credit_loss_allowance_to_receivables": {"value": None, "calculation_status": "missing_financial_dependencies"},
-                    "net_vso": {"value": None, "calculation_status": "missing_components"},
-                },
+                "coverage_status": "found" if observations else ("unresolved" if any(item.get("document", "") in {str(p) for p in source_files} for item in unresolved_documents) else "not_found"),
+                "discovery": {"source_policy": "official_ri_pdf_only", "documents_processed": sorted(company_documents)},
+                "calculation_metadata": calculate_derived_from_observations(observations),
                 "warnings": (["Nenhuma métrica operacional válida encontrada nos documentos processados."] if not observations else []) + ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
             }
             if preserved:
@@ -1661,6 +1737,8 @@ async def run(args: argparse.Namespace) -> int:
             "status": "success_new_snapshot" if all_observations else "no_valid_observations",
             "errors": [] if all_observations else ["Nenhuma observação válida de construcao_civil foi gerada."],
             "warnings": [],
+            "unresolved_documents": unresolved_documents,
+            "coverage_status": "complete" if companies_with_observations == len(allowed_tickers) else ("partial" if companies_with_observations else "none"),
             "companies_with_documents": len({Path(path).name.split("_", 1)[0] for path in documents_processed}),
             "companies_with_observations": companies_with_observations,
             "companies_without_observations": len(allowed_tickers) - companies_with_observations,
