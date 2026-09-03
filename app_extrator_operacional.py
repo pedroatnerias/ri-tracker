@@ -1659,40 +1659,40 @@ async def run(args: argparse.Namespace) -> int:
         documents_processed: set[str] = set()
         unresolved_documents: list[dict[str, Any]] = []
         snapshots_preserved = 0
+        prepared_documents: list[dict[str, Any]] = []
+        # Cada documento passa pelo tracking e pela resolução uma única vez.
+        # A associação à empresa ocorre depois, sem repetir accepted/read.
+        for path in source_files:
+            document_id = tracker.document(path, source_type="PDF" if path.suffix.lower() == ".pdf" else "Markdown", ticker_hint=path.parent.name if path.parent.name.upper() in allowed_tickers else None)
+            tracker.event(document_id, "accepted", source_policy="official_ri_pdf_only")
+            if path.suffix.lower() != ".md":
+                prepared_documents.append({"path": path, "document_id": document_id, "text": None, "resolution": None})
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            tracker.event(document_id, "read", characters=len(text))
+            resolution = resolve_company_for_document(path.name, text, "construcao_civil")
+            if not resolution:
+                unresolved_documents.append({"document": str(path), "reason": "company_unresolved"})
+                tracker.event(document_id, "unresolved", reason="company_unresolved")
+            else:
+                tracker.event(document_id, "company_resolved", ticker=resolution["ticker"], resolution_method=resolution["method"], confidence=resolution.get("confidence"))
+            prepared_documents.append({"path": path, "document_id": document_id, "text": text, "resolution": resolution})
         for company in operational_companies("construcao_civil"):
             observations: list[dict[str, Any]] = []
             company_documents: set[str] = set()
             aliases = tuple(normalise_text(alias) for alias in (company.ticker, *company.legacy_tickers, company.expected_name, *company.aliases))
-            for path in source_files:
-                document_id = tracker.document(path, source_type="PDF" if path.suffix.lower() == ".pdf" else "Markdown", ticker_hint=path.parent.name if path.parent.name.upper() in allowed_tickers else None)
-                tracker.event(document_id, "accepted", source_policy="official_ri_pdf_only")
-                path_text = normalise_text(path.name)
-                text = ""
-                if path.suffix.lower() == ".md":
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                    tracker.event(document_id, "read", characters=len(text))
-                    doc_text = normalise_text(f"{path_text} {text[:2000]}")
-                else:
-                    # A PDF is a candidate source, but extraction happens via
-                    # its Markdown derivative. Do not pass binary PDF bytes to
-                    # the textual parser.
-                    continue
-                resolution = resolve_company_for_document(path.name, text if path.suffix.lower() == ".md" else doc_text, "construcao_civil")
-                if not resolution or resolution["ticker"] != company.ticker:
-                    if path.suffix.lower() == ".md" and not resolution:
-                        unresolved_documents.append({"document": str(path), "reason": "company_unresolved"})
-                        tracker.event(document_id, "unresolved", reason="company_unresolved")
+            for prepared in prepared_documents:
+                path = prepared["path"]
+                document_id = prepared["document_id"]
+                text = prepared["text"]
+                resolution = prepared["resolution"]
+                if path.suffix.lower() != ".md" or not resolution or resolution["ticker"] != company.ticker:
                     continue
                 company_resolution_method = resolution["method"]
-                tracker.event(document_id, "company_resolved", ticker=resolution["ticker"], resolution_method=company_resolution_method, confidence=resolution.get("confidence"))
                 # Processamento é contabilizado independentemente de haver
                 # observações: ausência de divulgação é um estado auditável.
                 company_documents.add(str(path))
-                if path.suffix.lower() == ".md":
-                    extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
-                else:
-                    extracted = extract_workbook_observations(path, ticker=company.ticker, source_document=path.name)
-                    company_resolution_method = "workbook_filename_or_alias"
+                extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
                 for observation in extracted:
                     observation["company_resolution_method"] = company_resolution_method
                     observation["company_resolution"] = resolution

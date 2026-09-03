@@ -22,6 +22,10 @@ class OperationalSectorIsolationTests(unittest.TestCase):
         self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["CALI3"]["homepage"], "https://lindenberg.com.br/ri/")
         self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["FIEI3"]["homepage"], "https://ri.fica.net.br/")
         self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["INNC3"]["homepage"], "http://ri.interconstrutora.net.br/ri/index.php")
+        self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["LAVV3"]["results_pages"], ["https://ri.lavvi.com.br/informacoes-financeiras/central-de-resultados/"])
+        self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["PDGR3"]["results_pages"], ["https://ri.pdg.com.br/ListResultados/Central-de-Resultados?=PUNG+MR7ogBVOAyw004zmQ==&linguagem=pt"])
+        self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["JFEN3"]["results_pages"], ["http://ri.joaofortes.com.br/"])
+        self.assertEqual(OPERATIONAL_RI_SOURCES["construcao_civil"]["MTRE3"]["results_pages"], ["https://ri.mitrerealty.com.br/"])
         self.assertNotIn("RDOR3", OPERATIONAL_RI_SOURCES["construcao_civil"])
 
     def test_release_paths_are_isolated_by_sector(self):

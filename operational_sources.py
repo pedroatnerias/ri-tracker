@@ -38,8 +38,35 @@ _CONSTRUCTION_URLS = {
     "TRIS3": "https://ri.trisul-sa.com.br/", "VIVR3": "https://ri.viver.com.br/",
 }
 
+_CONSTRUCTION_RESULTS_PAGES = {
+    "AVLL3": "https://ri.alphaville.com.br/informacoes-financeiras/central-de-resultados/",
+    "CALI3": "https://lindenberg.com.br/informacoes-financeiras/",
+    "CURY3": "https://ri.cury.net/informacoes-aos-investidores/central-de-resultados/",
+    "CYRE3": "https://ri.cyrela.com.br/informacoes-financeiras/central-de-resultados/",
+    "DIRR3": "https://ri.direcional.com.br/informacoes-financeiras/central-de-resultados/",
+    "EVEN3": "https://ri.even.com.br/informacoes-financeiras/central-de-resultados/",
+    "EZTC3": "https://ri.eztec.com.br/central-de-resultados/",
+    "FIEI3": "https://ri.fica.net.br/informacoes-financeiras/central-de-resultados",
+    "GFSA3": "https://ri.gafisa.com.br/informacoes-financeiras/central-resultados/",
+    "HBOR3": "https://ri.helbor.com.br/informacoes-financeiras/central-de-resultados/",
+    "INNC3": "http://ri.interconstrutora.net.br/ri/informacoes_financeiras/central_resultados.php",
+    "JHSF3": "https://ri.jhsf.com.br/informacoes-financeiras/central-de-resultados/",
+    "LAVV3": "https://ri.lavvi.com.br/informacoes-financeiras/central-de-resultados/",
+    "MDNE3": "https://ri.mouradubeux.com.br/informacoes-financeiras/central-de-resultados/",
+    "MELK3": "https://ri.melnick.com.br/resultados-trimestrais",
+    "MRVE3": "https://ri.mrv.com.br/informacoes-financeiras/central-de-resultados/",
+    "PDGR3": "https://ri.pdg.com.br/ListResultados/Central-de-Resultados?=PUNG+MR7ogBVOAyw004zmQ==&linguagem=pt",
+    "PLPL3": "https://ri.planoeplano.com.br/informacoes-financeiras/central-de-resultados/",
+    "RDNI3": "https://ri.rni.com.br/informacoes-financeiras/central-de-resultados/",
+    "RSID3": "https://ri.rossiresidencial.com.br/informacoes-financeiras/central-de-resultados/",
+    "TCSA3": "https://ri.tecnisa.com.br/ListResultados/Central-de-Resultados-EN?=Rc7SW3sYUCkgaS5KWyEX3w==&linguagem=pt",
+    "TEND3": "https://ri.tenda.com/informacoes-financeiras/central-de-resultados",
+    "TRIS3": "https://ri.trisul-sa.com.br/informacoes-financeiras/central-de-resultados/",
+    "VIVR3": "https://ri.viver.com.br/informacoes-financeiras/central-resultados/",
+}
 
-def _build_sector_sources(sector: str, urls: dict[str, str]) -> dict[str, dict[str, Any]]:
+
+def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
     companies = {company.ticker: company for company in companies_for_sector(sector) if company.operational_enabled}
     return {
         ticker: {
@@ -47,7 +74,7 @@ def _build_sector_sources(sector: str, urls: dict[str, str]) -> dict[str, dict[s
             "empresa": company.expected_name, "aliases": list(company.aliases),
             "homepage": urls[ticker],
             "url": urls[ticker],
-            "results_pages": [urls[ticker]],
+            "results_pages": [result_pages.get(ticker, urls[ticker]) if result_pages else urls[ticker]],
             "api_endpoints": [],
             "official_domain": urls[ticker].split("/", 3)[2],
             "allowed_domains": [urls[ticker].split("/", 3)[2]],
@@ -61,7 +88,7 @@ def _build_sector_sources(sector: str, urls: dict[str, str]) -> dict[str, dict[s
 
 OPERATIONAL_RI_SOURCES = {
     "saude": _build_sector_sources("saude", _HEALTH_URLS),
-    "construcao_civil": _build_sector_sources("construcao_civil", _CONSTRUCTION_URLS),
+    "construcao_civil": _build_sector_sources("construcao_civil", _CONSTRUCTION_URLS, _CONSTRUCTION_RESULTS_PAGES),
 }
 
 
