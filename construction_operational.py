@@ -72,7 +72,7 @@ def normalize_period(period: str) -> tuple[str, str]:
 
 def infer_ownership_basis(text: str) -> str:
     value = normalize_text(text)
-    if any(term in value for term in ("participacao da companhia", "company share", "% companhia", "ex permuta")):
+    if any(term in value for term in ("participacao da companhia", "company share", "% companhia", "%avll", "% cal", "%ez", "% even", "%cbr", "ex permuta")):
         return "company_share"
     if any(term in value for term in ("100%", "cem por cento", "total projects")):
         return "one_hundred_percent"

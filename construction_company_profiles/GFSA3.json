@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "ticker": "GFSA3",
+  "calibration_status": "mapped_with_limits",
+  "metrics": {
+    "landbank_vgv": {"publication": "not_disclosed", "notes": "Não usar VGV de ativo adquirido como landbank consolidado."},
+    "launches_vgv": {"publication": "not_disclosed", "notes": "Ausência de valor não equivale a zero."},
+    "net_sales_vgv": {"publication": "not_disclosed", "notes": "Não calcular usando distratos arredondados de outro release."},
+    "cancellations_vgv": {"positive_aliases": ["Distratos"], "preferred_sources": ["comparison_chart"], "expected_sign": "positive", "notes": "Magnitude arredondada no gráfico; outras tabelas podem usar sinal negativo."},
+    "units_sold": {"publication": "not_disclosed"},
+    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["VGV", "número de projetos"]},
+    "ending_inventory_vgv": {"positive_aliases": ["Estoque"], "preferred_sources": ["inventory_table"], "notes": "Estoque reportado em VGV; separar andamento/concluído."},
+    "roe": {"publication": "derived_canonical", "preferred_sources": ["income_statement_balance_sheet"], "notes": "Valor trimestral não anualizado; preservar resultados negativos."},
+    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed", "notes": "Provisão/reversão da DFC é movimento, não saldo patrimonial."},
+    "net_vso": {"publication": "not_disclosed", "notes": "Não substituir VSO trimestral por VSO LTM."}
+  },
+  "notes": "Regras derivadas da matriz GFSA3; vários indicadores permanecem não divulgados."
+}

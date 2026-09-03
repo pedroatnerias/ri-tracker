@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "ticker": "INNC3",
+  "calibration_status": "mapped",
+  "metrics": {
+    "landbank_vgv": {"positive_aliases": ["Landbank (em R$ mil)", "Landbank (R$ mil)"], "preferred_sources": ["operational_table"], "preferred_ownership_basis": "company_share"},
+    "launches_vgv": {"positive_aliases": ["VGV lançado (em R$ mil)"], "preferred_sources": ["operational_table"], "preferred_ownership_basis": "company_share"},
+    "net_sales_vgv": {"positive_aliases": ["Vendas líquidas (em R$ mil)", "Vendas Líquidas (R$ mil)"], "preferred_sources": ["sales_table"], "preferred_ownership_basis": "company_share"},
+    "cancellations_vgv": {"positive_aliases": ["VGV distratado", "Distratos do trimestre"], "preferred_sources": ["operational_table"], "preferred_ownership_basis": "company_share", "expected_sign": "positive", "notes": "Preservar magnitude positiva quando assim reportada; não criar valor por diferença."},
+    "units_sold": {"positive_aliases": ["Vendas líquidas (Unidades)"], "preferred_sources": ["sales_table"], "preferred_ownership_basis": "company_share"},
+    "units_under_construction": {"positive_aliases": ["Unidades em produção"], "preferred_sources": ["production_table"], "preferred_ownership_basis": "company_share"},
+    "ending_inventory_vgv": {"positive_aliases": ["Estoque (em VGV)"], "preferred_sources": ["production_table"], "preferred_ownership_basis": "company_share", "notes": "Registrar divergências de reapresentação entre releases."},
+    "roe": {"publication": "reported_reference", "preferred_sources": ["debt_indicators"], "notes": "Reportado como benchmark; cálculo canônico permanece separado."},
+    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed", "notes": "Exigir saldo de provisão segregado e compatível."},
+    "net_vso": {"publication": "ambiguous", "preferred_sources": ["reported_vso"], "notes": "Glossário define VSO por unidades; manter apenas como benchmark, não normalizar para VGV."}
+  },
+  "notes": "Regras derivadas da matriz INNC3; base de participação 100% companhia e escala recorrente R$ milhar."
+}

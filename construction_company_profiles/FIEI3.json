@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "ticker": "FIEI3",
+  "calibration_status": "mapped_with_limits",
+  "metrics": {
+    "landbank_vgv": {"publication": "ambiguous", "notes": "Valores de mercado ou contábeis de terrenos não são VGV potencial."},
+    "launches_vgv": {"publication": "not_disclosed", "notes": "Não converter ausência de lançamento quantificado em zero."},
+    "net_sales_vgv": {"publication": "not_disclosed", "negative_aliases": ["receita líquida"], "notes": "Não usar receita contábil como VGV."},
+    "cancellations_vgv": {"publication": "not_disclosed", "notes": "Não inferir de receita ou distratos a pagar."},
+    "units_sold": {"publication": "not_disclosed", "notes": "Não estimar por receita ou estoque."},
+    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["projetos", "SPEs", "unidades potenciais"]},
+    "ending_inventory_vgv": {"publication": "not_applicable", "negative_aliases": ["estoques imobiliários", "valor contábil"], "notes": "Estoque contábil não equivale a estoque EoP em VGV de mercado."},
+    "roe": {"publication": "derived_canonical", "preferred_sources": ["income_statement_balance_sheet"], "notes": "Usar prejuízo atribuível e PL médio atribuível; cálculo anual sem anualização adicional."},
+    "credit_loss_allowance_to_receivables": {"publication": "derived_canonical", "preferred_sources": ["receivables_note"], "notes": "Proxy segregada de provisão para risco de crédito sobre clientes por incorporação."},
+    "net_vso": {"publication": "not_disclosed", "negative_aliases": ["receita contábil", "estoque contábil"]}
+  },
+  "notes": "Regras derivadas da matriz FIEI3; cobertura operacional limitada para métricas de VGV."
+}

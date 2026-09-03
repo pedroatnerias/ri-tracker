@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "ticker": "JHSF3",
+  "calibration_status": "mapped_with_limits",
+  "metrics": {
+    "landbank_vgv": {"positive_aliases": ["Landbank — VGV potencial"], "preferred_sources": ["landbank_section"], "notes": "Valor aproximado; preservar incerteza."},
+    "launches_vgv": {"publication": "not_disclosed", "notes": "Estratégia seletiva sem valor lançado quantificado; não converter em zero."},
+    "net_sales_vgv": {"positive_aliases": ["Vendas contratadas ao FII"], "preferred_sources": ["extraordinary_fii_transaction"], "notes": "Evento extraordinário; não comparar diretamente com vendas pulverizadas a clientes finais."},
+    "cancellations_vgv": {"publication": "not_disclosed"},
+    "units_sold": {"publication": "not_disclosed", "notes": "Não inferir unidades a partir do VGV."},
+    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["percentual de PoC", "estágio das obras"]},
+    "ending_inventory_vgv": {"publication": "not_disclosed", "negative_aliases": ["landbank", "receita a apropriar", "receita reconhecida por PoC"]},
+    "roe": {"publication": "not_disclosed", "notes": "Não aproximar com PL total sem correta atribuição."},
+    "credit_loss_allowance_to_receivables": {"publication": "not_disclosed"},
+    "net_vso": {"publication": "not_disclosed", "notes": "Não reconstruir sem vendas líquidas, estoque inicial e lançamentos comparáveis."}
+  },
+  "notes": "Regras derivadas da matriz JHSF3. Venda ao FII e receita por PoC são eventos/medidas distintos dos indicadores canônicos recorrentes."
+}

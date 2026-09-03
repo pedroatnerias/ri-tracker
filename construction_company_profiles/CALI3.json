@@ -1,7 +1,18 @@
 {
   "schema_version": 1,
   "ticker": "CALI3",
-  "metrics": {},
-  "calibration_status": "not_started",
-  "notes": "A matriz está sem documentos e evidências preenchidos; nenhuma regra específica foi inferida."
+  "metrics": {
+    "landbank_vgv": {"positive_aliases": ["VGV Potencial (% CAL)", "VGV CAL"], "negative_aliases": ["estoque de unidades"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "company_share"},
+    "launches_vgv": {"positive_aliases": ["VGV Potencial dos Lançamentos (% CAL)"], "negative_aliases": ["total de 2025", "acumulado"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "company_share", "notes": "Usar o fluxo trimestral."},
+    "net_sales_vgv": {"positive_aliases": ["Vendas Líquidas (% CAL)"], "negative_aliases": ["receita líquida"], "preferred_sources": ["reconciled_operational_detail_table", "narrative"], "preferred_ownership_basis": "company_share", "notes": "Priorizar tabela detalhada reconciliável sobre resumo conflitante."},
+    "cancellations_vgv": {"positive_aliases": ["Distratos (% CAL)"], "negative_aliases": ["provisão"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "company_share", "expected_sign": "negative"},
+    "units_sold": {"positive_aliases": [], "negative_aliases": ["unidades distratadas", "unidades lançadas"], "publication": "not_disclosed", "notes": "Não estimar unidades vendidas a partir do VGV."},
+    "units_under_construction": {"positive_aliases": ["Unidades em construção"], "negative_aliases": ["mil m²", "número de obras"], "preferred_sources": ["narrative"], "notes": "Usar unidades explícitas da narrativa, não a área do gráfico."},
+    "ending_inventory_vgv": {"positive_aliases": ["Estoque de unidades — Estoques CAL", "Estoques CAL (R$)"], "negative_aliases": ["banco de terrenos"], "preferred_sources": ["operational_detail_table"], "preferred_ownership_basis": "company_share", "notes": "Preferir total preciso à narrativa arredondada."},
+    "roe": {"publication": "reported_reference", "reported_temporality": "quarter_annualized", "preferred_sources": ["key_indicators"], "notes": "Preservar ROE trimestral anualizado como referência; não substituir o cálculo canônico."},
+    "credit_loss_allowance_to_receivables": {"publication": "ambiguous", "notes": "PCLD combinada com provisão de distratos e sem numerador trimestral isolado; não calcular."},
+    "net_vso": {"publication": "ambiguous", "preferred_sources": ["reported_vso"], "notes": "Não mapear VSO em m² nem selecionar acumulado incompatível como VSO líquida canônica."}
+  },
+  "calibration_status": "mapped",
+  "notes": "Regras derivadas da matriz CALI3. VGVs usam participação da companhia; vendas líquidas priorizam tabela detalhada reconciliável."
 }

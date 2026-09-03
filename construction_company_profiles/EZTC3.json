@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "ticker": "EZTC3",
+  "calibration_status": "mapped",
+  "metrics": {
+    "landbank_vgv": {"positive_aliases": ["Banco de Terrenos"], "preferred_sources": ["operational_highlights"], "preferred_ownership_basis": "company_share"},
+    "launches_vgv": {"positive_aliases": ["VGV Lançamentos (%EZTEC)", "VGV Lançamentos (%Eztec)"], "preferred_sources": ["operational_highlights"], "preferred_ownership_basis": "company_share", "notes": "Preservar base %EZ; não substituir pelo VGV 100% narrado."},
+    "net_sales_vgv": {"positive_aliases": ["Vendas Líquidas (%EZ)", "Vendas Líquidas %EZ"], "preferred_sources": ["sales_cancellations_table"], "preferred_ownership_basis": "company_share", "notes": "Registrar revisões metodológicas de distratos por release."},
+    "cancellations_vgv": {"positive_aliases": ["Distratos"], "negative_aliases": ["provisão"], "preferred_sources": ["sales_cancellations_table"], "preferred_ownership_basis": "company_share", "expected_sign": "positive", "notes": "A partir do 2T26, considerar apenas cancelamentos de vendas assinadas e pagas; série histórica revisada."},
+    "units_sold": {"positive_aliases": ["Número de unidades"], "preferred_sources": ["sales_cancellations_table"], "notes": "Quantidade apresentada junto às vendas brutas."},
+    "units_under_construction": {"publication": "not_disclosed", "negative_aliases": ["Número de Canteiros em Execução", "canteiros"], "notes": "Não converter canteiros em unidades."},
+    "ending_inventory_vgv": {"positive_aliases": ["Estoque Total"], "preferred_sources": ["operational_highlights"], "preferred_ownership_basis": "company_share"},
+    "roe": {"publication": "derived_canonical", "preferred_sources": ["balance_sheet_and_income_statement"], "notes": "Calcular lucro atribuível / PL médio atribuível; não confundir com ROAE anual reportado."},
+    "credit_loss_allowance_to_receivables": {"publication": "derived_canonical", "preferred_sources": ["balance_sheet"], "notes": "Provisão para clientes duvidosos separada / recebíveis brutos antes da provisão."},
+    "net_vso": {"publication": "reported_reference", "preferred_sources": ["operational_highlights"], "notes": "VSO líquida reportada em %EZ é benchmark do cálculo canônico."}
+  },
+  "notes": "Regras derivadas da matriz EZTC3. A companhia reporta VGVs principalmente em %EZ e revisou a metodologia de distratos em 2T26."
+}
