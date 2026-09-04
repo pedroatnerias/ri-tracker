@@ -7,9 +7,10 @@ from datetime import date, timedelta
 from typing import Any, Iterable
 
 
-SECTOR_EV_EBITDA_METHODOLOGY = "sector_aggregate_ev_ebitda_v1"
-SECTOR_RETURN_METHODOLOGY = "sector_market_cap_weighted_price_return_v1"
+SECTOR_EV_EBITDA_METHODOLOGY = "sector_aggregate_ev_ebitda_v2_deduplicated"
+SECTOR_RETURN_METHODOLOGY = "sector_market_cap_weighted_daily_price_return_v2"
 MARKET_CAP_SHARE_METHODOLOGY = "sector_market_cap_share_v1"
+SECTOR_MARKET_CAP_METHODOLOGY = "sector_comparable_market_cap_v2"
 MIN_RETURN_COVERAGE = 0.70
 
 
@@ -107,12 +108,28 @@ def aggregate_ev_ebitda(indicators_payload: dict[str, Any], tickers: Iterable[st
     companies = ((indicators_payload or {}).get("companies") or {})
     by_period: dict[str, dict[str, Any]] = {}
     for ticker in tickers:
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for row in ((companies.get(ticker) or {}).get("periodos") or []):
             metadata = row.get("metadata") or {}
             period_date = metadata.get("end_date")
             if not period_date:
                 continue
+            grouped.setdefault(str(period_date), []).append(row)
+        for period_date, candidates in grouped.items():
             by_period.setdefault(period_date, {"included": [], "excluded": []})
+            fingerprints = {
+                (as_number(item.get("enterprise_value")), as_number(item.get("ebitda_ltm") if item.get("ebitda_ltm") is not None else item.get("ebitda_contabil_ltm")))
+                for item in candidates
+            }
+            if len(fingerprints) != 1:
+                by_period[period_date]["excluded"].append({"ticker": ticker, "reason": "duplicidade_financeira_conflitante", "records": len(candidates)})
+                continue
+            row = candidates[-1]
+            shares_validation = row.get("shares_validation") or {}
+            market_cap_status = shares_validation.get("status_market_cap") or row.get("status_market_cap")
+            if market_cap_status and market_cap_status != "validated":
+                by_period[period_date]["excluded"].append({"ticker": ticker, "reason": "market_cap_nao_reconciliado", "status_market_cap": market_cap_status})
+                continue
             ev = as_number(row.get("enterprise_value"))
             ebitda = as_number(row.get("ebitda_ltm") if row.get("ebitda_ltm") is not None else row.get("ebitda_contabil_ltm"))
             if ev is None:
@@ -130,6 +147,7 @@ def aggregate_ev_ebitda(indicators_payload: dict[str, Any], tickers: Iterable[st
                     "data_market_cap": row.get("data_market_cap"),
                     "data_divida_liquida": row.get("data_divida_liquida"),
                     "data_ebitda_ltm": row.get("data_ebitda_ltm") or period_date,
+                    "duplicates_consolidated": len(candidates) - 1,
                 }
             )
     series = []
@@ -173,7 +191,14 @@ def _historical_rows(market_payload: dict[str, Any], ticker: str) -> list[dict[s
         price = valid_positive(row.get("preco_acao"))
         shares = valid_positive(row.get("quantidade_acoes_total"))
         if ref:
-            rows.append({"ref": ref, "price_date": price_date or ref, "price": price, "shares": shares})
+            rows.append({
+                "ref": ref, "price_date": price_date or ref, "price": price, "shares": shares,
+                "market_cap": valid_positive(row.get("market_cap")),
+                "status": row.get("status_market_cap") or row.get("status_validacao_acoes") or "validated",
+                "reason": row.get("justificativa_acoes") or row.get("reason"),
+                "shares_date": parse_date(row.get("data_acoes_utilizada") or row.get("data_acoes_cvm") or row.get("data_referencia")),
+                "estimated": (row.get("status_market_cap") or row.get("status_validacao_acoes")) == "estimated_from_last_valid_shares",
+            })
     return sorted(rows, key=lambda item: item["ref"])
 
 
@@ -182,9 +207,76 @@ def _row_at_or_before(rows: list[dict[str, Any]], target: date, field: str) -> d
     return candidates[-1] if candidates else None
 
 
+def _daily_price_rows(market_payload: dict[str, Any], ticker: str) -> list[dict[str, Any]]:
+    company = ((market_payload or {}).get("empresas") or {}).get(ticker) or ((market_payload or {}).get("companies") or {}).get(ticker) or {}
+    rows = []
+    for row in company.get("precos_diarios") or []:
+        current_date = parse_date(row.get("date"))
+        price = valid_positive(row.get("price"))
+        if current_date and price:
+            rows.append({"date": current_date, "price": price, "price_raw": valid_positive(row.get("price_raw")), "adjustment_factor": as_number(row.get("price_adjustment_factor"))})
+    return sorted(rows, key=lambda item: item["date"])
+
+
+def _has_unresolved_event_by(market_payload: dict[str, Any], ticker: str, target: date) -> bool:
+    company = ((market_payload or {}).get("empresas") or {}).get(ticker) or ((market_payload or {}).get("companies") or {}).get(ticker) or {}
+    return any(
+        item.get("status") == "unresolved" and parse_date(item.get("date")) and parse_date(item.get("date")) <= target
+        for item in company.get("eventos_societarios") or []
+    )
+
+
+def _daily_at_or_before(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    candidates = [row for row in rows if row["date"] <= target]
+    return candidates[-1] if candidates else None
+
+
+def _shares_at_or_before(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    candidates = [row for row in rows if row["ref"] <= target and row.get("shares") and row.get("status") in {"validated", "estimated_from_last_valid_shares"}]
+    if not candidates:
+        return None
+    row = candidates[-1]
+    shares_date = row.get("shares_date") or row["ref"]
+    return row if (target - shares_date).days <= 180 else None
+
+
+def sector_market_cap_series(market_payload: dict[str, Any], tickers: Iterable[str]) -> dict[str, Any]:
+    tickers = tuple(tickers)
+    rows_by_ticker = {ticker: _historical_rows(market_payload, ticker) for ticker in tickers}
+    daily_by_ticker = {ticker: _daily_price_rows(market_payload, ticker) for ticker in tickers}
+    dates = sorted({row["ref"] for rows in rows_by_ticker.values() for row in rows})
+    series = []
+    for ref in dates:
+        included, estimated, excluded = [], [], []
+        for ticker in tickers:
+            if _has_unresolved_event_by(market_payload, ticker, ref):
+                excluded.append({"ticker": ticker, "reason": "evento_societario_nao_conciliado"})
+                continue
+            row = _shares_at_or_before(rows_by_ticker[ticker], ref)
+            price = _daily_at_or_before(daily_by_ticker[ticker], ref)
+            if not row or not price:
+                excluded.append({"ticker": ticker, "reason": (row or {}).get("reason") or "preco_diario_ou_acoes_nao_validados"})
+                continue
+            item = {"ticker": ticker, "market_cap": price["price"] * row["shares"], "status": row["status"], "shares_date": row.get("shares_date").isoformat() if row.get("shares_date") else None, "price_date": price["date"].isoformat()}
+            (estimated if row.get("estimated") else included).append(item)
+        total = sum(item["market_cap"] for item in included + estimated)
+        coverage = len(included + estimated) / len(tickers) if tickers else 0.0
+        series.append({
+            "period": period_label_from_date(ref.isoformat()), "date": ref.isoformat(),
+            "total_market_cap": total if included or estimated else None,
+            "companies_registered": len(tickers), "companies_included": len(included + estimated),
+            "companies_estimated": len(estimated), "coverage_count": coverage,
+            "included_companies": included, "estimated_companies": estimated,
+            "companies_excluded": excluded, "methodology": SECTOR_MARKET_CAP_METHODOLOGY,
+            "coverage_status": "complete" if coverage == 1 else "partial",
+        })
+    return {"methodology": SECTOR_MARKET_CAP_METHODOLOGY, "series": series}
+
+
 def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str], coverage_threshold: float = MIN_RETURN_COVERAGE) -> dict[str, Any]:
     tickers = tuple(tickers)
     rows_by_ticker = {ticker: _historical_rows(market_payload, ticker) for ticker in tickers}
+    daily_by_ticker = {ticker: _daily_price_rows(market_payload, ticker) for ticker in tickers}
     dates = sorted({row["ref"] for rows in rows_by_ticker.values() for row in rows})
     by_horizon: dict[str, list[dict[str, Any]]] = {"30d": [], "90d": [], "360d": []}
     for horizon in (30, 90, 360):
@@ -195,12 +287,16 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
             excluded = []
             total_initial_market_cap = 0.0
             for ticker in tickers:
+                if _has_unresolved_event_by(market_payload, ticker, ref):
+                    excluded.append({"ticker": ticker, "reason": "evento_societario_nao_conciliado"})
+                    continue
                 rows = rows_by_ticker[ticker]
-                final_row = _row_at_or_before(rows, ref, "price")
-                initial_price_row = _row_at_or_before(rows, target_start, "price")
-                initial_shares_row = _row_at_or_before(rows, target_start, "shares")
+                daily_rows = daily_by_ticker[ticker]
+                final_row = _daily_at_or_before(daily_rows, ref)
+                initial_price_row = _daily_at_or_before(daily_rows, target_start)
+                initial_shares_row = _shares_at_or_before(rows, target_start)
                 if not final_row or not initial_price_row or not initial_shares_row:
-                    excluded.append({"ticker": ticker, "reason": "preco ou quantidade historica indisponivel"})
+                    excluded.append({"ticker": ticker, "reason": "preco_diario_ou_quantidade_historica_indisponivel"})
                     continue
                 initial_market_cap = initial_price_row["price"] * initial_shares_row["shares"]
                 if initial_market_cap <= 0:
@@ -211,15 +307,15 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
                     {
                         "ticker": ticker,
                         "price_final": final_row["price"],
-                        "price_final_date": final_row["price_date"].isoformat(),
+                        "price_final_date": final_row["date"].isoformat(),
                         "price_initial": initial_price_row["price"],
                         "target_initial_date": target_start.isoformat(),
-                        "price_initial_date": initial_price_row["price_date"].isoformat(),
+                        "price_initial_date": initial_price_row["date"].isoformat(),
                         "shares": initial_shares_row["shares"],
-                        "shares_date": initial_shares_row["ref"].isoformat(),
+                        "shares_date": initial_shares_row["shares_date"].isoformat() if initial_shares_row.get("shares_date") else initial_shares_row["ref"].isoformat(),
                         "return": final_row["price"] / initial_price_row["price"] - 1.0,
                         "initial_market_cap": initial_market_cap,
-                        "approximation": initial_shares_row["ref"] != target_start,
+                        "estimated_shares": bool(initial_shares_row.get("estimated")),
                     }
                 )
             coverage = len(included) / len(tickers) if tickers else 0.0
@@ -238,7 +334,7 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
                     "return_pct": value * 100.0 if value is not None else None,
                     "total_initial_market_cap": total_initial_market_cap if included else None,
                     "coverage_count": coverage,
-                    "coverage_market_cap": 1.0 if included else 0.0,
+                    "coverage_market_cap": None,
                     "companies_registered": len(tickers),
                     "companies_included": len(included),
                     "included_companies": included,
@@ -251,8 +347,12 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
 
 
 def build_sector_aggregates(indicators: dict[str, Any], market_cap: dict[str, Any], market_cap_historico: dict[str, Any], tickers: Iterable[str]) -> dict[str, Any]:
+    metadata = (market_cap_historico or {}).get("metadata") or {}
     return {
+        "run_id": metadata.get("run_id"),
+        "generated_at": metadata.get("gerado_em_utc"),
         "market_cap_share": market_cap_share(market_cap, tickers),
+        "market_cap_setorial": sector_market_cap_series(market_cap_historico, tickers),
         "ev_ebitda_agregado": aggregate_ev_ebitda(indicators, tickers),
         "retornos_preco": sector_price_returns(market_cap_historico, tickers),
     }

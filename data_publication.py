@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -61,6 +62,50 @@ def validate_json_file(path: Path, label: str) -> None:
     if path.stat().st_size == 0:
         raise SystemExit(f"Arquivo {label} JSON vazio: {path}")
     read_json(path)
+
+
+def validate_market_cap_historical_quality(path: Path) -> None:
+    """Reject output that silently mixes incompatible historical price/share bases."""
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise SystemExit(f"Market cap historico invalido: {path}")
+    companies = payload.get("empresas") or payload.get("companies") or {}
+    if not companies:
+        return
+    metadata = payload.get("metadata") or {}
+    if metadata.get("schema_version") != "market_cap_historico_v2":
+        raise SystemExit("Market cap historico sem schema de reconciliacao v2.")
+    if not metadata.get("run_id"):
+        raise SystemExit("Market cap historico sem run_id da execucao financeira.")
+    for ticker, company in companies.items():
+        for period in company.get("periodos") or []:
+            market_cap = period.get("market_cap")
+            status = period.get("status_market_cap")
+            if market_cap is not None and status not in {"validated", "estimated_from_last_valid_shares"}:
+                raise SystemExit(f"{ticker}: market cap publicado com status invalido ({status}).")
+            if status == "validated" and (not period.get("data_preco") or not period.get("data_acoes_utilizada")):
+                raise SystemExit(f"{ticker}: market cap validado sem data de preco ou acoes.")
+            if status == "estimated_from_last_valid_shares" and int(period.get("idade_acoes_dias") or 999999) > 180:
+                raise SystemExit(f"{ticker}: fallback de acoes excede 180 dias.")
+
+
+def validate_chart_generation_run(base: Path, market_cap_path: Path) -> None:
+    market_payload = read_json(market_cap_path)
+    if not isinstance(market_payload, dict):
+        raise SystemExit("Market cap historico invalido para validar os graficos.")
+    companies = market_payload.get("empresas") or market_payload.get("companies") or {}
+    if not companies:
+        return
+    chart_manifest = base / "chart_generation_manifest.json"
+    if not chart_manifest.exists():
+        raise SystemExit("Graficos financeiros sem manifesto de execucao.")
+    chart_payload = read_json(chart_manifest)
+    financial_run_id = (market_payload.get("metadata") or {}).get("run_id")
+    if chart_payload.get("financial_run_id") != financial_run_id:
+        raise SystemExit("Graficos e JSON financeiro foram gerados de execucoes diferentes.")
+    input_hash = hashlib.sha256(market_cap_path.read_bytes()).hexdigest()
+    if chart_payload.get("market_cap_input_sha256") != input_hash:
+        raise SystemExit("Graficos nao correspondem ao hash do market cap financeiro publicado.")
 
 
 def validate_operational_snapshot(path: Path, sector: str) -> None:
@@ -289,7 +334,7 @@ def resolve_manual_for_publication(manual_payload: dict[str, object], staging: P
     return normalize_manual_payload(resolved_manual)
 
 
-def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
+def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude", include_charts: bool = True) -> dict[str, object]:
     scope = validate_scope(scope)
     sector = validate_sector(sector)
     base = base.resolve()
@@ -306,6 +351,9 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
 
         for path in financial_paths:
             validate_json_file(path, "financeiro obrigatorio")
+        validate_market_cap_historical_quality(base / "market_cap_historico.json")
+        if include_charts:
+            validate_chart_generation_run(base, base / "market_cap_historico.json")
 
     op_dir = base / "dados_operacionais"
     allowed_operational_names = {f"{company.ticker}.json" for company in operational_companies(sector)}
@@ -323,7 +371,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
         raise SystemExit("Nenhum JSON operacional foi gerado.")
 
     chart_dir = base / "charts"
-    chart_pngs = sorted(chart_dir.rglob("*.png")) if scope in {"all", "financial"} and chart_dir.exists() else []
+    chart_pngs = sorted(chart_dir.rglob("*.png")) if include_charts and scope in {"all", "financial"} and chart_dir.exists() else []
     chart_pngs = [
         path for path in chart_pngs
         if (
@@ -440,12 +488,12 @@ def build_operational_quality_report(base: Path, sector: str = "saude") -> dict[
     return report
 
 
-def validate_results(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
+def validate_results(base: Path, scope: str = "all", sector: str = "saude", include_charts: bool = True) -> dict[str, object]:
     if validate_sector(sector) == "all":
-        health = validate_results(base, scope=scope, sector="saude")
-        construction = validate_results(base, scope="financial" if scope != "operational" else "operational", sector="construcao_civil") if scope != "operational" else None
+        health = validate_results(base, scope=scope, sector="saude", include_charts=include_charts)
+        construction = validate_results(base, scope="financial" if scope != "operational" else "operational", sector="construcao_civil", include_charts=include_charts) if scope != "operational" else None
         return {"sector": "all", "scope": scope, "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
-    manifest = build_publish_manifest(base, scope, sector)
+    manifest = build_publish_manifest(base, scope, sector, include_charts)
     if manifest.get("status") == "failed_quality_gate":
         raise SystemExit("Quality gate operacional falhou: nenhuma observacao valida auditavel foi encontrada.")
     print(
@@ -474,12 +522,13 @@ def publish_validated_data(
     workflow_run_id: str = "",
     scope: str = "all",
     sector: str = "saude",
+    include_charts: bool = True,
 ) -> dict[str, object]:
     if validate_sector(sector) == "all":
-        health = publish_validated_data(source, target, source_commit, workflow_run_id, scope, "saude")
+        health = publish_validated_data(source, target, source_commit, workflow_run_id, scope, "saude", include_charts)
         construction = None
         if scope != "operational":
-            construction = publish_validated_data(source, target, source_commit, workflow_run_id, "financial", "construcao_civil")
+            construction = publish_validated_data(source, target, source_commit, workflow_run_id, "financial", "construcao_civil", include_charts)
         return {"sector": "all", "scope": scope, "status": "success", "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
     scope = validate_scope(scope)
     sector = validate_sector(sector)
@@ -511,10 +560,11 @@ def publish_validated_data(
     target.mkdir(parents=True, exist_ok=True)
     if scope in {"all", "financial"}:
         clear_financial_component(target)
-        chart_target = (publication_root.parent / "charts" / sector) if sector_layout else target.parent / "charts"
-        if chart_target.exists():
-            shutil.rmtree(chart_target)
-        chart_target.mkdir(parents=True, exist_ok=True)
+        if include_charts:
+            chart_target = (publication_root.parent / "charts" / sector) if sector_layout else target.parent / "charts"
+            if chart_target.exists():
+                shutil.rmtree(chart_target)
+            chart_target.mkdir(parents=True, exist_ok=True)
 
     copied = 0
     if scope in {"all", "financial"}:
@@ -612,7 +662,7 @@ def publish_validated_data(
         "data_version": staged_manifest.get("data_version", data_version),
     }
     chart_copied = 0
-    if scope in {"all", "financial"}:
+    if include_charts and scope in {"all", "financial"}:
         for relative in manifest.get("chart_pngs", []):
             source_path = staging / relative
             if not source_path.exists():
@@ -653,19 +703,21 @@ def parse_args() -> argparse.Namespace:
     validate.add_argument("source", type=Path)
     validate.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
     validate.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
+    validate.add_argument("--without-charts", action="store_true")
 
     publish = subparsers.add_parser("publish")
     publish.add_argument("source", type=Path)
     publish.add_argument("target", type=Path)
     publish.add_argument("--scope", choices=tuple(sorted(PUBLICATION_SCOPES)), default="all")
     publish.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
+    publish.add_argument("--without-charts", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.command == "validate":
-        validate_results(args.source, scope=args.scope, sector=args.sector)
+        validate_results(args.source, scope=args.scope, sector=args.sector, include_charts=not args.without_charts)
         return 0
     if args.command == "publish":
         publish_validated_data(
@@ -675,6 +727,7 @@ def main() -> int:
             workflow_run_id=os.environ.get("WORKFLOW_RUN_ID", ""),
             scope=args.scope,
             sector=args.sector,
+            include_charts=not args.without_charts,
         )
         return 0
     raise SystemExit(f"Comando desconhecido: {args.command}")

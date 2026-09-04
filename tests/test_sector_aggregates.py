@@ -1,6 +1,6 @@
 import unittest
 
-from sector_aggregates import aggregate_ev_ebitda, market_cap_share, sector_price_returns
+from sector_aggregates import aggregate_ev_ebitda, market_cap_share, sector_market_cap_series, sector_price_returns
 
 
 class SectorAggregateTests(unittest.TestCase):
@@ -51,20 +51,37 @@ class SectorAggregateTests(unittest.TestCase):
         self.assertIsNone(row["value"])
         self.assertIn("EBITDA LTM agregado", row["diagnostics"][0])
 
+    def test_ev_ebitda_excludes_conflicting_duplicate_period(self):
+        indicators = {"companies": {"A": {"periodos": [
+            {"metadata": {"end_date": "2026-06-30"}, "enterprise_value": 100, "ebitda_ltm": 10},
+            {"metadata": {"end_date": "2026-06-30"}, "enterprise_value": 100, "ebitda_ltm": 20},
+        ]}}}
+        row = aggregate_ev_ebitda(indicators, ("A",))["series"][0]
+        self.assertIsNone(row["value"])
+        self.assertEqual(row["companies_excluded"][0]["reason"], "duplicidade_financeira_conflitante")
+
+    def test_ev_ebitda_consolidates_identical_duplicate_period(self):
+        item = {"metadata": {"end_date": "2026-06-30"}, "enterprise_value": 100, "ebitda_ltm": 10}
+        row = aggregate_ev_ebitda({"companies": {"A": {"periodos": [item, dict(item)]}}}, ("A",))["series"][0]
+        self.assertEqual(row["companies_included"], 1)
+        self.assertEqual(row["enterprise_value_sum"], 100)
+
     def test_sector_return_uses_initial_market_cap_weights_and_threshold(self):
         payload = {
             "empresas": {
                 "A": {
                     "periodos": [
-                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-30", "preco_acao": 20, "data_preco": "2026-06-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 10, "market_cap": 100, "status_market_cap": "validated"},
+                        {"data_referencia": "2026-06-30", "preco_acao": 20, "data_preco": "2026-06-30", "quantidade_acoes_total": 10, "market_cap": 200, "status_market_cap": "validated"},
                     ]
+                    , "precos_diarios": [{"date": "2025-06-30", "price": 10}, {"date": "2026-06-05", "price": 10}, {"date": "2026-06-30", "price": 20}]
                 },
                 "B": {
                     "periodos": [
-                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 30},
-                        {"data_referencia": "2026-06-30", "preco_acao": 5, "data_preco": "2026-06-30", "quantidade_acoes_total": 30},
+                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 30, "market_cap": 300, "status_market_cap": "validated"},
+                        {"data_referencia": "2026-06-30", "preco_acao": 5, "data_preco": "2026-06-30", "quantidade_acoes_total": 30, "market_cap": 150, "status_market_cap": "validated"},
                     ]
+                    , "precos_diarios": [{"date": "2025-06-30", "price": 10}, {"date": "2026-06-05", "price": 10}, {"date": "2026-06-30", "price": 5}]
                 },
             }
         }
@@ -80,15 +97,17 @@ class SectorAggregateTests(unittest.TestCase):
             "empresas": {
                 "A": {
                     "periodos": [
-                        {"data_referencia": "2026-03-30", "preco_acao": 10, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-28", "preco_acao": 12, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-03-30", "preco_acao": 10, "data_preco": "2026-03-30", "quantidade_acoes_total": 10, "market_cap": 100, "status_market_cap": "validated"},
+                        {"data_referencia": "2026-06-28", "preco_acao": 12, "data_preco": "2026-06-28", "quantidade_acoes_total": 10, "market_cap": 120, "status_market_cap": "validated"},
                     ]
+                    , "precos_diarios": [{"date": "2026-03-30", "price": 10}, {"date": "2026-06-28", "price": 12}]
                 },
                 "B": {
                     "periodos": [
-                        {"data_referencia": "2026-03-30", "preco_acao": 20, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-28", "preco_acao": 10, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-03-30", "preco_acao": 20, "data_preco": "2026-03-30", "quantidade_acoes_total": 10, "market_cap": 200, "status_market_cap": "validated"},
+                        {"data_referencia": "2026-06-28", "preco_acao": 10, "data_preco": "2026-06-28", "quantidade_acoes_total": 10, "market_cap": 100, "status_market_cap": "validated"},
                     ]
+                    , "precos_diarios": [{"date": "2026-03-30", "price": 20}, {"date": "2026-06-28", "price": 10}]
                 },
             }
         }
@@ -97,11 +116,22 @@ class SectorAggregateTests(unittest.TestCase):
         self.assertAlmostEqual(row["value"], -0.2666666667)
 
     def test_sector_return_null_below_coverage(self):
-        payload = {"empresas": {"A": {"periodos": [{"data_referencia": "2026-06-30", "preco_acao": 10, "quantidade_acoes_total": 1}]}}}
+        payload = {"empresas": {"A": {"periodos": [{"data_referencia": "2026-06-30", "preco_acao": 10, "quantidade_acoes_total": 1, "market_cap": 10, "status_market_cap": "validated"}], "precos_diarios": [{"date": "2026-06-30", "price": 10}]}}}
         row = sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["30d"][0]
         self.assertIsNone(row["value"])
         self.assertLess(row["coverage_count"], 0.70)
         self.assertIsNone(sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["90d"][0]["value"])
+
+    def test_sector_market_cap_marks_partial_coverage_and_estimates(self):
+        payload = {"empresas": {
+            "A": {"periodos": [{"data_referencia": "2026-06-30", "market_cap": 100, "quantidade_acoes_total": 10, "status_market_cap": "validated"}], "precos_diarios": [{"date": "2026-06-30", "price": 10}]},
+            "B": {"periodos": [{"data_referencia": "2026-06-30", "market_cap": 50, "quantidade_acoes_total": 5, "status_market_cap": "estimated_from_last_valid_shares"}], "precos_diarios": [{"date": "2026-06-30", "price": 10}]},
+            "C": {"periodos": [{"data_referencia": "2026-06-30", "market_cap": None, "status_market_cap": "excluded", "justificativa_acoes": "sem dados"}]},
+        }}
+        row = sector_market_cap_series(payload, ("A", "B", "C"))["series"][0]
+        self.assertEqual(row["total_market_cap"], 150)
+        self.assertEqual(row["companies_estimated"], 1)
+        self.assertEqual(row["coverage_status"], "partial")
 
 
 if __name__ == "__main__":

@@ -3,13 +3,15 @@
 ## Atualização estrutural — setembro de 2026
 
 - A atualização financeira segue a mesma regra para Saúde e Construção Civil.
-- O Yahoo Finance é a fonte primária da quantidade histórica de ações; a CVM
-  valida a informação e funciona como fallback quando o Yahoo não retorna dado
-  válido.
-- Divergências acima de 5% recebem `shares_discrepancy`, preservam ambas as
-  fontes e bloqueiam o market cap/EV/EBITDA automático daquele período.
-- Retornos setoriais excluem períodos com divergência não resolvida e informam
-  a cobertura utilizada.
+- A CVM é a referência para quantidade histórica de ações e eventos de capital;
+  o Yahoo Finance fornece o fechamento diário e seus eventos societários.
+- Uma mudança estrutural só é publicada quando preço e ações forem conciliados.
+  Eventos sem evidência compatível ficam como `unresolved`; não há substituição
+  silenciosa por uma fonte alternativa.
+- A ausência temporária de ações usa a última quantidade oficial válida por, no
+  máximo, 180 dias. O cálculo usa o preço da nova data, nunca o market cap antigo.
+- Retornos setoriais de 30, 90 e 360 dias usam preços diários nas duas pontas,
+  ponderados pelo market cap inicial validado e com cobertura explícita.
 - Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
   somente PDFs oficiais de RI; planilhas não participam desse fluxo.
 - A auditoria é setorial: Saúde exibe o bloco operacional; Construção Civil
@@ -47,30 +49,38 @@ interseção setor × componente e preserva os demais snapshots e overrides.
 
 ## Metodologia dos agregados setoriais
 
-O market cap setorial usa apenas empresas ativas do setor selecionado com
-market cap valido, positivo e numerico. A participacao de cada empresa e:
-`market_cap_empresa / soma_market_cap_empresas_validas`. Empresas sem dado
-valido sao excluidas e reportadas no diagnostico; ausencias nao viram zero.
+O market cap setorial é reconstruído por empresa e data como `preço diário
+normalizado × quantidade oficial de ações`. Preços históricos são ajustados
+somente para eventos societários corroborados pela CVM. Empresas sem base
+reconciliada são excluídas, com motivo e cobertura visíveis; ausência nunca vira
+zero nem reaproveita o market cap de período anterior. A série é identificada
+como parcial quando não contém todo o universo cadastrado.
 
 O EV/EBITDA setorial e calculado pela divisao do enterprise value agregado pelo
 EBITDA LTM agregado das empresas incluidas. Nao representa uma media simples ou
 ponderada dos multiplos individuais. A formula e `soma(EV) / soma(EBITDA LTM)`,
-com EV definido pela metodologia vigente como `market cap historico + divida
-liquida padronizada`. EBITDAs negativos validos entram na soma agregada; se o
+com EV definido pela metodologia vigente como `market cap historico reconciliado
++ divida liquida padronizada`. Antes da agregação, há unicidade por
+`ticker + data final + tipo de período`: duplicidades idênticas são consolidadas
+e conflitos bloqueiam a empresa no período. EBITDAs negativos validos entram na soma agregada; se o
 EBITDA LTM agregado for menor ou igual a zero, o multiplo fica nulo e o
 diagnostico explicita a causa.
 
-Os retornos setoriais de preco de 30 e 360 dias usam fechamento nao ajustado,
-coerente com o market cap historico. Para cada empresa, o retorno e
+Os retornos setoriais de preço de 30, 90 e 360 dias usam o fechamento diário
+normalizado nas datas inicial e final (ou no último pregão anterior). Para cada empresa, o retorno é
 `preco_final / preco_inicial - 1`, usando o fechamento do proprio dia ou o
-ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap do
-inicio do intervalo: `preco_inicial x quantidade historica de acoes em ou antes
-da data inicial`. A cobertura minima inicial e 70%; abaixo dela, o retorno
-setorial nao e publicado como representativo.
+ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap
+validado do inicio do intervalo: `preco_inicial × quantidade oficial de acoes`.
+A cobertura minima inicial e 70%; abaixo dela, o retorno setorial nao e
+publicado como representativo. A linha auxiliar dos gráficos de retorno é
+explicitamente rotulada como o market cap usado na ponderação, não como o valor
+de mercado total do setor.
 
-Todos os agregados registram metodologia, empresas incluidas, empresas
-excluidas, cobertura, datas efetivas dos componentes e limitacoes de dados
-historicos.
+Todos os agregados registram metodologia, empresas incluidas, excluidas e
+estimadas, cobertura, datas efetivas dos componentes, eventos societários e
+limitações dos dados históricos. O manifesto de gráficos contém o `run_id` e o
+hash do `market_cap_historico.json`; a publicação bloqueia ativos gerados a
+partir de uma execução financeira diferente.
 
 ## Cache CVM e workflows sem coleta
 

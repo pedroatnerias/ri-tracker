@@ -11,7 +11,14 @@ Dependencia externa: yfinance (pip install yfinance).
 from __future__ import annotations
 
 import argparse
+import os
 from company_registry import company_by_ticker, financial_companies
+from market_data_normalization import (
+    MAX_SHARES_STALENESS_DAYS,
+    as_positive_float,
+    normalize_daily_prices,
+    resolve_official_shares,
+)
 import csv
 import io
 import json
@@ -200,14 +207,17 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
 
     return {
         "metadata": {
-            "fonte": "Yahoo Finance primario; CVM para validacao e fallback",
+            "fonte": "CVM para acoes e eventos societarios; Yahoo Finance para precos diarios",
             "campo_cvm": "QT_ACAO_TOTAL_CAP_INTEGR",
-            "fonte_acoes_primaria": "Yahoo Finance via yfinance.get_shares_full",
+            "fonte_acoes_primaria": "CVM QT_ACAO_TOTAL_CAP_INTEGR",
             "limite_divergencia_acoes": LIMITE_DIVERGENCIA_ACOES,
             "fonte_preco": "Yahoo Finance via yfinance",
             "campo_preco": "Close",
             "criterio_preco": "fechamento da data de referencia; se nao houver pregao, ultimo fechamento anterior",
             "data_inicial": f"{ANO_INICIAL}-01-01",
+            "max_share_staleness_days": MAX_SHARES_STALENESS_DAYS,
+            "schema_version": "market_cap_historico_v2",
+            "run_id": os.environ.get("GITHUB_RUN_ID") or os.environ.get("WORKFLOW_RUN_ID") or "local",
             "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
         },
         "empresas": empresas,
@@ -254,6 +264,29 @@ def buscar_acoes_yfinance(yf, yahoo_ticker: str) -> list[tuple[date, int]]:
     return sorted(resultado, key=lambda item: item[0])
 
 
+def buscar_historico_diario_yfinance(yf, yahoo_ticker: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Obtém Close diário e eventos de split em uma única consulta auditável."""
+    historico = yf.Ticker(yahoo_ticker).history(
+        start=f"{ANO_INICIAL}-01-01",
+        end=(date.today() + timedelta(days=1)).isoformat(),
+        auto_adjust=False,
+        actions=True,
+    )
+    if historico.empty or "Close" not in historico.columns:
+        return [], []
+    prices: list[dict[str, object]] = []
+    splits: list[dict[str, object]] = []
+    for indice, row in historico.iterrows():
+        current_date = _data_indice(indice)
+        close = as_positive_float(row.get("Close"))
+        if current_date and close:
+            prices.append({"date": current_date.isoformat(), "price": round(close, 6)})
+        split = as_positive_float(row.get("Stock Splits"))
+        if current_date and split and split != 1.0:
+            splits.append({"date": current_date.isoformat(), "factor": split})
+    return prices, splits
+
+
 def _acoes_yahoo_na_data(serie: list[tuple[date, int]], referencia: date) -> tuple[int | None, date | None]:
     candidatos = [(data, quantidade) for data, quantidade in serie if data <= referencia]
     if not candidatos:
@@ -290,12 +323,16 @@ def validar_quantidade_acoes(yahoo: int | None, cvm: int | None) -> dict[str, ob
     return {"quantidade": None, "fonte": None, "diferenca_pct": None, "status": "missing", "justificativa": "Nenhuma fonte retornou quantidade valida."}
 
 
-def adicionar_precos_yfinance(resultado: dict) -> None:
-    """Preenche acoes/preco historicos, validando Yahoo contra CVM por trimestre.
+def _price_at_or_before(prices: list[dict[str, object]], reference: date) -> dict[str, object] | None:
+    candidates = [item for item in prices if str(item.get("date") or "") <= reference.isoformat()]
+    return candidates[-1] if candidates else None
 
-    O Yahoo usa o sufixo .SA para a B3. `auto_adjust=False` preserva o Close
-    historico nao ajustado, adequado para combinar preco e quantidade de acoes
-    observados na mesma data historica.
+
+def adicionar_precos_yfinance(resultado: dict) -> None:
+    """Preenche preço diário normalizado e ações oficiais da CVM.
+
+    A CVM define a base de ações. Eventos de split do Yahoo somente ajustam
+    preços quando corroborados pela variação das ações oficiais.
     """
     try:
         import yfinance as yf
@@ -304,18 +341,33 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
             "A dependencia 'yfinance' nao esta instalada. Execute: pip install yfinance"
         ) from exc
 
+    normalization_summary = {"companies": 0, "periods_validated": 0, "periods_estimated": 0, "periods_unresolved": 0, "periods_excluded": 0, "events_validated": 0, "events_unresolved": 0}
     for ticker, empresa in resultado["empresas"].items():
+        normalization_summary["companies"] += 1
         yahoo_tickers = company_by_ticker(ticker).yahoo_tickers
         shares_series: list[tuple[date, int]] = []
-        ticker_shares = None
+        daily_prices: list[dict[str, object]] = []
+        split_events: list[dict[str, object]] = []
+        ticker_yahoo = None
         for yahoo_ticker in yahoo_tickers:
             try:
                 shares_series = buscar_acoes_yfinance(yf, yahoo_ticker)
-                if shares_series:
-                    ticker_shares = yahoo_ticker
+                candidate_prices, candidate_splits = buscar_historico_diario_yfinance(yf, yahoo_ticker)
+                if candidate_prices:
+                    daily_prices, split_events = candidate_prices, candidate_splits
+                    ticker_yahoo = yahoo_ticker
                     break
             except Exception as exc:
-                print(f"Aviso: falha ao buscar acoes {yahoo_ticker}: {exc}", file=sys.stderr)
+                print(f"Aviso: falha ao buscar historico {yahoo_ticker}: {exc}", file=sys.stderr)
+
+        cvm_points = [
+            {"date": periodo["data_referencia"], "shares": periodo.get("quantidade_acoes_cvm")}
+            for periodo in empresa["periodos"]
+        ]
+        normalized_prices, reconciled_events = normalize_daily_prices(daily_prices, split_events, cvm_points)
+        empresa["precos_diarios"] = normalized_prices
+        empresa["eventos_societarios"] = reconciled_events
+        unresolved_event_dates = [str(item["date"]) for item in reconciled_events if item.get("status") == "unresolved" and item.get("date")]
         for periodo in empresa["periodos"]:
             referencia = date.fromisoformat(periodo["data_referencia"])
             yahoo_shares, yahoo_date = _acoes_yahoo_na_data(shares_series, referencia)
@@ -324,39 +376,40 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
             periodo["data_acoes_yahoo"] = yahoo_date.isoformat() if yahoo_date else None
             periodo["quantidade_acoes_cvm"] = cvm_shares
             periodo["data_acoes_cvm"] = periodo["data_referencia"] if cvm_shares else None
-            resolved = validar_quantidade_acoes(yahoo_shares, cvm_shares)
-            periodo["quantidade_acoes_utilizada"] = resolved["quantidade"]
-            periodo["quantidade_acoes_total"] = resolved["quantidade"]
-            periodo["fonte_acoes_utilizada"] = resolved["fonte"]
-            periodo["diferenca_acoes_pct"] = resolved["diferenca_pct"]
-            periodo["status_validacao_acoes"] = resolved["status"]
-            periodo["justificativa_acoes"] = resolved["justificativa"]
-            preco = None
-            data_preco = None
-            for yahoo_ticker in yahoo_tickers:
-                print(
-                    f"Buscando {yahoo_ticker} para {referencia.isoformat()} no Yahoo Finance...",
-                    file=sys.stderr,
-                )
-                try:
-                    preco, data_preco = buscar_preco_yfinance(yf, yahoo_ticker, referencia)
-                except Exception as exc:  # falha externa nao invalida os dados da CVM
-                    print(
-                        f"Aviso: falha ao buscar {yahoo_ticker} em {referencia.isoformat()}: {exc}",
-                        file=sys.stderr,
-                    )
-                    continue
-                if preco is not None:
-                    periodo["ticker_yahoo"] = yahoo_ticker
-                    break
-            periodo["preco_acao"] = preco
-            periodo["data_preco"] = data_preco
-            if periodo.get("quantidade_acoes_utilizada") and preco is not None and periodo.get("status_validacao_acoes") != "shares_discrepancy":
-                periodo["market_cap"] = preco * periodo["quantidade_acoes_utilizada"]
+            difference = abs(yahoo_shares - cvm_shares) / cvm_shares * 100.0 if yahoo_shares and cvm_shares else None
+            resolved = resolve_official_shares(referencia, [(date.fromisoformat(str(item["date"])), item.get("shares")) for item in cvm_points])
+            price = _price_at_or_before(normalized_prices, referencia)
+            periodo["quantidade_acoes_utilizada"] = resolved.get("shares")
+            periodo["quantidade_acoes_total"] = resolved.get("shares")
+            periodo["fonte_acoes_utilizada"] = resolved.get("source")
+            periodo["diferenca_acoes_pct"] = difference
+            periodo["status_validacao_acoes"] = resolved.get("status")
+            periodo["justificativa_acoes"] = resolved.get("reason") or "Quantidade de acoes oficial da CVM utilizada."
+            periodo["data_acoes_utilizada"] = resolved.get("shares_date")
+            periodo["idade_acoes_dias"] = resolved.get("age_days")
+            periodo["preco_acao_raw"] = price.get("price_raw") if price else None
+            periodo["preco_acao"] = price.get("price") if price else None
+            periodo["data_preco"] = price.get("date") if price else None
+            periodo["fator_ajuste_preco"] = price.get("price_adjustment_factor") if price else None
+            periodo["eventos_ajuste_preco"] = price.get("applied_events") if price else []
+            periodo["ticker_yahoo"] = ticker_yahoo
+            affected_by_unresolved_event = bool(price and any(str(price["date"]) < event_date for event_date in unresolved_event_dates))
+            if affected_by_unresolved_event:
+                periodo["status_market_cap"] = "unresolved"
+                periodo["justificativa_acoes"] = "Evento societario Yahoo nao conciliado com a CVM; market cap bloqueado."
+                periodo["market_cap"] = None
+            elif resolved.get("shares") and price and resolved.get("status") in {"validated", "estimated_from_last_valid_shares"}:
+                periodo["market_cap"] = float(price["price"]) * int(resolved["shares"])
+                periodo["status_market_cap"] = resolved["status"]
             else:
                 periodo["market_cap"] = None
-            if ticker_shares:
-                periodo["ticker_yahoo"] = ticker_shares
+                periodo["status_market_cap"] = "excluded"
+            status = periodo["status_market_cap"]
+            summary_key = "periods_estimated" if status == "estimated_from_last_valid_shares" else f"periods_{status}"
+            normalization_summary[summary_key] += 1
+        for event in reconciled_events:
+            normalization_summary["events_validated" if event.get("status") == "validated" else "events_unresolved"] += 1
+    resultado.setdefault("metadata", {})["normalization_summary"] = normalization_summary
 
 
 def executar(saida: str, ano_final: int | None = None) -> dict:

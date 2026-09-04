@@ -41,6 +41,7 @@ from manual_operational import (
     write_manual_overrides_file,
 )
 from operational_dictionary import TARGET_METRICS, all_metric_names
+from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, repair_mojibake
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
@@ -969,7 +970,29 @@ def normalize_operational_company(data: dict, sector: str) -> dict:
     normalized = dict(data)
     metrics = {}
     for metric, items in (data.get("metricas") or {}).items():
-        metrics[metric] = [normalize_operational_metric_item(item, sector) for item in items if isinstance(item, dict)]
+        # Older operational JSONs may contain mojibake in the human label.
+        # Keep indicator_id as the stable key and canonicalize the display key
+        # at read time, so the dashboard is immediately repaired even before
+        # the next extraction republishes the JSON.
+        canonical_metric = repair_mojibake(metric)
+        if sector == "construcao_civil":
+            for item in items:
+                if isinstance(item, dict):
+                    indicator_id = str(item.get("indicator_id") or "")
+                    definition = CONSTRUCTION_OPERATIONAL_DICTIONARY.get(indicator_id)
+                    if definition:
+                        canonical_metric = definition["display_name"]
+                        break
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            for field in ("metric", "indicator_name", "display_name", "source", "escopo", "fonte_linha"):
+                if field in item and isinstance(item[field], str):
+                    item[field] = repair_mojibake(item[field])
+            normalized_items.append(normalize_operational_metric_item(item, sector))
+        metrics.setdefault(canonical_metric, []).extend(normalized_items)
     normalized["metricas"] = metrics
     normalized.setdefault("status", "found" if any(metrics.values()) else "not_found")
     return normalized
@@ -3758,6 +3781,17 @@ HTML = """<!doctype html>
       return `<div class="disclaimer">Data-base: ${escapeHtml(share.base_date || "N/A")} | Market cap incluído: ${escapeHtml(formatMillions(share.total_market_cap))} | Cobertura: ${escapeHtml(formatPercent((share.coverage_count || 0) * 100))}% das empresas.</div><div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Market cap</th><th>Participação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
+    function renderSectorMarketCapSummary() {
+      const series = DATA.comparison?.sector_aggregates?.market_cap_setorial?.series || [];
+      const metadata = DATA.indicators?.market_cap_historico?.metadata || {};
+      const rows = series.filter(item => typeof item?.total_market_cap === "number").map(item => (
+        `<tr><td>${escapeHtml(item.period || item.date || "")}</td><td class="num">${escapeHtml(formatMillions(item.total_market_cap))}</td><td class="num">${escapeHtml(`${item.companies_included || 0}/${item.companies_registered || 0}`)}</td><td class="num">${escapeHtml(String(item.companies_estimated || 0))}</td><td>${escapeHtml(item.coverage_status === "complete" ? "Completa" : "Parcial")}</td></tr>`
+      )).join("");
+      if (!rows) return '<div class="empty">Série histórica de market cap indisponível.</div>';
+      const run = metadata.run_id ? ` Execução: ${escapeHtml(metadata.run_id)}.` : "";
+      return `<div class="disclaimer">Inclui somente market caps validados ou estimados com quantidade de ações oficial dentro da janela permitida. Cobertura parcial não representa o total econômico do setor.${run}</div><div class="table-wrap historical-data-table"><table><thead><tr><th>Período</th><th>Market cap</th><th>Empresas</th><th>Estimadas</th><th>Cobertura</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
     function renderSectorAggregates() {
       const aggregates = DATA.comparison?.sector_aggregates || {};
       const latestEv = [...(aggregates.ev_ebitda_agregado?.series || [])].reverse().find(item => typeof item.value === "number");
@@ -3765,6 +3799,7 @@ HTML = """<!doctype html>
       const cards = [
         `<section class="chart-card"><h2>Participação no market cap</h2>${renderMarketCapShareSummary()}</section>`,
         renderSectorAggregateChart("market_cap_share", "Participação no market cap"),
+        `<section class="chart-card"><h2>Market cap setorial</h2>${(() => { const asset = DATA.chart_assets?.comparison?.market_cap_setorial?.url; return asset ? `<div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="Market cap setorial comparável"></div>` : ""; })()}${renderSectorMarketCapSummary()}</section>`,
         renderSectorAggregateChart("ev_ebitda_agregado", "EV/EBITDA agregado"),
         renderSectorAggregateChart("retorno_preco_setorial_30d", "Retorno setorial de preço - 30 dias"),
         renderSectorAggregateChart("retorno_preco_setorial_90d", "Retorno setorial de preço - 90 dias"),
