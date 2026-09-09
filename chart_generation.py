@@ -8,6 +8,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from data_access import atomic_write_json, read_json
 from typing import Any
 
 import matplotlib
@@ -322,7 +323,7 @@ def write_chart_generation_manifest(sector_results: Path) -> None:
     metadata: dict[str, Any] = {}
     if market_path.exists():
         try:
-            metadata = (json.loads(market_path.read_text(encoding="utf-8")) or {}).get("metadata") or {}
+            metadata = (read_json(market_path) or {}).get("metadata") or {}
         except (OSError, json.JSONDecodeError):
             metadata = {}
     payload = {
@@ -332,9 +333,7 @@ def write_chart_generation_manifest(sector_results: Path) -> None:
         "financial_generated_at": metadata.get("gerado_em_utc"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
-    (sector_results / "chart_generation_manifest.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(sector_results / "chart_generation_manifest.json", payload)
 
 
 def parse_args() -> argparse.Namespace:

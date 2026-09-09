@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from company_registry import validate_sector
+from data_access import read_json_if_exists as _read_json_if_exists
 
 
 SECTOR_NAMES = ("saude", "construcao_civil")
@@ -27,13 +27,6 @@ def resolve_releases_output_dir(base: Path, sector: str, *, create: bool = False
 
 def resolve_releases_manifest_path(base: Path, sector: str) -> Path:
     return Path(base).resolve() / "Releases e relatórios" / f"manifesto_downloads_{validate_sector(sector)}.json"
-
-
-def resolve_operational_results_dir(base: Path, sector: str, *, create: bool = False) -> Path:
-    path = resolve_sector_results_dir(base, sector, create=create) / "dados_operacionais"
-    if create:
-        path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def expand_sectors(sector: str) -> tuple[str, ...]:
@@ -61,10 +54,7 @@ def resolve_sector_results_dir(resultados: Path, sector: str, *, create: bool = 
 
 
 def read_json_if_exists(path: Path) -> dict[str, object] | None:
-    if not path.exists():
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return payload if isinstance(payload, dict) else None
+    return _read_json_if_exists(path)
 
 
 def manifest_file_for_statement(manifest: dict[str, object] | None, statement: str) -> str | None:

@@ -107,3 +107,16 @@ Nenhum item deve ser apagado antes da etapa seguinte. Os candidatos precisam ser
 - Saúde e construção permanecem isoladas e os modos sem coleta não fazem chamadas externas.
 - Rotas principais, CLI, publicação parcial, snapshots históricos, gráficos e manifestos permanecem válidos.
 - Cada lote produz diff pequeno, reversível e validado por compilação, testes relacionados e suíte completa.
+
+## 8. Correções aplicadas nesta rodada
+
+O diagnóstico estrutural detalhado foi registrado em `DIAGNOSTICO_DUPLICIDADES.md`, incluindo grafo dos fluxos, matriz de responsabilidades, classificação de duplicidades e órfãos aparentes, regras potencialmente conflitantes, proposta de módulos futuros, lotes de refatoração e estratégia de testes.
+Baseline inicial do diagnóstico: `196 passed, 43 subtests passed`; execuções intermediárias registraram falhas e testes lentos enquanto as correções estavam em andamento.
+
+Estado vigente validado: **206 passed, 43 subtests passed**, com `compileall`, smoke tests do dashboard e `git diff --check` aprovados. O módulo legado `app_AV_AH.py` foi removido após confirmação de ausência de consumidores.
+
+Pendências arquiteturais remanescentes: instrumentação estruturada de fallbacks, consolidação integral dos contratos de métricas, decomposição adicional do dashboard e alinhamento das recomputações JavaScript com o payload oficial. Fallbacks históricos, adapters públicos, snapshots e quality gates permanecem preservados.
+
+Estado vigente após o Lote 0 e a primeira etapa do Lote 1: `pytest.ini` e `tests/conftest.py` classificam a suíte em unit, integration, publication, filesystem, network, slow e stateful. A suíte completa passou com **210 passed, 43 subtests passed**; execuções focadas de publicação, filesystem e integração também passaram. `contract_validation.py` centraliza eventos de compatibilidade e leitura dos envelopes `companies`/`empresas`, mantendo a migração `INNT3`/`INNC3` somente na leitura.
+
+Atualização posterior: `tracking.py` agora registra `stage_events` com etapa, duração, status e apenas o tipo do erro. A conversão local de PDFs do extrator operacional usa essa instrumentação, sem alterar a máquina de estados documental nem os artefatos publicados. A suíte vigente passou com **211 passed, 43 subtests passed**.

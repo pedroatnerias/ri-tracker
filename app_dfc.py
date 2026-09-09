@@ -7,14 +7,13 @@ Fonte oficial: https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import sys
-import unicodedata
 import zipfile
 from datetime import date, datetime
 from pathlib import Path
+from data_access import atomic_write_json, read_json
 
 import pandas as pd
 from company_registry import Company, financial_companies
@@ -22,6 +21,7 @@ from company_identity import CompanyNotFoundError, select_company_rows
 import requests
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from domain_normalization import normalize_text as _shared_normalize_text
 
 
 BASE_URL = "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/"
@@ -41,8 +41,7 @@ FATORES_ESCALA = {
 
 
 def sem_acentos(valor: object) -> str:
-    texto = "" if pd.isna(valor) else str(valor)
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    texto = "" if pd.isna(valor) else _shared_normalize_text(valor, repair=False)
     return re.sub(r"\s+", " ", texto.upper()).strip()
 
 
@@ -481,14 +480,12 @@ def salvar_json(blocos: dict[str, list[pd.DataFrame]], auditoria: list[dict[str,
             {"item": "Celulas vazias", "description": "Conta nao reportada pela companhia/periodo; nao representa valor zero."},
         ],
     }
-    temporario = saida.with_suffix(".tmp.json")
-    temporario.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporario.replace(saida)
+    atomic_write_json(saida, payload)
 
 
 def verificar_json(saida: Path, companies: tuple[Company, ...] | None = None) -> None:
     companies = companies or tuple(financial_companies("saude"))
-    payload = json.loads(saida.read_text(encoding="utf-8"))
+    payload = read_json(saida)
     esperado = {c.ticker for c in companies}
     encontrado = set(payload.get("companies", {}))
     faltantes = esperado.difference(encontrado)
@@ -550,7 +547,7 @@ def main() -> int:
     salvar_json(blocos, auditoria, saida, anos, companies)
     verificar_json(saida, companies)
     manifesto = args.diretorio / "execucao.json"
-    manifesto.write_text(json.dumps({
+    atomic_write_json(manifesto, {
         "data_execucao": date.today().isoformat(),
         "anos": anos,
         "arquivo_saida": str(saida),
@@ -558,7 +555,7 @@ def main() -> int:
             {field: getattr(c, field) for field in c.__dataclass_fields__}
             for c in companies
         ],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    })
     logging.info("Concluído: %s", saida.resolve())
     return 0
 

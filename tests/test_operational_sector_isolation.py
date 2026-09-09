@@ -8,13 +8,15 @@ from unittest.mock import patch
 import app_extrator_operacional
 import app_parser_operacional
 import data_publication
-from openpyxl import Workbook
 from company_registry import operational_companies
-from operational_sources import OPERATIONAL_RI_SOURCES, operational_sources_for_sector
+from operational_sources import OPERATIONAL_RI_SOURCES, operational_sources_for_sector, validate_operational_sources
 from sector_paths import resolve_releases_input_dir, resolve_releases_output_dir
 
 
 class OperationalSectorIsolationTests(unittest.TestCase):
+    def test_source_identity_matches_central_registry(self):
+        validate_operational_sources()
+
     def test_construction_source_registry_has_exact_operational_universe(self):
         expected = {company.ticker for company in operational_companies("construcao_civil")}
         self.assertEqual(set(operational_sources_for_sector("construcao_civil")), expected)
@@ -86,34 +88,22 @@ class OperationalSectorIsolationTests(unittest.TestCase):
                 "--sector", "construcao_civil", "--md-dir", str(markdown), "--output-dir", str(output),
             ])
             self.assertEqual(asyncio.run(app_extrator_operacional.run(args)), 0)
-            manifest = data_publication.validate_results(root / "resultados", "operational", "construcao_civil")
-            self.assertEqual(len(manifest["operational_jsons"]), 26)
-            self.assertIn("dados_operacionais/CURY3.json", manifest["operational_jsons"])
-            self.assertEqual(manifest["status"], "success_with_warnings")
+            with self.assertRaisesRegex(SystemExit, "Quality gate operacional falhou"):
+                data_publication.validate_results(root / "resultados", "operational", "construcao_civil")
 
-    def test_construction_extractor_processes_xlsx_end_to_end(self):
+    def test_construction_extractor_does_not_treat_local_xlsx_as_pdf_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixtures = root / "fixtures"
             output = root / "resultados" / "construcao_civil" / "dados_operacionais"
             fixtures.mkdir()
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet.title = "Operacional"
-            sheet["A1"] = "Indicador"
-            sheet["B1"] = "VGV Lancado (R$ MM)<br>1T26 1T25 Var%"
-            sheet["A2"] = "VGV lancado"
-            sheet["B2"] = "7.395<br>6.302<br>17%"
-            workbook.save(fixtures / "CYRE3_operacional.xlsx")
+            (fixtures / "CYRE3_operacional.xlsx").write_bytes(b"local workbook fixture")
             args = app_extrator_operacional.build_parser().parse_args([
                 "--sector", "construcao_civil", "--md-dir", str(fixtures), "--output-dir", str(output),
             ])
-            self.assertEqual(asyncio.run(app_extrator_operacional.run(args)), 0)
-            payload = json.loads((output / "CYRE3.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["status"], "found_new_data")
-            self.assertEqual(payload["observations"][0]["source_type"], "official_spreadsheet")
-            manifest = data_publication.validate_results(root / "resultados", "operational", "construcao_civil")
-            self.assertIn("dados_operacionais/CYRE3.json", manifest["operational_jsons"])
+            self.assertEqual(asyncio.run(app_extrator_operacional.run(args)), 1)
+            self.assertTrue((output / "CYRE3.json").exists())
+            self.assertFalse((output / "operational_observations.json").exists())
 
     def test_previous_snapshot_survives_empty_construction_run(self):
         with tempfile.TemporaryDirectory() as tmp:

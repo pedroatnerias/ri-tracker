@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,11 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 600
 
 def financial_outputs(base: Path, ticker: str) -> None:
     base.mkdir(parents=True, exist_ok=True)
-    payload = {"source": "test", "companies": {ticker: {}}}
+    payload = {
+        "source": "test",
+        "companies": {ticker: {}},
+        "metadata": {"schema_version": "market_cap_historico_v2", "run_id": "test-run"},
+    }
     (base / "balancos_itr_cvm_2026.json").write_text(json.dumps(payload), encoding="utf-8")
     for name in data_publication.REQUIRED_ROOT_JSONS:
         (base / name).write_text(json.dumps(payload), encoding="utf-8")
@@ -47,6 +52,13 @@ class SectorPublicationTests(unittest.TestCase):
             chart = source / "construcao_civil" / "charts" / "comparison" / "margem_bruta.png"
             chart.parent.mkdir(parents=True, exist_ok=True)
             chart.write_bytes(PNG_BYTES)
+            market_cap_path = source / "construcao_civil" / "market_cap_historico.json"
+            (source / "construcao_civil" / "chart_generation_manifest.json").write_text(
+                json.dumps({
+                    "financial_run_id": "test-run",
+                    "market_cap_input_sha256": hashlib.sha256(market_cap_path.read_bytes()).hexdigest(),
+                }), encoding="utf-8"
+            )
 
             manifest = data_publication.validate_results(source, "financial", "construcao_civil")
             metadata = data_publication.publish_validated_data(source, target, "commit", "run", "financial", "construcao_civil")

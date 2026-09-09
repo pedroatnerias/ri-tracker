@@ -7,6 +7,36 @@ from tracking import TrackingRun, stable_document_id, tracking_summary_for_publi
 
 
 class TrackingTests(unittest.TestCase):
+    def test_stage_records_duration_and_sanitized_error_type(self):
+        run = TrackingRun(sector="saude", pipeline="test", extractor_version="test")
+        with run.stage("download", ticker="AALR3"):
+            pass
+        self.assertEqual(run.payload()["stage_events"][0]["status"], "success")
+        self.assertIn("duration_seconds", run.payload()["stage_events"][0])
+
+        with self.assertRaises(ValueError):
+            with run.stage("parse"):
+                raise ValueError("secret path should not be serialized")
+        failed = run.payload()["stage_events"][1]
+        self.assertEqual(failed["error_type"], "ValueError")
+        self.assertNotIn("secret path", str(failed))
+
+    def test_stage_events_are_included_in_summary(self):
+        run = TrackingRun(sector="saude", pipeline="test", extractor_version="test")
+        with run.stage("financial_command", label="DRE CVM"):
+            pass
+        self.assertEqual(run.summary()["stage_events_count"], 1)
+
+    def test_tracking_write_replaces_target_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "tracking.json"
+            target.write_text("old", encoding="utf-8")
+            run = TrackingRun(sector="saude", pipeline="test", extractor_version="test")
+            self.assertEqual(run.write(target), target)
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertFalse(list(Path(tmp).glob("*.tmp")))
+
     def test_document_count_does_not_depend_on_observations(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "release.pdf"

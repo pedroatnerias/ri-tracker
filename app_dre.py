@@ -14,20 +14,19 @@ from __future__ import annotations
 
 import argparse
 import io
-import json
 import logging
 import re
-import sys
-import unicodedata
 import urllib.error
 import urllib.request
+from domain_normalization import normalize_identifier
 import zipfile
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
 from company_registry import Company, financial_companies
-from company_identity import normalize_cd_cvm, select_company_rows
+from data_access import atomic_write_json, read_json
+from company_identity import select_company_rows
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -61,9 +60,7 @@ COLUNAS_NECESSARIAS = {
 
 
 def normalizar(texto: object) -> str:
-    texto = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
-    texto = texto.replace("'", "")
-    texto = re.sub(r"[^A-Z0-9]+", " ", texto.upper()).strip()
+    texto = normalize_identifier(texto, uppercase=True).replace("'", "")
     texto = re.sub(r"\bS A\b", "SA", texto)
     return texto
 
@@ -469,13 +466,11 @@ def exportar_json(dres: dict[str, pd.DataFrame], caminho: Path, anos: list[int],
             {"item": "Celulas vazias", "description": "Conta nao divulgada para a companhia/periodo; nao representa valor zero."},
         ],
     }
-    temporario = caminho.with_suffix(".tmp.json")
-    temporario.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporario.replace(caminho)
+    atomic_write_json(caminho, payload)
 
 
 def verificar_json(caminho: Path, dres: dict[str, pd.DataFrame]) -> None:
-    payload = json.loads(caminho.read_text(encoding="utf-8"))
+    payload = read_json(caminho)
     esperado = set(dres)
     encontrado = set(payload.get("companies", {}))
     faltantes = esperado.difference(encontrado)

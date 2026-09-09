@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Iterable
+from domain_normalization import coerce_number
 
 
 SECTOR_EV_EBITDA_METHODOLOGY = "sector_aggregate_ev_ebitda_v2_deduplicated"
@@ -15,15 +15,7 @@ MIN_RETURN_COVERAGE = 0.70
 
 
 def as_number(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, (int, float)):
-        value = float(value)
-        return value if value == value else None
-    try:
-        return float(str(value).strip().replace(".", "").replace(",", ".") if "," in str(value) else str(value))
-    except ValueError:
-        return None
+    return coerce_number(value)
 
 
 def parse_date(value: Any) -> date | None:

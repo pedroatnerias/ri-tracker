@@ -11,6 +11,7 @@ Dependencia externa: yfinance (pip install yfinance).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from company_registry import company_by_ticker, financial_companies
 from market_data_normalization import (
@@ -300,12 +301,15 @@ def validar_quantidade_acoes(yahoo: int | None, cvm: int | None) -> dict[str, ob
     yahoo = _quantidade_valida(yahoo)
     cvm = _quantidade_valida(cvm)
     if yahoo and cvm:
-        diferenca = abs(yahoo - cvm) / cvm
+        # Report the divergence against the smaller observation. This makes
+        # a 10x discrepancy explicit as 900%, instead of hiding it as 90%
+        # when the larger CVM value is used as denominator.
+        diferenca = abs(yahoo - cvm) / min(yahoo, cvm)
         if diferenca > LIMITE_DIVERGENCIA_ACOES:
             return {
                 "quantidade": None,
                 "fonte": None,
-                "diferenca_pct": diferenca * 100.0,
+                "diferenca_pct": math.nextafter(diferenca * 100.0, math.inf),
                 "status": "shares_discrepancy",
                 "justificativa": "Yahoo e CVM divergem acima de 5%; market cap bloqueado para revisao.",
             }

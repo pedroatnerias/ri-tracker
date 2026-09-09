@@ -1,6 +1,6 @@
 """Common, append-only execution and document tracking.
 
-The tracker is deliberately dependency-free so every extractor and the CI
+The tracker keeps a small dependency surface so every extractor and the CI
 orchestrator can use the same contract. Detailed events stay in the local
 execution artifact; callers may derive a safe summary for publication.
 """
@@ -10,9 +10,12 @@ import hashlib
 import json
 import mimetypes
 import os
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from data_access import atomic_write_text
 from typing import Any
 from urllib.parse import urlparse
 
@@ -59,7 +62,25 @@ class TrackingRun:
         self.pipeline = pipeline
         self.extractor_version = extractor_version
         self.events: list[dict[str, Any]] = []
+        self.stage_events: list[dict[str, Any]] = []
         self._documents: dict[str, dict[str, Any]] = {}
+
+    @contextmanager
+    def stage(self, name: str, **fields: Any):
+        """Registra duração de uma etapa sem alterar a máquina de estados documental."""
+        started = time.monotonic()
+        record: dict[str, Any] = {"run_id": self.run_id, "stage": name, **fields}
+        try:
+            yield record
+        except Exception as exc:
+            record.update({"status": "error", "error_type": type(exc).__name__})
+            raise
+        else:
+            record["status"] = "success"
+        finally:
+            record["duration_seconds"] = round(time.monotonic() - started, 6)
+            record["at"] = utc_now()
+            self.stage_events.append(record)
 
     def event(self, document_id: str, state: str, **fields: Any) -> dict[str, Any]:
         if state not in EVENTS:
@@ -113,7 +134,7 @@ class TrackingRun:
             "documents_unresolved": sum(1 for state in states if state == "unresolved"),
             "documents_with_errors": sum(1 for state in states if state == "extraction_error"),
             "documents_rejected": sum(1 for state in states if state == "rejected"),
-            "events_count": len(self.events), "coverage_status": self._coverage(states),
+            "events_count": len(self.events), "stage_events_count": len(self.stage_events), "coverage_status": self._coverage(states),
         }
 
     def _coverage(self, states: list[str | None]) -> str:
@@ -123,13 +144,12 @@ class TrackingRun:
         return "complete" if processed == len(states) else ("partial" if processed else "none")
 
     def payload(self) -> dict[str, Any]:
-        return {"schema_version": 1, "summary": self.summary(), "documents": list(self._documents.values()), "events": self.events}
+        return {"schema_version": 1, "summary": self.summary(), "documents": list(self._documents.values()), "events": self.events, "stage_events": self.stage_events}
 
     def write(self, path: str | Path) -> Path:
         output = Path(path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(self.payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        return output
+        content = json.dumps(self.payload(), ensure_ascii=False, indent=2) + "\n"
+        return atomic_write_text(output, content)
 
 
 def tracking_summary_for_publication(payload: dict[str, Any]) -> dict[str, Any]:

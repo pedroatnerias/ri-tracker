@@ -6,7 +6,6 @@ import json
 import re
 import sys
 import time
-import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +17,9 @@ import pymupdf4llm
 import requests
 from bs4 import BeautifulSoup
 from company_registry import canonical_ticker, operational_companies
+from data_access import atomic_write_json, atomic_write_text, read_json
+from domain_normalization import normalize_filename as _normalize_filename
+from domain_normalization import normalize_text as _normalize_text
 from operational_sources import ACCEPTED_DOCUMENT_TYPES, operational_sources_for_sector
 from sector_paths import resolve_releases_input_dir, resolve_releases_manifest_path, resolve_releases_output_dir
 
@@ -223,18 +225,11 @@ def garantir_pastas_padrao(input_dir: Path = PASTA_ENTRADA_PADRAO, output_dir: P
 
 
 def normalizar_texto(texto: str) -> str:
-    texto = unicodedata.normalize("NFKD", texto or "")
-    texto = texto.encode("ascii", "ignore").decode("ascii")
-    texto = texto.lower()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
+    return _normalize_text(texto, repair=True, strip_accents=True).lower()
 
 
 def normalizar_nome_arquivo(nome: str) -> str:
-    nome = unicodedata.normalize("NFKD", nome)
-    nome = nome.encode("ascii", "ignore").decode("ascii")
-    nome = re.sub(r"[^A-Za-z0-9._-]+", "_", nome)
-    return nome.strip("._-") or "documento"
+    return _normalize_filename(nome)
 
 
 def calcular_sha256(caminho: Path) -> str:
@@ -541,18 +536,6 @@ def extrair_links_html(
 # COLETA DAS PÁGINAS DE RI
 # ============================================================
 
-def obter_html_requests(
-    sessao: requests.Session,
-    url: str,
-) -> str:
-    resposta = sessao.get(
-        url,
-        timeout=TIMEOUT_REQUISICAO,
-    )
-    resposta.raise_for_status()
-    return resposta.text
-
-
 def diagnostico_html(html: str, url_final: str) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     urls = []
@@ -594,7 +577,7 @@ def imprimir_diagnostico(ticker: str, origem: str, dados: dict[str, Any]) -> Non
 def salvar_snapshot_diagnostico(ticker: str, origem: str, html: str) -> None:
     PASTA_DIAGNOSTICO_RI.mkdir(parents=True, exist_ok=True)
     nome = normalizar_nome_arquivo(f"{ticker}_{origem}.html")
-    (PASTA_DIAGNOSTICO_RI / nome).write_text(html, encoding="utf-8")
+    atomic_write_text(PASTA_DIAGNOSTICO_RI / nome, html)
 
 
 def documento_de_contexto(
@@ -1004,12 +987,8 @@ def salvar_manifesto_downloads(
 
     if manifest_path.exists():
         try:
-            existente = json.loads(
-                manifest_path.read_text(
-                    encoding="utf-8"
-                )
-            )
-        except Exception:
+            existente = read_json(manifest_path)
+        except (OSError, json.JSONDecodeError, TypeError):
             existente = []
 
     por_chave: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1041,14 +1020,7 @@ def salvar_manifesto_downloads(
         ),
     )
 
-    manifest_path.write_text(
-        json.dumps(
-            dados,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    atomic_write_json(manifest_path, dados)
 
 
 def baixar_documentos_ri(
@@ -1530,10 +1502,7 @@ def converter_pdf_para_markdown(
         else ""
     )
 
-    arquivo_markdown.write_text(
-        cabecalho + conteudo_markdown + secao_imagens,
-        encoding="utf-8",
-    )
+    atomic_write_text(arquivo_markdown, cabecalho + conteudo_markdown + secao_imagens)
 
     metadados = obter_metadados_pdf(pdf)
     metadados.update(catalogacao)
@@ -1557,14 +1526,7 @@ def converter_pdf_para_markdown(
         }
     )
 
-    arquivo_metadados.write_text(
-        json.dumps(
-            metadados,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    atomic_write_json(arquivo_metadados, metadados)
 
     return {
         "markdown": str(arquivo_markdown),
@@ -1801,7 +1763,7 @@ def main() -> int:
             "errors": [f"Nenhum documento válido de {sector} foi encontrado."], "warnings": [],
         }
         if argumentos.result_json:
-            Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(Path(argumentos.result_json), result)
         print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
         print(
             "Nenhum PDF disponível para processamento em:\n"
@@ -1861,7 +1823,7 @@ def main() -> int:
         "errors": [f"{erros} conversões falharam"] if erros else [], "warnings": [],
     }
     if argumentos.result_json:
-        Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(Path(argumentos.result_json), result)
     print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
     return 1 if erros or not sucessos else 0
 

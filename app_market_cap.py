@@ -21,8 +21,8 @@ import pandas as pd
 import yfinance as yf
 import argparse
 from company_registry import Company, financial_companies
-import json
 from pathlib import Path
+from data_access import atomic_write_json
 
 
 TICKERS = ["AALR3", "DASA3", "FLRY3", "HAPV3", "MATD3", "ONCO3", "RDOR3"]
@@ -229,7 +229,7 @@ def main() -> None:
             "companies": {resultado["ticker_b3"]: resultado for resultado in resultados},
         }
         args.saida.parent.mkdir(parents=True, exist_ok=True)
-        args.saida.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(args.saida, payload)
         print(f"Arquivo salvo em {args.saida}")
         return
 

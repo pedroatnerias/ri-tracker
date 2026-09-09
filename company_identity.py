@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import re
-import unicodedata
-
 import pandas as pd
 
 from company_registry import Company
+from domain_normalization import normalize_identifier
 
 
 class CompanyNotFoundError(RuntimeError):
@@ -28,9 +27,7 @@ def normalize_cnpj(series: pd.Series) -> pd.Series:
 
 
 def normalized_name(value: object) -> str:
-    text = "" if pd.isna(value) else str(value)
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return re.sub(r"[^A-Z0-9]+", " ", text.upper()).strip()
+    return normalize_identifier("" if pd.isna(value) else value, uppercase=True)
 
 
 def statement_scope_label(company: Company) -> str:

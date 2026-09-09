@@ -11,10 +11,13 @@ from app_extrator_operacional import (
     extract_metric,
     extract_metric_from_markdown,
 )
-from operational_dictionary import CONFIDENCE_MEDIUM, all_metric_names
+from operational_dictionary import CONFIDENCE_MEDIUM, all_metric_names, unknown_metric_names
 
 
 class OperationalDictionaryTests(unittest.TestCase):
+    def test_unknown_metric_names_are_reported_without_mutation(self):
+        self.assertEqual(unknown_metric_names(["Receita Bruta", "metric_future"], "saude"), ("metric_future",))
+        self.assertEqual(unknown_metric_names("invalid", "saude"), ())
     def test_target_metrics_are_limited_to_agreed_scope(self):
         self.assertEqual(
             all_metric_names(),

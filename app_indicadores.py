@@ -27,7 +27,6 @@ import argparse
 import json
 import math
 import re
-import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,10 +37,10 @@ from metric_definitions import (
     EBITDA_LTM_FORMULA,
     EV_EBITDA_LTM_FORMULA,
     EV_FORMULA,
-    MATERIALITY_THRESHOLDS,
     METHODOLOGY_VERSION,
     company_rule,
 )
+from domain_normalization import normalize_identifier
 
 
 # Codigos padronizados da DRE CVM.
@@ -95,8 +94,7 @@ def _valor(linha: dict[str, Any]) -> float:
 
 
 def _normalizar(texto: str) -> str:
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", " ", texto.lower()).strip()
+    return normalize_identifier(texto)
 
 
 def _parse_date(value: str) -> datetime | None:

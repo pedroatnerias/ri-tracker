@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
+from data_access import atomic_write_text
 
 
 def catalog_record(path: Path, *, ticker: str | None = None, source_url: str | None = None, method: str = "official_ri") -> dict[str, Any]:
@@ -28,5 +29,5 @@ def catalog_record(path: Path, *, ticker: str | None = None, source_url: str | N
 
 def write_catalog(records: list[dict[str, Any]], output: Path) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"schema_version": 1, "documents": records}, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(output, json.dumps({"schema_version": 1, "documents": records}, ensure_ascii=False, indent=2))
     return output

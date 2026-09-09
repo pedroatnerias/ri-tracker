@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 import re
-import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from company_registry import canonical_ticker, company_by_ticker
 from construction_company_profiles import profile_for
+from domain_normalization import normalize_text as _shared_normalize_text, repair_mojibake as _shared_repair_mojibake
 
 EXTRACTOR_VERSION = "construction_operational_v1"
 OWNERSHIP_BASES = {"company_share", "one_hundred_percent", "unknown"}
@@ -56,22 +56,11 @@ def repair_mojibake(value: Any) -> str:
     The conversion is applied only when typical mojibake markers exist and
     produces fewer markers, so normal Portuguese text is left untouched.
     """
-    text = str(value or "")
-    markers = ("\u00c3", "\u00c2", "\u00e2", "\u00f0", "\ufffd")
-    if not any(marker in text for marker in markers):
-        return text
-    try:
-        repaired = text.encode("cp1252").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return text
-    marker_count = sum(text.count(marker) for marker in markers)
-    repaired_count = sum(repaired.count(marker) for marker in markers)
-    return repaired if repaired_count < marker_count else text
+    return _shared_repair_mojibake(value)
 
 
 def normalize_text(value: Any) -> str:
-    text = unicodedata.normalize("NFKD", repair_mojibake(value))
-    return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).lower().split())
+    return _shared_normalize_text(value)
 
 
 def normalize_period(period: str) -> tuple[str, str]:
@@ -200,7 +189,9 @@ def align_periods_and_values(headers: list[str], values: list[str]) -> list[tupl
 
 
 def validate_observation_evidence(observation: dict[str, Any]) -> dict[str, Any]:
-    missing = [key for key in ("ticker", "indicator_id", "period", "value", "unit", "source_document") if not observation.get(key)]
+    missing = [key for key in ("ticker", "indicator_id", "period", "value", "unit", "source_document") if observation.get(key) in (None, "")]
+    if not isinstance(observation.get("value"), (int, float)) or not math.isfinite(observation.get("value", float("nan"))):
+        missing.append("finite_value")
     status = "valid" if not missing and observation.get("confidence") in {"high", "medium"} else "low_confidence"
     if observation.get("validation_flags"):
         if "breakdown_without_explicit_total" in observation["validation_flags"]:
@@ -326,7 +317,11 @@ def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str 
             continue
         matches.append((score, metric_id))
     matches.sort(reverse=True)
-    return (matches[0][1] if matches else None), flags
+    if matches:
+        if len(matches) > 1 and matches[0][0] == matches[1][0]:
+            return None, ["ambiguous_metric"]
+        return matches[0][1], []
+    return None, flags
 
 
 def _ticker_from_context(context: str) -> str:
@@ -363,7 +358,7 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
         validation_flags.append("unexpected_positive_sign")
     if expected_sign == "positive" and normalized_value < 0:
         validation_flags.append("unexpected_negative_sign")
-    if rules.get("publication") in {"ambiguous", "not_disclosed", "not_applicable"}:
+    if rules.get("publication") in {"ambiguous", "not_disclosed", "not_applicable"} and (canonical_period in rules.get("publication_periods", []) or source_document in rules.get("publication_documents", [])):
         validation_flags.append(f"profile_publication:{rules['publication']}")
     confidence_reasons = ["official_source" if source_type not in {"manual", "secondary"} else source_type, "indicator_explicit", "period_confirmed"]
     confidence = "high" if basis != "unknown" and unit else "medium"

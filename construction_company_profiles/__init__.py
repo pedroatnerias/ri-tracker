@@ -18,12 +18,21 @@ PROFILE_SCHEMA_VERSION = 1
 def load_profile(ticker: str) -> dict[str, Any]:
     path = PROFILE_DIR / f"{ticker.upper()}.json"
     if not path.exists():
-        return {"schema_version": PROFILE_SCHEMA_VERSION, "ticker": ticker.upper()}
+        return {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "ticker": ticker.upper(),
+            "metrics": {},
+            "documents": [],
+            "ri_urls": [],
+            "results_pages": [],
+            "allowed_domains": [],
+            "document_types": [],
+        }
     profile = json.loads(path.read_text(encoding="utf-8"))
     try:
         from operational_sources import operational_sources_for_sector
         source = operational_sources_for_sector("construcao_civil").get(ticker.upper(), {})
-    except Exception:
+    except ImportError:
         source = {}
     profile.setdefault("ri_urls", source.get("results_pages", []))
     profile.setdefault("results_pages", source.get("results_pages", []))

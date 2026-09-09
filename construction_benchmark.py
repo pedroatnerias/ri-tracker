@@ -6,12 +6,12 @@ of RI PDFs. It never downloads data or writes production JSONs.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from construction_operational import extract_markdown_observations
+from data_access import atomic_write_json
 
 
 def read_matrix(path: Path) -> list[dict[str, Any]]:
@@ -108,7 +108,7 @@ def main() -> None:
     parser.add_argument("--markdown-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    args.output.write_text(json.dumps(run(args.matrix_dir, args.markdown_dir), ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(args.output, run(args.matrix_dir, args.markdown_dir))
 
 
 if __name__ == "__main__":

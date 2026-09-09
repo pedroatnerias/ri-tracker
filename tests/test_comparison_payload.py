@@ -24,6 +24,8 @@ def indicator_record(year, quarter, is_ytd, **values):
         "data_market_cap": values.get("data_market_cap"),
         "data_divida_liquida": values.get("data_divida_liquida"),
         "data_ebitda_ltm": values.get("data_ebitda_ltm"),
+        "capital_giro": values.get("capital_giro"),
+        "capital_giro_percentual_receita": values.get("capital_giro_percentual_receita"),
     }
 
 
@@ -44,6 +46,8 @@ class ComparisonPayloadTests(unittest.TestCase):
                 data_market_cap="2026-06-30",
                 data_divida_liquida="2026-06-30",
                 data_ebitda_ltm="2026-06-30",
+                capital_giro=42,
+                capital_giro_percentual_receita=34.7,
             ),
         ]
         indicators = {
@@ -57,6 +61,7 @@ class ComparisonPayloadTests(unittest.TestCase):
                 }
             },
             "market_cap": {"companies": {"AALR3": {"variacao_30d_pct": 12.4, "variacao_90d_pct": 4.2, "variacao_360d_pct": -8.7}}},
+            "divida_liquida": {"companies": {"AALR3": [{"date": "2026-06-30", "value": 123.5}]}},
         }
         operational = {
             "companies": {
@@ -107,6 +112,15 @@ class ComparisonPayloadTests(unittest.TestCase):
         payload = self.payload()
         self.assertEqual(payload["companies"]["AALR3"]["ev_ebitda"]["period"], "LTM 2T26")
         self.assertNotIn("ev_ebitda", payload["charts"])
+
+    def test_current_summary_exposes_backend_values(self):
+        summary = self.payload()["companies"]["AALR3"]["current_summary"]
+        self.assertEqual(summary["divida_liquida"]["value"], 123.5)
+        self.assertEqual(summary["divida_liquida"]["period"], "2026-06-30")
+        self.assertEqual(summary["capital_giro"]["value"], 42.0)
+        self.assertEqual(summary["capital_giro"]["period"], "FY2026")
+        self.assertEqual(summary["capital_giro_percentual_receita"]["value"], 34.7)
+        self.assertEqual(summary["capital_giro_percentual_receita"]["period"], "FY2026")
 
     def test_chart_set_has_exactly_five_charts(self):
         self.assertEqual(len(self.payload()["charts"]), 5)
