@@ -71,6 +71,7 @@ def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[
     return {
         ticker: {
             "ticker": ticker, "legacy_tickers": list(company.legacy_tickers),
+            "sector": sector,
             "empresa": company.expected_name, "aliases": list(company.aliases),
             "homepage": urls[ticker],
             "url": urls[ticker],
@@ -90,6 +91,24 @@ OPERATIONAL_RI_SOURCES = {
     "saude": _build_sector_sources("saude", _HEALTH_URLS),
     "construcao_civil": _build_sector_sources("construcao_civil", _CONSTRUCTION_URLS, _CONSTRUCTION_RESULTS_PAGES),
 }
+
+
+def validate_operational_sources() -> None:
+    """Ensure source configuration cannot drift from the central registry."""
+    for sector, sources in OPERATIONAL_RI_SOURCES.items():
+        expected = {company.ticker for company in companies_for_sector(sector) if company.operational_enabled}
+        actual = set(sources)
+        if actual != expected:
+            raise RuntimeError(f"Universo operacional divergente em {sector}: esperado={sorted(expected)}, recebido={sorted(actual)}")
+        for ticker, source in sources.items():
+            company = next(company for company in companies_for_sector(sector) if company.ticker == ticker)
+            if source.get("ticker") != ticker or source.get("empresa") != company.expected_name:
+                raise RuntimeError(f"Identidade da fonte divergente para {ticker}")
+            if tuple(source.get("legacy_tickers") or ()) != company.legacy_tickers:
+                raise RuntimeError(f"Ticker legado divergente para {ticker}")
+
+
+validate_operational_sources()
 
 
 def operational_sources_for_sector(sector: str) -> dict[str, dict[str, Any]]:

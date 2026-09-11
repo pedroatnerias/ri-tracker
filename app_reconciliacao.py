@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime, timezone
 from pathlib import Path
+from data_access import atomic_write_json, read_json
 from typing import Any
 
 from metric_definitions import MATERIALITY_THRESHOLDS, METHODOLOGY_VERSION
@@ -101,11 +101,11 @@ def main() -> None:
     parser.add_argument("--saida", type=Path, default=Path("resultados") / "relatorio_reconciliacao.json")
     args = parser.parse_args()
 
-    indicadores = json.loads(args.indicadores.read_text(encoding="utf-8"))
-    divida = json.loads(args.divida_liquida.read_text(encoding="utf-8"))
+    indicadores = read_json(args.indicadores)
+    divida = read_json(args.divida_liquida)
     report = build_report(indicadores, divida)
     args.saida.parent.mkdir(parents=True, exist_ok=True)
-    args.saida.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    atomic_write_json(args.saida, report)
     print(f"Relatorio salvo em {args.saida}")
 
 

@@ -12,9 +12,10 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from data_access import atomic_write_json
 from typing import Callable
 
 
@@ -206,11 +207,8 @@ def fetch_cvm_zip(
 
 
 def write_events_json(path: Path, events: list[CvmDownloadEvent]) -> None:
-    import json
-
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "events": [event.__dict__ for event in events],
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, payload)

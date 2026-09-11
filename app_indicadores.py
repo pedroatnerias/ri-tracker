@@ -27,7 +27,6 @@ import argparse
 import json
 import math
 import re
-import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,10 +37,10 @@ from metric_definitions import (
     EBITDA_LTM_FORMULA,
     EV_EBITDA_LTM_FORMULA,
     EV_FORMULA,
-    MATERIALITY_THRESHOLDS,
     METHODOLOGY_VERSION,
     company_rule,
 )
+from domain_normalization import normalize_identifier
 
 
 # Codigos padronizados da DRE CVM.
@@ -95,8 +94,7 @@ def _valor(linha: dict[str, Any]) -> float:
 
 
 def _normalizar(texto: str) -> str:
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", " ", texto.lower()).strip()
+    return normalize_identifier(texto)
 
 
 def _parse_date(value: str) -> datetime | None:
@@ -520,6 +518,9 @@ def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> di
         return {}
     result = {}
     for periodo in empresa.get("periodos", []):
+        status_market_cap = periodo.get("status_market_cap")
+        if status_market_cap and status_market_cap != "validated":
+            continue
         data = periodo.get("data_referencia") or periodo.get("date") or periodo.get("periodo")
         market_cap = periodo.get("market_cap")
         if market_cap is None and periodo.get("preco_acao") is not None and periodo.get("quantidade_acoes_total") is not None:
@@ -534,6 +535,7 @@ def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> di
                 "fonte_acoes_utilizada": periodo.get("fonte_acoes_utilizada"),
                 "diferenca_acoes_pct": periodo.get("diferenca_acoes_pct"),
                 "status_validacao_acoes": periodo.get("status_validacao_acoes"),
+                "status_market_cap": status_market_cap or "legacy_unclassified",
                 "justificativa_acoes": periodo.get("justificativa_acoes"),
             }
     return result

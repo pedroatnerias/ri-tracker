@@ -53,6 +53,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="Politica de obtencao dos ZIPs CVM.",
     )
+    from operational_periods import target_quarter
+    parser.add_argument("--periodo-alvo", type=target_quarter, default=None)
     return parser.parse_args(argv)
 
 
@@ -67,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         sector=args.sector,
         diagnostico_ri=args.diagnostico_ri,
         refresh_cvm_files=args.refresh_cvm_files,
+        periodo_alvo=args.periodo_alvo,
     )
     return 0
 

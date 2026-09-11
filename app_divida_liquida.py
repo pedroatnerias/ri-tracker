@@ -7,14 +7,15 @@ import argparse
 import json
 import math
 import re
-import unicodedata
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from data_access import atomic_write_text
 from typing import Any, Iterable
 
-from metric_definitions import METHODOLOGY_VERSION, company_rule, net_debt_options
+from metric_definitions import METHODOLOGY_VERSION, net_debt_options
+from domain_normalization import normalize_text as _normalize_text
 
 
 DEFAULT_CODES = {
@@ -41,7 +42,7 @@ class Account:
 
 
 def _normalise_key(value: str) -> str:
-    return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
+    return _normalize_text(value, repair=False, strip_accents=True)
 
 
 def _normalised_mapping(row: dict[str, Any]) -> dict[str, Any]:
@@ -374,7 +375,7 @@ def main() -> None:
         body = json.dumps(result, ensure_ascii=False, indent=2)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(body, encoding="utf-8")
+            atomic_write_text(args.output, body)
             print(f"Arquivo salvo em {args.output}")
         else:
             print(body)

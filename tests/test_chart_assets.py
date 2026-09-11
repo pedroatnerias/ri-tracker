@@ -143,7 +143,7 @@ class ChartAssetTests(unittest.TestCase):
         self.assertIn('currentStatement === "dre" && DATA.operational_enabled === true', dashboard.HTML)
 
     def test_frontend_mentions_new_sector_aggregate_charts(self):
-        for key in ("market_cap_share", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_90d", "retorno_preco_setorial_360d"):
+        for key in ("market_cap_share", "market_cap_setorial", "ev_ebitda_agregado", "retorno_preco_setorial_30d", "retorno_preco_setorial_90d", "retorno_preco_setorial_360d"):
             self.assertIn(key, dashboard.HTML)
 
     def test_construction_comparison_charts_use_top_five_market_caps(self):

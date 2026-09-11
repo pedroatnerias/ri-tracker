@@ -8,7 +8,6 @@ import io
 import json
 import os
 import platform
-import re
 import subprocess
 import sys
 import threading
@@ -40,8 +39,16 @@ from manual_operational import (
     validate_manual_record,
     write_manual_overrides_file,
 )
-from operational_dictionary import TARGET_METRICS, all_metric_names
+from operational_dictionary import all_metric_names, unknown_metric_names
+from contract_validation import append_compatibility_event, compatibility_event
+from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, repair_mojibake
 from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
+from data_access import atomic_write_json
+from data_access import read_json as _read_json_file
+from data_access import read_json_if_exists as _read_json_if_exists
+from dashboard_presentation import COMPARISON_METRICS, build_chart_assets_payload
+from dashboard_services import normalize_operational_metric_item as _normalize_operational_metric_item
+from dashboard_services import operational_annual_series
 from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
 from tracking import TrackingRun
@@ -169,7 +176,7 @@ def remote_http_get_json(relative_path: str) -> dict:
     try:
         with urlopen(request, timeout=REMOTE_HTTP_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8")
-    except Exception as exc:
+    except (OSError, TimeoutError, UnicodeError) as exc:
         raise RemoteDataError(f"Falha ao carregar JSON remoto: {relative_path}") from exc
     try:
         data = json.loads(body)
@@ -191,7 +198,7 @@ def cached_remote_json(relative_path: str, force_refresh: bool = False) -> tuple
     ttl = remote_cache_ttl_seconds()
     with REMOTE_CACHE_LOCK:
         cached = REMOTE_CACHE.get(safe_path)
-        if cached and not force_refresh and now - float(cached["fetched_at"]) <= ttl:
+        if cached and not force_refresh and now - float(cached["fetched_at"]) < ttl:
             return cached["data"], {
                 "path": remote_url_for(safe_path),
                 "modified_at": cached["fetched_at"],
@@ -201,7 +208,7 @@ def cached_remote_json(relative_path: str, force_refresh: bool = False) -> tuple
             }
     try:
         data = remote_http_get_json(safe_path)
-    except Exception as exc:
+    except (RemoteDataError, KeyError) as exc:
         with REMOTE_CACHE_LOCK:
             cached = REMOTE_CACHE.get(safe_path)
         if cached:
@@ -240,6 +247,9 @@ class DashboardDataSource:
         self.sector = validate_sector(sector)
         self.force_remote_refresh = force_remote_refresh
         self.files: dict[str, dict] = {}
+        self._local_data_cache: dict[str, dict | None] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
         self.remote_metadata: dict = {}
         self.data_source = self.mode
         self.remote_available = False
@@ -316,10 +326,25 @@ class DashboardDataSource:
     def load_local_optional(self, path: Path | None, key: str | None = None, expected_path: Path | None = None) -> dict | None:
         meta_key = key or str(path or expected_path or "")
         self.files[meta_key] = file_metadata(path, expected_path)
+        if meta_key in self._local_data_cache:
+            self._cache_hits += 1
+            return self._local_data_cache[meta_key]
+        self._cache_misses += 1
         if path is None or not path.exists():
+            self._local_data_cache[meta_key] = None
             return None
         self.data_source = "local"
-        return load_json(path)
+        data = load_json(path)
+        self._local_data_cache[meta_key] = data
+        return data
+
+    def cache_stats(self) -> dict[str, int]:
+        """Retorna métricas da memoização local desta execução do dashboard."""
+        return {
+            "local_entries": len(self._local_data_cache),
+            "local_hits": self._cache_hits,
+            "local_misses": self._cache_misses,
+        }
 
     def load_optional(self, key: str, local_path: Path | None, remote_relative: str | None, expected_path: Path | None = None) -> dict | None:
         if self.mode in {"remote", "auto"} and remote_relative:
@@ -402,14 +427,25 @@ def run_update_command(label: str, command: list[str], critical: bool = True) ->
     if ACTIVE_TRACKER is not None:
         tracker_document = ACTIVE_TRACKER.document(label, source_type="calculation", pipeline_step=label)
         ACTIVE_TRACKER.event(tracker_document, "accepted", pipeline_step=label)
-    result = subprocess.run(
-        command,
-        cwd=BASE_DIR,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    if ACTIVE_TRACKER is not None:
+        with ACTIVE_TRACKER.stage("update_command", label=label, critical=critical):
+            result = subprocess.run(
+                command,
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+    else:
+        result = subprocess.run(
+            command,
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
     if output:
         append_update_log(output[-8000:])
@@ -451,6 +487,7 @@ def run_update(
     sector: str = "saude",
     diagnostico_ri: bool = False,
     refresh_cvm_files: str = "auto",
+    periodo_alvo: str | None = None,
 ) -> dict[str, object]:
     global ACTIVE_TRACKER
     mode = validate_update_mode(mode)
@@ -465,7 +502,7 @@ def run_update(
             health_scope = scope
             results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
         if scope in {"all", "financial", "operational"}:
-            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
+            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files, periodo_alvo=periodo_alvo))
         return {
             "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
             "warnings": [w for r in results for w in r.get("warnings", [])],
@@ -557,6 +594,10 @@ def run_update(
 
     if run_operational:
         parser_cmd = [sys.executable, script_path("app_parser_operacional.py"), "--sector", sector, "--output", str(releases_output_dir), "--result-json", str(parser_result_json)]
+        if sector == "construcao_civil":
+            from operational_periods import target_quarter
+            periodo_alvo = target_quarter(periodo_alvo)
+            parser_cmd.extend(["--periodo-alvo", periodo_alvo])
         if full_mode:
             parser_cmd.append("--sobrescrever-downloads")
         if diagnostico_ri:
@@ -586,7 +627,7 @@ def run_update(
         else:
             extractor_result = run_update_command(
                 "Dados operacionais",
-                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--md-dir", str(releases_output_dir), "--sector", sector, "--result-json", str(extractor_result_json)],
+                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--md-dir", str(releases_output_dir), "--sector", sector, "--result-json", str(extractor_result_json)] + (["--periodo-alvo", periodo_alvo] if sector == "construcao_civil" else []),
                 critical=False,
             )
             step_results.append(extractor_result)
@@ -778,19 +819,17 @@ def find_optional_balanco_json(resultados: Path) -> Path | None:
 def load_json(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Arquivo nao encontrado: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _read_json_file(path)
 
 
 def load_optional_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    return load_json(path)
+    return _read_json_if_exists(path)
 
 
 def load_optional_statement(path: Path | None) -> dict:
-    if path is None or not path.exists():
+    if path is None:
         return {}
-    return load_json(path)
+    return load_optional_json(path) or {}
 
 
 def file_metadata(path: Path | None, expected_path: Path | None = None) -> dict:
@@ -827,6 +866,13 @@ def migrate_legacy_company_tickers(payload: dict | None) -> dict | None:
         companies["INNC3"] = company
         payload = dict(payload)
         payload["companies"] = companies
+        payload = append_compatibility_event(
+            payload,
+            compatibility_event(
+                "legacy_ticker_migrated",
+                **{"from": "INNT3", "to": "INNC3", "scope": "read_only"},
+            ),
+        )
     return payload
 
 
@@ -885,91 +931,51 @@ def migrate_legacy_health_operational_files(resultados: Path) -> dict[str, objec
     sector_manifest = load_optional_json(target / "data_manifest.json") or {}
     sector_manifest.update({"schema_version": 2, "sector": "saude", "operational_jsons": operational_jsons})
     target.mkdir(parents=True, exist_ok=True)
-    (target / "data_manifest.json").write_text(json.dumps(sector_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(target / "data_manifest.json", sector_manifest)
     root_manifest = load_optional_json(resultados / "data_manifest.json") or {"schema_version": 2, "sectors": {}}
     if root_manifest.get("schema_version") != 2:
         root_manifest = {"schema_version": 2, "sectors": {"saude": root_manifest}}
     root_manifest.setdefault("sectors", {})["saude"] = sector_manifest
     root_manifest["schema_version"] = 2
-    (resultados / "data_manifest.json").write_text(json.dumps(root_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(resultados / "data_manifest.json", root_manifest)
     return {"sector": "saude", "copied": copied, "operational_jsons": operational_jsons, "idempotent": True}
 
 
 def _operational_annual_series(series: dict, indicator_id: str, sector: str) -> tuple[dict, set[str]]:
-    result = dict(series)
-    derived: set[str] = set()
-    if sector != "construcao_civil":
-        return result, derived
-    from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY
-    definition = CONSTRUCTION_OPERATIONAL_DICTIONARY.get(indicator_id, {})
-    nature = definition.get("nature")
-    classification = definition.get("classification")
-    years = sorted({f"20{match.group(2)[-2:]}" for period in series if (match := re.fullmatch(r"([1-4])T(\d{2}|\d{4})", str(period), re.I))})
-    for year in years:
-        if year in result:
-            continue
-        quarters = [series.get(f"{quarter}T{year[-2:]}", series.get(f"{quarter}T{year}")) for quarter in range(1, 5)]
-        if nature == "stock" and quarters[3] not in (None, ""):
-            result[year] = quarters[3]
-            derived.add(year)
-        elif nature == "flow" and classification != "calculated" and all(isinstance(value, (int, float)) for value in quarters):
-            result[year] = sum(quarters)
-            derived.add(year)
-    return result, derived
+    return operational_annual_series(series, indicator_id, sector)
 
 
 def normalize_operational_metric_item(item: dict, sector: str) -> dict:
     normalized = dict(item or {})
-    series = normalized.get("series") if isinstance(normalized.get("series"), dict) else normalized.get("serie")
-    series = dict(series) if isinstance(series, dict) else {}
-    observations = [observation for observation in normalized.get("observations", []) if isinstance(observation, dict)]
-    rejected_observations = []
-    if sector == "construcao_civil" and observations:
-        valid_periods = set()
-        for observation in observations:
-            row_label = str(observation.get("row_label") or "").lower()
-            evidence = str(observation.get("evidence_text") or "")
-            value = observation.get("value")
-            breakdown_as_total = any(term in row_label for term in ("por região", "por regiao", "por produto", "by region", "by product")) and "total" not in row_label
-            scale_mismatch = False
-            if isinstance(value, (int, float)) and value != 0:
-                bold_values = re.findall(r"\*\*(\d[\d.,]*)\*\*", evidence)
-                parsed_evidence = []
-                for raw in bold_values[:4]:
-                    try:
-                        from construction_operational import parse_brazilian_financial_value
-                        parsed_evidence.append(parse_brazilian_financial_value(raw, str(observation.get("raw_unit") or observation.get("unit") or "R$ MM"))["normalized_value"])
-                    except ValueError:
-                        pass
-                evidence_ratios = [abs(candidate / value) for candidate in parsed_evidence if candidate]
-                scale_mismatch = bool(evidence_ratios and min(evidence_ratios) > 100)
-            if breakdown_as_total or scale_mismatch:
-                rejected_observations.append({**observation, "dashboard_rejection_reason": "breakdown_as_total" if breakdown_as_total else "scale_incompatible_with_evidence"})
-            else:
-                valid_periods.add(str(observation.get("period") or ""))
-        if rejected_observations:
-            series = {period: value for period, value in series.items() if period in valid_periods}
-    indicator_id = str(normalized.get("indicator_id") or "")
-    series, derived_periods = _operational_annual_series(series, indicator_id, sector)
-    first_observation = observations[0] if observations else {}
-    source = next((str(normalized.get(key)) for key in ("source", "escopo", "fonte_linha", "source_document") if normalized.get(key)), str(first_observation.get("source_document") or first_observation.get("source_url") or ""))
-    unit = normalized.get("unit") or normalized.get("unidade") or first_observation.get("unit") or ""
-    normalized.update({
-        "series": series, "serie": series,
-        "unit": unit, "unidade": unit,
-        "calculated": bool(normalized.get("calculated", normalized.get("calculado", False)) or derived_periods),
-        "calculado": bool(normalized.get("calculated", normalized.get("calculado", False)) or derived_periods),
-        "source": source, "derived_periods": sorted(derived_periods),
-        "rejected_observations": rejected_observations,
-    })
-    return normalized
-
+    return _normalize_operational_metric_item(item, sector)
 
 def normalize_operational_company(data: dict, sector: str) -> dict:
     normalized = dict(data)
     metrics = {}
     for metric, items in (data.get("metricas") or {}).items():
-        metrics[metric] = [normalize_operational_metric_item(item, sector) for item in items if isinstance(item, dict)]
+        # Older operational JSONs may contain mojibake in the human label.
+        # Keep indicator_id as the stable key and canonicalize the display key
+        # at read time, so the dashboard is immediately repaired even before
+        # the next extraction republishes the JSON.
+        canonical_metric = repair_mojibake(metric)
+        if sector == "construcao_civil":
+            for item in items:
+                if isinstance(item, dict):
+                    indicator_id = str(item.get("indicator_id") or "")
+                    definition = CONSTRUCTION_OPERATIONAL_DICTIONARY.get(indicator_id)
+                    if definition:
+                        canonical_metric = definition["display_name"]
+                        break
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            for field in ("metric", "indicator_name", "display_name", "source", "escopo", "fonte_linha"):
+                if field in item and isinstance(item[field], str):
+                    item[field] = repair_mojibake(item[field])
+            normalized_items.append(normalize_operational_metric_item(item, sector))
+        metrics.setdefault(canonical_metric, []).extend(normalized_items)
     normalized["metricas"] = metrics
     normalized.setdefault("status", "found" if any(metrics.values()) else "not_found")
     return normalized
@@ -988,7 +994,7 @@ def load_operational_data(resultados: Path, sector: str = "saude") -> tuple[dict
                 continue
             try:
                 data = load_json(path)
-            except Exception:
+            except (OSError, ValueError, UnicodeError):
                 continue
             ticker = str(data.get("ticker") or "").upper()
             if ticker in allowed_tickers and "metricas" in data:
@@ -1039,7 +1045,7 @@ def load_operational_data(resultados: Path, sector: str = "saude") -> tuple[dict
         for path in sorted(directory.glob("*.json")):
             try:
                 data = load_json(path)
-            except Exception:
+            except (OSError, ValueError, UnicodeError):
                 continue
             ticker = str(data.get("ticker") or "").upper()
             if ticker not in allowed_tickers or "metricas" not in data:
@@ -1144,6 +1150,10 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "observations_rejected": observations_rejected,
         "status": "complete" if companies_with_observations == len(tickers_for_sector(sector)) else "partial",
     }
+    operational_coverage["unknown_metrics"] = list(unknown_metric_names(
+        [metric for company in operational_company_map.values() for metric in (company.get("metricas") or {})],
+        sector,
+    ))
     operational_coverage["warning"] = None if operational_coverage["status"] == "complete" else f"Cobertura operacional parcial: {companies_with_observations}/{len(tickers_for_sector(sector))} empresas com observações."
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
@@ -1189,6 +1199,7 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         "methodology_markdown": load_methodology_markdown(),
         "update_status": dict(UPDATE_STATE),
         "files": source.files | operational_files | manual_files,
+        "data_access": source.cache_stats(),
     }
 
 
@@ -1242,163 +1253,16 @@ CHARTS = {
 }
 
 
-def nested_get(data: dict, path: str) -> float | None:
-    current = data
-    for part in path.split("."):
-        if not isinstance(current, dict):
-            return None
-        current = current.get(part)
-    return current if isinstance(current, (int, float)) else None
-
-
-def period_label(record: dict) -> str:
-    meta = record.get("metadata") or {}
-    year = meta.get("year")
-    quarter = meta.get("quarter")
-    is_ytd = meta.get("is_ytd")
-    if year and quarter:
-        return str(year) if is_ytd and quarter == 4 else f"{quarter}T{str(year)[-2:]}"
-    return str(record.get("periodo") or "")
-
-
-def filter_records_for_view(records: list[dict], view: str) -> list[dict]:
-    def key(record: dict) -> tuple[int, int, int]:
-        meta = record.get("metadata") or {}
-        return (int(meta.get("year") or 0), int(meta.get("quarter") or 0), 1 if meta.get("is_ytd") else 0)
-
-    selected = []
-    for record in records:
-        meta = record.get("metadata") or {}
-        quarter = int(meta.get("quarter") or 0)
-        is_ytd = bool(meta.get("is_ytd"))
-        if view == "annual":
-            if is_ytd and quarter == 4:
-                selected.append(record)
-        else:
-            if (not is_ytd) or quarter == 1:
-                selected.append(record)
-    return sorted(selected, key=key)
-
-
-COMPARISON_METRICS = (
-    ("cagr_receita", "CAGR Receita", "percent"),
-    ("cagr_lucros", "CAGR Lucros", "percent"),
-    ("ciclo_financeiro", "Ciclo Financeiro", "days"),
-    ("margem_bruta", "Margem Bruta", "percent"),
-    ("margem_operacional", "Margem Operacional", "percent"),
-    ("margem_ebitda", "Margem EBITDA", "percent"),
-    ("margem_liquida", "Margem Líquida", "percent"),
-    ("ev_ebitda", "EV/EBITDA", "multiple"),
-    ("delta_preco_30d", "Delta Preço da Ação 30 dias", "signed_percent"),
-    ("delta_preco_90d", "Delta Preço da Ação 90 dias", "signed_percent"),
-    ("delta_preco_360d", "Delta Preço da Ação 360 dias", "signed_percent"),
-    ("n_unidades", "N. Unidades", "integer"),
+from dashboard_financial_services import (
+    nested_get, period_label, filter_records_for_view,
+    as_number as _as_number, record_sort_tuple as _record_sort_tuple,
+    quarter_label_from_record as _quarter_label_from_record,
+    annual_records as _annual_records, cagr_value as _cagr_value,
+    quality_for_metric as _quality_for_metric,
+    comparison_cell as _comparison_cell,
+    latest_annual_cycle as _latest_annual_cycle,
+    latest_operational_metric as _latest_operational_metric,
 )
-
-
-def _as_number(value: object) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and pd.notna(value) else None
-
-
-def _record_sort_tuple(record: dict) -> tuple[int, int, int]:
-    meta = record.get("metadata") or {}
-    return (
-        int(meta.get("year") or 0),
-        int(meta.get("quarter") or 0),
-        1 if meta.get("is_ytd") else 0,
-    )
-
-
-def _period_sort_key(period: str) -> tuple[int, int]:
-    text = str(period or "")
-    if len(text) == 4 and text.isdigit():
-        return int(text), 5
-    if len(text) >= 4 and text[1].upper() == "T" and text[0].isdigit():
-        yy = text[2:]
-        year = int(yy) + 2000 if len(yy) == 2 and yy.isdigit() else 0
-        return year, int(text[0])
-    return 0, 0
-
-
-def _quarter_label_from_record(record: dict) -> str:
-    meta = record.get("metadata") or {}
-    year = meta.get("year")
-    quarter = meta.get("quarter")
-    if year and quarter:
-        return f"{int(quarter)}T{str(year)[-2:]}"
-    return period_label(record)
-
-
-def _annual_records(records: list[dict]) -> list[dict]:
-    return filter_records_for_view(records, "annual")
-
-
-def _cagr_value(first: object, last: object, years: int) -> float | None:
-    first_num = _as_number(first)
-    last_num = _as_number(last)
-    if first_num is None or last_num is None or first_num <= 0 or last_num <= 0 or years <= 0:
-        return None
-    return (pow(last_num / first_num, 1 / years) - 1) * 100
-
-
-def _quality_for_metric(record: dict | None, metric: str) -> dict | None:
-    if not record:
-        return None
-    for flag in record.get("quality_flags") or []:
-        if flag.get("metric") == metric:
-            return flag
-    quality = record.get(f"quality_{metric}")
-    return quality if isinstance(quality, dict) else None
-
-
-def _comparison_cell(
-    value: float | int | None,
-    period: str | None = None,
-    *,
-    quality: dict | None = None,
-    confidence: str | None = None,
-    source: str | None = None,
-    extra: dict | None = None,
-) -> dict:
-    return {
-        "value": value,
-        "period": period,
-        "quality": quality,
-        "confidence": confidence,
-        "source": source,
-        **(extra or {}),
-    }
-
-
-def _latest_annual_cycle(records: list[dict]) -> dict | None:
-    annual = []
-    for record in records or []:
-        periodo = record.get("periodo") or {}
-        inicio = str(periodo.get("inicio") or "")
-        fim = str(periodo.get("fim") or "")
-        if inicio.endswith("-01-01") and fim.endswith("-12-31"):
-            annual.append(record)
-    return sorted(annual, key=lambda item: str((item.get("periodo") or {}).get("fim") or ""))[-1] if annual else None
-
-
-def _latest_operational_metric(company: dict, metric: str) -> dict | None:
-    candidates = []
-    for item in (company.get("metricas") or {}).get(metric, []) or []:
-        if item.get("confidence") == "low":
-            continue
-        for period, value in (item.get("serie") or {}).items():
-            number = _as_number(value)
-            if number is None:
-                continue
-            candidates.append(
-                {
-                    "period": period,
-                    "value": number,
-                    "confidence": item.get("confidence"),
-                    "source": item.get("fonte_linha") or item.get("escopo"),
-                }
-            )
-    return sorted(candidates, key=lambda item: _period_sort_key(str(item["period"])))[-1] if candidates else None
 
 
 def build_comparison_payload(indicators: dict, operational: dict, tickers: Iterable[str] | None = None) -> dict:
@@ -1406,6 +1270,7 @@ def build_comparison_payload(indicators: dict, operational: dict, tickers: Itera
     indicadores = ((indicators.get("indicadores") or {}).get("companies") or {})
     ciclo = ((indicators.get("ciclo_financeiro") or {}).get("companies") or {})
     market = ((indicators.get("market_cap") or {}).get("companies") or {})
+    net_debt = ((indicators.get("divida_liquida") or {}).get("companies") or {})
     operational_companies = ((operational or {}).get("companies") or {})
     companies: dict[str, dict[str, dict]] = {}
     charts = {
@@ -1478,6 +1343,29 @@ def build_comparison_payload(indicators: dict, operational: dict, tickers: Itera
             } if ev_record else None,
         )
 
+        # Additive backend contract for the summary card.  The frontend keeps
+        # a fallback for historical payloads that predate this field.
+        debt_records = sorted(
+            list(net_debt.get(ticker) or []),
+            key=lambda row: str(row.get("date") or ""),
+        )
+        debt_record = debt_records[-1] if debt_records else None
+        debt_period = str((debt_record or {}).get("date") or "") or None
+        summary_record = records[-1] if records else None
+        summary_year = ((summary_record or {}).get("metadata") or {}).get("year")
+        summary_period = f"FY{summary_year}" if summary_year else None
+        company["current_summary"] = {
+            "divida_liquida": _comparison_cell(
+                _as_number((debt_record or {}).get("value")), debt_period
+            ),
+            "capital_giro": _comparison_cell(
+                _as_number((summary_record or {}).get("capital_giro")), summary_period
+            ),
+            "capital_giro_percentual_receita": _comparison_cell(
+                _as_number((summary_record or {}).get("capital_giro_percentual_receita")), summary_period
+            ),
+        }
+
         quote_data = market.get(ticker) or {}
         company["delta_preco_30d"] = _comparison_cell(_as_number(quote_data.get("variacao_30d_pct")), "Atual")
         company["delta_preco_90d"] = _comparison_cell(_as_number(quote_data.get("variacao_90d_pct")), "Atual")
@@ -1523,27 +1411,13 @@ def build_comparison_payload(indicators: dict, operational: dict, tickers: Itera
 def build_chart_assets(source: DashboardDataSource) -> dict:
     manifest = source.chart_manifest()
     version = source.data_version()
-
-    def with_url(path: str) -> dict:
-        asset_path = f"charts/{source.sector}/{path.removeprefix('charts/')}" if source.manifest_v2 and path.startswith("charts/") else path
-        url = remote_asset_url_for(asset_path) if asset_path else ""
-        return {"path": path, "url": f"{url}?v={quote(version)}" if url and version else url}
-
-    individual: dict[str, dict[str, dict]] = {}
-    for ticker, charts in (manifest.get("individual") or {}).items():
-        if not isinstance(charts, dict):
-            continue
-        individual[ticker] = {key: with_url(path) for key, path in charts.items() if isinstance(path, str)}
-    comparison = {
-        key: with_url(path)
-        for key, path in (manifest.get("comparison") or {}).items()
-        if isinstance(path, str)
-    }
-    return {
-        "version": version,
-        "individual": individual,
-        "comparison": comparison,
-    }
+    return build_chart_assets_payload(
+        manifest,
+        version,
+        sector=source.sector,
+        manifest_v2=source.manifest_v2,
+        url_for_path=lambda path: remote_asset_url_for(path) if path else "",
+    )
 
 
 def chart_dataframe(resultados: Path, ticker: str, view: str, chart_key: str, sector: str = "saude") -> pd.DataFrame:
@@ -2867,19 +2741,30 @@ HTML = """<!doctype html>
       const lastInfo = recordPeriodInfo(last);
       const years = firstInfo && lastInfo ? lastInfo.year - firstInfo.year : 0;
       const cagrPeriod = cagrPeriodSuffix(firstInfo, lastInfo);
+      const comparison = DATA.comparison?.companies?.[ticker] || {};
       const market = DATA.indicators?.market_cap?.companies?.[ticker];
-      const netDebt = latestByDate(DATA.indicators?.divida_liquida?.companies?.[ticker] || []);
+      const summary = comparison.current_summary || {};
+      const netDebt = summary.divida_liquida?.value != null
+        ? summary.divida_liquida
+        : latestByDate(DATA.indicators?.divida_liquida?.companies?.[ticker] || []);
       const latestEbitda = last?.ebitda;
-      const latestWorkingCapital = latestByDate(DATA.indicators?.indicadores?.companies?.[ticker]?.periodos || []);
+      const latestWorkingCapital = summary.capital_giro?.value != null
+        ? {
+            capital_giro: summary.capital_giro.value,
+            capital_giro_percentual_receita: summary.capital_giro_percentual_receita?.value,
+          }
+        : latestByDate(DATA.indicators?.indicadores?.companies?.[ticker]?.periodos || []);
       const ev = typeof market?.market_cap === "number" && typeof netDebt?.value === "number"
         ? market.market_cap + netDebt.value
         : null;
-      const evEbitda = typeof ev === "number" && typeof latestEbitda === "number" && latestEbitda !== 0
-        ? ev / latestEbitda
-        : null;
+      const evEbitda = typeof comparison.ev_ebitda?.value === "number"
+        ? comparison.ev_ebitda.value
+        : typeof ev === "number" && typeof latestEbitda === "number" && latestEbitda !== 0
+          ? ev / latestEbitda
+          : null;
       const rows = [
-        [`CAGR receitas${cagrPeriod} (%)`, formatPercent(cagr(first?.receita_liquida, last?.receita_liquida, years))],
-        [`CAGR lucros${cagrPeriod} (%)`, formatPercent(cagr(first?.lucro_liquido, last?.lucro_liquido, years))],
+        [`CAGR receitas${cagrPeriod} (%)`, formatPercent(typeof comparison.cagr_receita?.value === "number" ? comparison.cagr_receita.value : cagr(first?.receita_liquida, last?.receita_liquida, years))],
+        [`CAGR lucros${cagrPeriod} (%)`, formatPercent(typeof comparison.cagr_lucros?.value === "number" ? comparison.cagr_lucros.value : cagr(first?.lucro_liquido, last?.lucro_liquido, years))],
         ["Dívida líquida (R$ mi)", formatMillions(netDebt?.value)],
         ["Capital de giro (R$ mi)", formatMillions(latestWorkingCapital?.capital_giro)],
         ["Capital de giro / receita (%)", formatPercent(latestWorkingCapital?.capital_giro_percentual_receita)],
@@ -3758,6 +3643,17 @@ HTML = """<!doctype html>
       return `<div class="disclaimer">Data-base: ${escapeHtml(share.base_date || "N/A")} | Market cap incluído: ${escapeHtml(formatMillions(share.total_market_cap))} | Cobertura: ${escapeHtml(formatPercent((share.coverage_count || 0) * 100))}% das empresas.</div><div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Market cap</th><th>Participação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
+    function renderSectorMarketCapSummary() {
+      const series = DATA.comparison?.sector_aggregates?.market_cap_setorial?.series || [];
+      const metadata = DATA.indicators?.market_cap_historico?.metadata || {};
+      const rows = series.filter(item => typeof item?.total_market_cap === "number").map(item => (
+        `<tr><td>${escapeHtml(item.period || item.date || "")}</td><td class="num">${escapeHtml(formatMillions(item.total_market_cap))}</td><td class="num">${escapeHtml(`${item.companies_included || 0}/${item.companies_registered || 0}`)}</td><td class="num">${escapeHtml(String(item.companies_estimated || 0))}</td><td>${escapeHtml(item.coverage_status === "complete" ? "Completa" : "Parcial")}</td></tr>`
+      )).join("");
+      if (!rows) return '<div class="empty">Série histórica de market cap indisponível.</div>';
+      const run = metadata.run_id ? ` Execução: ${escapeHtml(metadata.run_id)}.` : "";
+      return `<div class="disclaimer">Inclui somente market caps validados ou estimados com quantidade de ações oficial dentro da janela permitida. Cobertura parcial não representa o total econômico do setor.${run}</div><div class="table-wrap historical-data-table"><table><thead><tr><th>Período</th><th>Market cap</th><th>Empresas</th><th>Estimadas</th><th>Cobertura</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
     function renderSectorAggregates() {
       const aggregates = DATA.comparison?.sector_aggregates || {};
       const latestEv = [...(aggregates.ev_ebitda_agregado?.series || [])].reverse().find(item => typeof item.value === "number");
@@ -3765,6 +3661,7 @@ HTML = """<!doctype html>
       const cards = [
         `<section class="chart-card"><h2>Participação no market cap</h2>${renderMarketCapShareSummary()}</section>`,
         renderSectorAggregateChart("market_cap_share", "Participação no market cap"),
+        `<section class="chart-card"><h2>Market cap setorial</h2>${(() => { const asset = DATA.chart_assets?.comparison?.market_cap_setorial?.url; return asset ? `<div class="table-wrap"><img class="chart-img" src="${asset}" loading="lazy" alt="Market cap setorial comparável"></div>` : ""; })()}${renderSectorMarketCapSummary()}</section>`,
         renderSectorAggregateChart("ev_ebitda_agregado", "EV/EBITDA agregado"),
         renderSectorAggregateChart("retorno_preco_setorial_30d", "Retorno setorial de preço - 30 dias"),
         renderSectorAggregateChart("retorno_preco_setorial_90d", "Retorno setorial de preço - 90 dias"),

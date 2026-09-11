@@ -4,13 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import re
 import sys
-import time
-import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -18,10 +15,13 @@ from pathlib import Path
 
 import pandas as pd
 from company_registry import financial_companies
+from data_access import atomic_write_json, read_json
 from cvm_downloads import CvmDownloadPolicy, fetch_cvm_zip, validate_zip, write_events_json
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from domain_normalization import normalize_text as _shared_normalize_text
+from company_identity import normalize_cd_cvm as _normalize_cd_cvm
 
 
 BASE_URL = (
@@ -51,15 +51,9 @@ class Company:
 
 
 # O código CVM é a chave principal. O CNPJ funciona como validação/fallback.
-COMPANIES = (
-    Company("AALR3", "024023", "42.771.949/0001-35", "con", "CENTRO DE IMAGEM DIAGNOSTICOS S.A."),
-    Company("DASA3", "019623", "61.486.650/0001-83", "con", "DIAGNOSTICOS DA AMERICA S.A."),
-    Company("FLRY3", "021881", "60.840.055/0001-31", "con", "FLEURY S.A."),
-    Company("HAPV3", "024392", "05.197.443/0001-38", "con", "HAPVIDA PARTICIPACOES E INVESTIMENTOS S.A."),
-    Company("MATD3", "025690", "16.676.520/0001-59", "con", "HOSPITAL MATER DEI S.A."),
-    Company("ONCO3", "026123", "12.104.241/0004-02", "con", "ONCOCLINICAS DO BRASIL SERVICOS MEDICOS S.A."),
-    Company("RDOR3", "024821", "06.047.087/0001-39", "ind", "REDE D'OR SAO LUIZ S.A."),
-)
+# The central registry is the source of truth; this local name is retained as
+# a compatibility adapter for the workbook pipeline.
+COMPANIES = financial_companies("saude")
 
 READ_COLUMNS = [
     "CNPJ_CIA",
@@ -137,13 +131,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize_text(value: object) -> str:
-    text = "" if value is None else str(value)
-    text = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in text if not unicodedata.combining(c)).upper().strip()
+    return _shared_normalize_text(value, repair=False).upper().strip()
 
 
 def normalize_cd_cvm(series: pd.Series) -> pd.Series:
-    return series.astype("string").str.replace(r"\.0$", "", regex=True).str.zfill(6)
+    return _normalize_cd_cvm(series)
 
 
 def valid_zip(path: Path, year: int, doc: str = "itr") -> bool:
@@ -748,15 +740,12 @@ def export_json(
         ],
         "companies": companies,
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(".tmp.json")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, output)
+    atomic_write_json(output, payload)
     return coverage
 
 
 def verify_json(output: Path, coverage: list[dict]) -> None:
-    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload = read_json(output)
     expected = {c.ticker for c in COMPANIES}
     found = set(payload.get("companies", {}))
     missing = expected.difference(found)

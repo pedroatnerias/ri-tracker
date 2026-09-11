@@ -16,6 +16,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from data_access import atomic_write_json, atomic_write_text, read_json
 from company_registry import canonical_ticker, company_by_ticker, operational_companies
 from operational_dictionary import all_metric_names
 from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY
@@ -158,14 +159,14 @@ def manual_key(record: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
 def load_manual_overrides_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return empty_manual_payload()
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     return payload if isinstance(payload, dict) else empty_manual_payload()
 
 
 def write_manual_overrides_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = normalize_manual_payload(payload)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def normalize_manual_payload(payload: dict[str, Any] | None) -> dict[str, Any]:

@@ -71,3 +71,4 @@ indicadores para revisão/
 *.xls
 *.xlsm
 *.csv
+tmp/

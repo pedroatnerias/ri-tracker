@@ -3,17 +3,19 @@
 ## Atualização estrutural — setembro de 2026
 
 - A atualização financeira segue a mesma regra para Saúde e Construção Civil.
-- O Yahoo Finance é a fonte primária da quantidade histórica de ações; a CVM
-  valida a informação e funciona como fallback quando o Yahoo não retorna dado
-  válido.
-- Divergências acima de 5% recebem `shares_discrepancy`, preservam ambas as
-  fontes e bloqueiam o market cap/EV/EBITDA automático daquele período.
-- Retornos setoriais excluem períodos com divergência não resolvida e informam
-  a cobertura utilizada.
+- A CVM é a referência para quantidade histórica de ações e eventos de capital;
+  o Yahoo Finance fornece o fechamento diário e seus eventos societários.
+- Uma mudança estrutural só é publicada quando preço e ações forem conciliados.
+  Eventos sem evidência compatível ficam como `unresolved`; não há substituição
+  silenciosa por uma fonte alternativa.
+- A ausência temporária de ações usa a última quantidade oficial válida por, no
+  máximo, 180 dias. O cálculo usa o preço da nova data, nunca o market cap antigo.
+- Retornos setoriais de 30, 90 e 360 dias usam preços diários nas duas pontas,
+  ponderados pelo market cap inicial validado e com cobertura explícita.
 - Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
   somente PDFs oficiais de RI; planilhas não participam desse fluxo.
-- A auditoria é setorial: Saúde exibe o bloco operacional; Construção Civil
-  exibe a auditoria financeira e informa que o bloco operacional não se aplica.
+- A auditoria é setorial: Saúde usa planilhas/RI; Construção Civil usa PDFs
+  oficiais de RI e registra evidência, cobertura e estado por indicador.
 - O tracking transversal registra cada etapa documental e gera manifesto
   detalhado por execução, além do resumo seguro publicado.
 
@@ -27,50 +29,73 @@ MELK3, MRVE3, MTRE3, PDGR3, PLPL3, RDNI3, RSID3, TCSA3, TEND3, TRIS3 e
 VIVR3. O cadastro auditável está centralizado em `company_registry.py`.
 INNC3 e o ticker atual da INC Empreendimentos; INNT3 e mantido como ticker
 historico/compatibilidade para consultas e leitura de dados legados.
-Construção civil usa somente dados financeiros; não há indicadores ou
-overrides operacionais nesse setor.
+Construção civil usa PDFs oficiais de RI para os indicadores operacionais. O
+período-alvo pode ser fixado para validação ou atualização incremental.
 
 ```bash
 python update_data.py --sector saude --scope all --mode incremental
 python update_data.py --sector construcao_civil --scope financial --mode full
+python update_data.py --sector construcao_civil --scope operational --periodo-alvo 2026T2
 python update_data.py --sector all --scope financial --mode incremental
 python -m data_publication validate resultados --sector saude --scope financial
 python -m data_publication publish resultados data-repo/data --sector saude --scope financial
 ```
 
-Sem `--sector`, o padrão retrocompatível é `saude`. A combinação construção +
-operacional é rejeitada; construção + tudo executa apenas financeiro com aviso;
-e todos + operacional executa apenas saúde. Publicações setoriais usam manifesto
+Para validar construção civil em diretório isolado, primeiro colete os documentos
+do período e depois execute a conversão, extração e comparação com as matrizes de
+revisão:
+
+```bash
+python discover_construction_validation.py --periodo-alvo 2026T2 --output tmp/operational_validation/discovery
+python validate_construction_extraction.py --periodo-alvo 2026T2 --source tmp/operational_validation/discovery/pdfs --output tmp/operational_validation/result
+python diagnose_construction_run.py --discovery tmp/operational_validation/discovery/discovery_result.json --output tmp/operational_validation/diagnosis.json
+```
+
+O diretório de validação mantém descoberta, PDFs, derivados, snapshots e relatório
+separados do fluxo publicado. A opção `--system-ca` do coletor usa a cadeia de
+certificados do sistema quando a validação HTTPS exigir isso.
+
+Sem `--sector`, o padrão retrocompatível é `saude`. Construção + operacional
+executa a descoberta e extração de PDFs oficiais, com diagnóstico de cobertura;
+construção + tudo executa os escopos solicitados. Publicações setoriais usam manifesto
 v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
 somente fallback de leitura e representa saúde. A publicação substitui apenas a
 interseção setor × componente e preserva os demais snapshots e overrides.
 
 ## Metodologia dos agregados setoriais
 
-O market cap setorial usa apenas empresas ativas do setor selecionado com
-market cap valido, positivo e numerico. A participacao de cada empresa e:
-`market_cap_empresa / soma_market_cap_empresas_validas`. Empresas sem dado
-valido sao excluidas e reportadas no diagnostico; ausencias nao viram zero.
+O market cap setorial é reconstruído por empresa e data como `preço diário
+normalizado × quantidade oficial de ações`. Preços históricos são ajustados
+somente para eventos societários corroborados pela CVM. Empresas sem base
+reconciliada são excluídas, com motivo e cobertura visíveis; ausência nunca vira
+zero nem reaproveita o market cap de período anterior. A série é identificada
+como parcial quando não contém todo o universo cadastrado.
 
 O EV/EBITDA setorial e calculado pela divisao do enterprise value agregado pelo
 EBITDA LTM agregado das empresas incluidas. Nao representa uma media simples ou
 ponderada dos multiplos individuais. A formula e `soma(EV) / soma(EBITDA LTM)`,
-com EV definido pela metodologia vigente como `market cap historico + divida
-liquida padronizada`. EBITDAs negativos validos entram na soma agregada; se o
+com EV definido pela metodologia vigente como `market cap historico reconciliado
++ divida liquida padronizada`. Antes da agregação, há unicidade por
+`ticker + data final + tipo de período`: duplicidades idênticas são consolidadas
+e conflitos bloqueiam a empresa no período. EBITDAs negativos validos entram na soma agregada; se o
 EBITDA LTM agregado for menor ou igual a zero, o multiplo fica nulo e o
 diagnostico explicita a causa.
 
-Os retornos setoriais de preco de 30 e 360 dias usam fechamento nao ajustado,
-coerente com o market cap historico. Para cada empresa, o retorno e
+Os retornos setoriais de preço de 30, 90 e 360 dias usam o fechamento diário
+normalizado nas datas inicial e final (ou no último pregão anterior). Para cada empresa, o retorno é
 `preco_final / preco_inicial - 1`, usando o fechamento do proprio dia ou o
-ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap do
-inicio do intervalo: `preco_inicial x quantidade historica de acoes em ou antes
-da data inicial`. A cobertura minima inicial e 70%; abaixo dela, o retorno
-setorial nao e publicado como representativo.
+ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap
+validado do inicio do intervalo: `preco_inicial × quantidade oficial de acoes`.
+A cobertura minima inicial e 70%; abaixo dela, o retorno setorial nao e
+publicado como representativo. A linha auxiliar dos gráficos de retorno é
+explicitamente rotulada como o market cap usado na ponderação, não como o valor
+de mercado total do setor.
 
-Todos os agregados registram metodologia, empresas incluidas, empresas
-excluidas, cobertura, datas efetivas dos componentes e limitacoes de dados
-historicos.
+Todos os agregados registram metodologia, empresas incluidas, excluidas e
+estimadas, cobertura, datas efetivas dos componentes, eventos societários e
+limitações dos dados históricos. O manifesto de gráficos contém o `run_id` e o
+hash do `market_cap_historico.json`; a publicação bloqueia ativos gerados a
+partir de uma execução financeira diferente.
 
 ## Cache CVM e workflows sem coleta
 

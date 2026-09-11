@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import re
 import sys
 import time
-import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,9 +16,15 @@ from urllib.parse import unquote, urljoin, urlparse
 import pymupdf
 import pymupdf4llm
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from company_registry import canonical_ticker, operational_companies
+from data_access import atomic_write_json, atomic_write_text, read_json
+from domain_normalization import normalize_filename as _normalize_filename
+from domain_normalization import normalize_text as _normalize_text
 from operational_sources import ACCEPTED_DOCUMENT_TYPES, operational_sources_for_sector
+from operational_periods import target_quarter, display_quarter
 from sector_paths import resolve_releases_input_dir, resolve_releases_manifest_path, resolve_releases_output_dir
 
 
@@ -223,18 +229,11 @@ def garantir_pastas_padrao(input_dir: Path = PASTA_ENTRADA_PADRAO, output_dir: P
 
 
 def normalizar_texto(texto: str) -> str:
-    texto = unicodedata.normalize("NFKD", texto or "")
-    texto = texto.encode("ascii", "ignore").decode("ascii")
-    texto = texto.lower()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
+    return _normalize_text(texto, repair=True, strip_accents=True).lower()
 
 
 def normalizar_nome_arquivo(nome: str) -> str:
-    nome = unicodedata.normalize("NFKD", nome)
-    nome = nome.encode("ascii", "ignore").decode("ascii")
-    nome = re.sub(r"[^A-Za-z0-9._-]+", "_", nome)
-    return nome.strip("._-") or "documento"
+    return _normalize_filename(nome)
 
 
 def calcular_sha256(caminho: Path) -> str:
@@ -249,6 +248,18 @@ def calcular_sha256(caminho: Path) -> str:
 
 def criar_sessao_http() -> requests.Session:
     sessao = requests.Session()
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=2,
+        status=2,
+        backoff_factor=0.4,
+        status_forcelist=(408, 425, 429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "HEAD"}),
+        raise_on_status=False,
+    )
+    sessao.mount("http://", HTTPAdapter(max_retries=retry))
+    sessao.mount("https://", HTTPAdapter(max_retries=retry))
     sessao.headers.update(
         {
             "User-Agent": USER_AGENT,
@@ -345,11 +356,19 @@ def classificar_tipo_documento(texto: str) -> str | None:
 
 def parece_pdf(url: str, texto: str = "") -> bool:
     caminho = urlparse(url).path.lower()
+    host = urlparse(url).netloc.lower()
 
     if caminho.endswith((".pdf", ".xlsx", ".xlsm", ".xls")):
         return True
 
     combinado = normalizar_texto(f"{url} {texto}")
+
+    # MZIQ file-manager URLs have opaque IDs and no extension. They are valid
+    # document candidates only when surrounding text carries period/type data.
+    if host in {"api.mziq.com", "cdn-sites-assets.mziq.com"}:
+        contexto = normalizar_texto(texto)
+        return bool(identificar_periodo(contexto)
+                    and any(term in contexto for term in ("release", "resultado", "operacional", "apresentacao", "planilha", "documento")))
 
     return (
         ".pdf" in combinado
@@ -415,6 +434,7 @@ def limpar_url_extraida(url: str) -> str:
 
 
 def urls_em_texto(texto: str) -> list[str]:
+    texto = html.unescape(texto).replace(r"\u002F", "/").replace(r"\/", "/")
     urls = [
         limpar_url_extraida(url)
         for url in re.findall(r"""https?://[^"'<>\\\s]+""", texto)
@@ -424,8 +444,10 @@ def urls_em_texto(texto: str) -> list[str]:
         texto,
         flags=re.IGNORECASE,
     )
+    protocol_relative = re.findall(r"(?P<url>//[^\"'<>\\\s]+(?:\.pdf|download|document|arquivo|documento)[^\"'<>\\\s]*)", texto, flags=re.IGNORECASE)
+    urls.extend(limpar_url_extraida(url) for url in protocol_relative)
     urls.extend(limpar_url_extraida(url) for url in relativas)
-    return urls
+    return list(dict.fromkeys(urls))
 
 
 def montar_documento(
@@ -513,6 +535,11 @@ def extrair_links_html(
         posicao = html.find(url_documento)
         if posicao < 0:
             posicao = html.find(url_extraida)
+        if posicao < 0:
+            # JSON often escapes slashes or stores protocol-relative URLs;
+            # use the stable filename token to recover adjacent title/type.
+            token = urlparse(url_extraida).path.rsplit("/", 1)[-1]
+            posicao = html.lower().find(token.lower()) if token else -1
         contexto = (
             f"{url_extraida} {url_documento} "
             f"{html[max(0, posicao - 600):posicao + 600] if posicao >= 0 else ''}"
@@ -540,18 +567,6 @@ def extrair_links_html(
 # ============================================================
 # COLETA DAS PÁGINAS DE RI
 # ============================================================
-
-def obter_html_requests(
-    sessao: requests.Session,
-    url: str,
-) -> str:
-    resposta = sessao.get(
-        url,
-        timeout=TIMEOUT_REQUISICAO,
-    )
-    resposta.raise_for_status()
-    return resposta.text
-
 
 def diagnostico_html(html: str, url_final: str) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
@@ -594,7 +609,7 @@ def imprimir_diagnostico(ticker: str, origem: str, dados: dict[str, Any]) -> Non
 def salvar_snapshot_diagnostico(ticker: str, origem: str, html: str) -> None:
     PASTA_DIAGNOSTICO_RI.mkdir(parents=True, exist_ok=True)
     nome = normalizar_nome_arquivo(f"{ticker}_{origem}.html")
-    (PASTA_DIAGNOSTICO_RI / nome).write_text(html, encoding="utf-8")
+    atomic_write_text(PASTA_DIAGNOSTICO_RI / nome, html)
 
 
 def documento_de_contexto(
@@ -626,13 +641,14 @@ def documentos_de_network(
     empresa: str,
     ano_inicial: int,
     url_origem: str,
+    page_context: str = "",
 ) -> list[DocumentoEncontrado]:
     documentos: list[DocumentoEncontrado] = []
     vistos: set[str] = set()
     for item in network_items:
         url = str(item.get("url") or "")
         content_type = str(item.get("content_type") or "")
-        contexto = f"{url} {content_type} {item.get('body_preview') or ''}"
+        contexto = f"{url} {content_type} {item.get('body_preview') or ''} {page_context[:12000]}"
         if "application/pdf" in content_type.lower():
             contexto = f"{contexto} pdf"
         documento = documento_de_contexto(
@@ -788,6 +804,61 @@ def obter_html_playwright(url: str) -> str:
 
 
 def coletar_documentos_empresa(
+    ticker, configuracao, sessao, ano_inicial, usar_playwright, diagnostico_ri=False,
+):
+    if configuracao.get("sector") != "construcao_civil":
+        return _coletar_pagina_empresa(ticker, configuracao, sessao, ano_inicial, usar_playwright, diagnostico_ri)
+    pages = list(dict.fromkeys([*configuracao.get("results_pages", []), configuracao["url"]]))
+    found = {}
+    target = configuracao.get("target_period")
+    for page in pages:
+        source = {**configuracao, "url": page}
+        documents = _coletar_pagina_empresa(ticker, source, sessao, ano_inicial, False, diagnostico_ri)
+        found.update({doc.url_documento: doc for doc in documents})
+        if not documents and sessao is not None:
+            for child in _discover_result_subpages(page, sessao, limit=4, diagnostics=configuracao.get("diagnostics")):
+                child_source = {**configuracao, "url": child}
+                child_documents = _coletar_pagina_empresa(ticker, child_source, sessao, ano_inicial, False, diagnostico_ri)
+                found.update({doc.url_documento: doc for doc in child_documents})
+    if usar_playwright and not any(not target or doc.periodo == target for doc in found.values()):
+        for page in pages:
+            source = {**configuracao, "url": page}
+            try:
+                documents = _coletar_pagina_empresa(ticker, source, sessao, ano_inicial, True, diagnostico_ri)
+            except PlaywrightIndisponivel as exc:
+                found.update({doc.url_documento: doc for doc in exc.documentos})
+                break
+            found.update({doc.url_documento: doc for doc in documents})
+    return list(found.values())
+
+
+def _discover_result_subpages(url: str, session: requests.Session, limit: int = 4, diagnostics: list[dict[str, Any]] | None = None) -> list[str]:
+    """Find a small, same-domain set of result/document navigation pages."""
+    try:
+        response = session.get(url, timeout=TIMEOUT_REQUISICAO)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        if diagnostics is not None:
+            diagnostics.append({"stage": "subpage_discovery", "url": url, "error": type(exc).__name__})
+        return []
+    base = urlparse(url)
+    candidates: list[tuple[int, str]] = []
+    for anchor in BeautifulSoup(response.text, "html.parser").find_all("a", href=True):
+        child = urljoin(url, str(anchor.get("href")))
+        parsed = urlparse(child)
+        if parsed.netloc.lower() != base.netloc.lower() or parsed.scheme not in {"http", "https"}:
+            continue
+        text = normalizar_texto(" ".join(anchor.stripped_strings) + " " + child)
+        if not any(term in text for term in ("resultado", "release", "central", "relatorio", "documento", "download")):
+            continue
+        if parece_pdf(child, text):
+            continue
+        score = sum(term in text for term in ("resultado", "release", "central", "relatorio"))
+        candidates.append((score, child.split("#", 1)[0]))
+    return list(dict.fromkeys(child for _, child in sorted(candidates, key=lambda item: (-item[0], item[1]))))[:limit]
+
+
+def _coletar_pagina_empresa(
     ticker: str,
     configuracao: dict[str, str],
     sessao: requests.Session,
@@ -828,6 +899,7 @@ def coletar_documentos_empresa(
         )
 
     except Exception as erro:
+        configuracao.setdefault("diagnostics", []).append({"stage": "discovery", "url": url, "error": type(erro).__name__})
         print(
             f"Aviso: falha na leitura HTTP de {ticker}: {erro}",
             file=sys.stderr,
@@ -880,6 +952,7 @@ def coletar_documentos_empresa(
             empresa=empresa,
             ano_inicial=ano_inicial,
             url_origem=url,
+            page_context=html_renderizado,
         )
 
         combinados = {
@@ -952,6 +1025,8 @@ def baixar_documento(
     input_dir.mkdir(parents=True, exist_ok=True)
 
     nome_arquivo = nome_arquivo_documento(documento)
+    if documento.ticker in operational_sources_for_sector("construcao_civil"):
+        nome_arquivo = nome_arquivo[:-4] + "_" + hashlib.sha256(documento.url_documento.encode()).hexdigest()[:12] + ".pdf"
     destino = input_dir / nome_arquivo
 
     if destino.exists() and not sobrescrever:
@@ -986,6 +1061,9 @@ def baixar_documento(
     validar_pdf(arquivo_temporario)
     arquivo_temporario.replace(destino)
 
+    if documento.ticker in operational_sources_for_sector("construcao_civil"):
+        atomic_write_json(destino.with_suffix(".source.json"), {**asdict(documento), "source_sha256": calcular_sha256(destino)})
+
     return DownloadRealizado(
         **asdict(documento),
         arquivo_local=str(destino.resolve()),
@@ -1004,12 +1082,8 @@ def salvar_manifesto_downloads(
 
     if manifest_path.exists():
         try:
-            existente = json.loads(
-                manifest_path.read_text(
-                    encoding="utf-8"
-                )
-            )
-        except Exception:
+            existente = read_json(manifest_path)
+        except (OSError, json.JSONDecodeError, TypeError):
             existente = []
 
     por_chave: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1041,14 +1115,7 @@ def salvar_manifesto_downloads(
         ),
     )
 
-    manifest_path.write_text(
-        json.dumps(
-            dados,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    atomic_write_json(manifest_path, dados)
 
 
 def baixar_documentos_ri(
@@ -1062,6 +1129,7 @@ def baixar_documentos_ri(
     companies: dict[str, dict[str, Any]] | None = None,
     input_dir: Path = PASTA_ENTRADA_PADRAO,
     manifest_path: Path = ARQUIVO_MANIFESTO_DOWNLOADS,
+    periodo_alvo: str | None = None,
 ) -> list[DownloadRealizado]:
     sessao = criar_sessao_http()
     registros: list[DownloadRealizado] = []
@@ -1075,6 +1143,8 @@ def baixar_documentos_ri(
     }
 
     for ticker, configuracao in empresas_selecionadas.items():
+        if sector == "construcao_civil":
+            configuracao = {**configuracao, "sector": sector, "target_period": display_quarter(periodo_alvo)}
         try:
             documentos = coletar_documentos_empresa(
                 ticker=ticker,
@@ -1104,6 +1174,10 @@ def baixar_documentos_ri(
                 documento.periodo,
                 documento.tipo,
             )
+            if sector == "construcao_civil":
+                if documento.periodo != display_quarter(periodo_alvo):
+                    continue
+                chave = (documento.periodo, documento.tipo, documento.url_documento)
             por_chave.setdefault(chave, documento)
 
         for documento in sorted(
@@ -1130,6 +1204,7 @@ def baixar_documentos_ri(
                     )
 
             except Exception as erro:
+                configuracao.setdefault("diagnostics", []).append({"stage": "download", "url": documento.url_documento, "error": type(erro).__name__})
                 print(
                     "  [erro] "
                     f"{documento.ticker} "
@@ -1417,6 +1492,7 @@ def converter_pdf_para_markdown(
     mostrar_progresso: bool = True,
     largura_minima_imagem: int = 100,
     altura_minima_imagem: int = 100,
+    construction_recovery: bool = False,
 ) -> dict[str, Any]:
     pdf = Path(caminho_pdf).expanduser().resolve()
     validar_pdf(pdf)
@@ -1437,7 +1513,7 @@ def converter_pdf_para_markdown(
     periodo = catalogacao.get("periodo")
     tipo = catalogacao.get("tipo_documento")
 
-    if ticker and periodo and tipo:
+    if ticker and periodo and tipo and not re.search(r"_[a-f0-9]{12}$", pdf.stem):
         nome_catalogado = f"{ticker}_{periodo}_{tipo}"
     else:
         nome_catalogado = nome_documento
@@ -1454,6 +1530,20 @@ def converter_pdf_para_markdown(
     arquivo_metadados = (
         pasta_saida / f"{nome_catalogado}_metadata.json"
     ).resolve()
+
+    conversion_config = {"version": 3, "construction_recovery": construction_recovery, "ocr": forcar_ocr, "language": idioma_ocr,
+                         "tables": estrategia_tabelas, "images": extrair_imagens,
+                         "min_width": largura_minima_imagem, "min_height": altura_minima_imagem,
+                         "library": getattr(pymupdf4llm, "__version__", "unknown")}
+    pdf_hash = calcular_sha256(pdf)
+    if arquivo_markdown.exists() and arquivo_metadados.exists():
+        try:
+            cached = read_json(arquivo_metadados)
+            if cached.get("source_sha256") == pdf_hash and cached.get("conversion_config") == conversion_config:
+                return {"markdown": str(arquivo_markdown), "metadados": str(arquivo_metadados),
+                        "imagens": str(pasta_imagens) if extrair_imagens else "", "quantidade_imagens": cached.get("quantidade_imagens", 0), "cached": True}
+        except (OSError, ValueError):
+            pass
 
     pasta_saida.mkdir(parents=True, exist_ok=True)
 
@@ -1508,6 +1598,11 @@ def converter_pdf_para_markdown(
             "O PyMuPDF4LLM não retornou uma string Markdown."
         )
 
+    recovery_diagnostics = []
+    if construction_recovery:
+        from construction_pdf_fallback import recover_pages
+        recovered, recovery_diagnostics = recover_pages(pdf, idioma_ocr)
+        conteudo_markdown += "\n\n" + recovered
     imagens_extraidas: list[dict[str, Any]] = []
 
     if extrair_imagens:
@@ -1530,16 +1625,19 @@ def converter_pdf_para_markdown(
         else ""
     )
 
-    arquivo_markdown.write_text(
-        cabecalho + conteudo_markdown + secao_imagens,
-        encoding="utf-8",
-    )
+    atomic_write_text(arquivo_markdown, cabecalho + conteudo_markdown + secao_imagens)
 
     metadados = obter_metadados_pdf(pdf)
+    source_metadata = pdf.with_suffix(".source.json")
+    if source_metadata.exists():
+        metadados.update(read_json(source_metadata))
     metadados.update(catalogacao)
     metadados.update(
         {
             "nome_documento_normalizado": nome_catalogado,
+            "source_sha256": pdf_hash,
+            "source_pdf": str(pdf),
+            "conversion_config": conversion_config,
             "arquivo_markdown": str(arquivo_markdown),
             "pasta_saida": str(pasta_saida),
             "pasta_imagens": (
@@ -1550,21 +1648,15 @@ def converter_pdf_para_markdown(
             "extracao_imagens": extrair_imagens,
             "quantidade_imagens": len(imagens_extraidas),
             "imagens": imagens_extraidas,
-            "ocr_habilitado": True,
+            "recovery_diagnostics": recovery_diagnostics,
+            "ocr_habilitado": any(item.get("method") == "ocr" for item in recovery_diagnostics),
             "ocr_forcado": forcar_ocr,
             "idioma_ocr": idioma_ocr,
             "estrategia_tabelas": estrategia_tabelas,
         }
     )
 
-    arquivo_metadados.write_text(
-        json.dumps(
-            metadados,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    atomic_write_json(arquivo_metadados, metadados)
 
     return {
         "markdown": str(arquivo_markdown),
@@ -1590,6 +1682,7 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
         )
     )
 
+    parser.add_argument("--periodo-alvo", type=target_quarter, default=None)
     parser.add_argument(
         "pdf",
         nargs="?",
@@ -1712,9 +1805,12 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
 def main() -> int:
     parser = criar_parser_argumentos()
     argumentos = parser.parse_args()
+    periodo_alvo = target_quarter(argumentos.periodo_alvo)
 
     sector = argumentos.sector
     sources = operational_sources_for_sector(sector)
+    if sector == "construcao_civil":
+        sources = {ticker: {**source, "diagnostics": []} for ticker, source in sources.items()}
     input_dir = resolve_releases_input_dir(BASE_DIR, sector, create=True)
     output_dir = Path(argumentos.output).expanduser().resolve() if argumentos.output else resolve_releases_output_dir(BASE_DIR, sector, create=True)
     manifest_path = resolve_releases_manifest_path(BASE_DIR, sector)
@@ -1764,6 +1860,7 @@ def main() -> int:
             companies=sources,
             input_dir=input_dir,
             manifest_path=manifest_path,
+            periodo_alvo=periodo_alvo,
         )
 
         print(
@@ -1793,6 +1890,7 @@ def main() -> int:
 
     if not pdfs:
         result = {
+            "company_diagnostics": {ticker: source.get("diagnostics", []) for ticker, source in sources.items()},
             "sector": sector, "companies_requested": len(tickers or allowed_tickers),
             "companies_with_sources": len({ticker for ticker in (tickers or allowed_tickers) if ticker in sources}),
             "documents_discovered": len(registros), "documents_downloaded": 0,
@@ -1801,7 +1899,7 @@ def main() -> int:
             "errors": [f"Nenhum documento válido de {sector} foi encontrado."], "warnings": [],
         }
         if argumentos.result_json:
-            Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(Path(argumentos.result_json), result)
         print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
         print(
             "Nenhum PDF disponível para processamento em:\n"
@@ -1825,6 +1923,7 @@ def main() -> int:
                 mostrar_progresso=not argumentos.no_progress,
                 largura_minima_imagem=argumentos.min_image_width,
                 altura_minima_imagem=argumentos.min_image_height,
+                construction_recovery=sector == "construcao_civil",
             )
 
             sucessos += 1
@@ -1849,6 +1948,7 @@ def main() -> int:
     print("=" * 70)
 
     result = {
+        "company_diagnostics": {ticker: source.get("diagnostics", []) for ticker, source in sources.items()},
         "sector": sector,
         "companies_requested": len(tickers or allowed_tickers),
         "companies_with_sources": len({ticker for ticker in (tickers or allowed_tickers) if ticker in sources}),
@@ -1856,14 +1956,14 @@ def main() -> int:
         "documents_downloaded": sum(1 for item in (registros if not argumentos.sem_download and not argumentos.pdf else []) if item.status == "baixado"),
         "documents_converted": sucessos,
         "documents_rejected_wrong_sector": 0,
-        "status": "success" if sucessos and not erros else ("no_sector_documents" if not pdfs else "conversion_error"),
+        "status": "success" if sucessos and not erros else ("success_with_warnings" if sucessos and sector == "construcao_civil" else "conversion_error"),
         "input_dir": str(input_dir), "output_dir": str(output_dir),
         "errors": [f"{erros} conversões falharam"] if erros else [], "warnings": [],
     }
     if argumentos.result_json:
-        Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(Path(argumentos.result_json), result)
     print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
-    return 1 if erros or not sucessos else 0
+    return (0 if sucessos else 1) if sector == "construcao_civil" else (1 if erros or not sucessos else 0)
 
 
 if __name__ == "__main__":

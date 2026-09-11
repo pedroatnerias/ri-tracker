@@ -24,8 +24,9 @@ import json
 import math
 import re
 import sys
-import unicodedata
 from dataclasses import dataclass
+from domain_normalization import normalize_text as _normalize_text
+from data_access import atomic_write_json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -45,10 +46,7 @@ def _first(record: dict[str, Any], *names: str) -> Any:
 
 
 def _text(value: Any) -> str:
-    if value is None:
-        return ""
-    s = unicodedata.normalize("NFKD", str(value))
-    return "".join(c for c in s if not unicodedata.combining(c)).strip().lower()
+    return _normalize_text(value, repair=False, strip_accents=True)
 
 
 def _number(value: Any) -> float:
@@ -671,10 +669,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.target_end and target is None:
             raise CalculationError("--target-end deve estar no formato AAAA-MM-DD.")
         result = calculate(data, target_end=target, scope=args.scope, dre_payload=dre_payload, sector=args.sector)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("w", encoding="utf-8") as fh:
-            json.dump(result, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
+        atomic_write_json(args.output, result)
     except (OSError, json.JSONDecodeError, CalculationError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1

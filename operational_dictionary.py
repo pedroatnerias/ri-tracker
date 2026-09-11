@@ -138,6 +138,14 @@ def all_metric_names(sector: str = "saude") -> tuple[str, ...]:
     return TARGET_METRICS
 
 
+def unknown_metric_names(names: object, sector: str = "saude") -> tuple[str, ...]:
+    """Return unexpected display keys without discarding forward-compatible data."""
+    if not isinstance(names, (list, tuple, set)):
+        return ()
+    allowed = set(all_metric_names(sector))
+    return tuple(sorted({str(name) for name in names if str(name) not in allowed}))
+
+
 def metric_ids(sector: str = "saude") -> tuple[str, ...]:
     return CONSTRUCTION_METRIC_IDS if sector == "construcao_civil" else TARGET_METRICS
 
