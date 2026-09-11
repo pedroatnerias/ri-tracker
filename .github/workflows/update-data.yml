@@ -11,6 +11,7 @@ on:
         options:
           - saude
           - construcao_civil
+          - varejo
           - all
       update_scope:
         description: "Escopo de atualizacao"

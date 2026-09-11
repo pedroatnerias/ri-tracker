@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
-from company_registry import Company, financial_companies
+from company_registry import Company, SECTORS, financial_companies, statement_value_factor
 from company_identity import normalize_cd_cvm, select_company_rows
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -204,6 +204,7 @@ def preparar_dre(base: pd.DataFrame, companhia: Company) -> pd.DataFrame:
             f"{escalas_desconhecidas}"
         )
     dre["FATOR_ESCALA"] = escalas.map(FATORES_ESCALA)
+    dre["FATOR_ESCALA"] = dre.apply(lambda row: statement_value_factor(companhia, row.get("DOCUMENTO_CVM"), row.get("DT_REFER"), row.get("ESCALA_MOEDA"), row["FATOR_ESCALA"]), axis=1)
     dre["VL_CONTA"] = dre["VL_CONTA_CVM"] * dre["FATOR_ESCALA"]
     if dre[["DT_INI_EXERC", "DT_FIM_EXERC"]].isna().any().any():
         raise RuntimeError(f"{companhia.ticker}: datas inválidas encontradas na DRE")
@@ -496,7 +497,7 @@ def analisar_argumentos() -> argparse.Namespace:
     parser.add_argument("--saida", type=Path, default=Path("resultados") / "DRE_ITR_CVM_ultimos_5_anos.json")
     parser.add_argument("--sobrescrever-zips", action="store_true")
     parser.add_argument("--sem-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     return parser.parse_args()
 
 

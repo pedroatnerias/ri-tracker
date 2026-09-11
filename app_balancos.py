@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from company_registry import financial_companies
+from company_registry import SECTORS, financial_companies, statement_value_factor
 from cvm_downloads import CvmDownloadPolicy, fetch_cvm_zip, validate_zip, write_events_json
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -126,7 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-timeout", type=int, default=120)
     parser.add_argument("--no-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     args = parser.parse_args()
     args.years = sorted(set(args.years))
     if not args.years:
@@ -242,6 +242,7 @@ def latest_filing_rows(frame: pd.DataFrame, company: Company) -> pd.DataFrame:
             f"{escalas_desconhecidas}"
         )
     frame["FATOR_ESCALA"] = escalas.map(FATORES_ESCALA)
+    frame["FATOR_ESCALA"] = frame.apply(lambda row: statement_value_factor(company, row.get("DOCUMENTO_CVM"), row.get("DT_REFER"), row.get("ESCALA_MOEDA"), row["FATOR_ESCALA"]), axis=1)
     frame["VL_CONTA"] = frame["VL_CONTA_CVM"] * frame["FATOR_ESCALA"]
     frame["ORDEM_NORMALIZADA"] = frame["ORDEM_EXERC"].map(normalize_text)
     frame = frame[frame["ORDEM_NORMALIZADA"].eq("ULTIMO")]

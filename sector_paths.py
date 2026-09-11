@@ -5,10 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from company_registry import validate_sector
-
-
-SECTOR_NAMES = ("saude", "construcao_civil")
+from company_registry import REAL_SECTORS, validate_sector
 
 
 def resolve_releases_input_dir(base: Path, sector: str, *, create: bool = False) -> Path:
@@ -37,7 +34,7 @@ def resolve_operational_results_dir(base: Path, sector: str, *, create: bool = F
 
 
 def expand_sectors(sector: str) -> tuple[str, ...]:
-    return SECTOR_NAMES if validate_sector(sector) == "all" else (validate_sector(sector),)
+    return REAL_SECTORS if validate_sector(sector) == "all" else (validate_sector(sector),)
 
 
 def resolve_sector_results_dir(resultados: Path, sector: str, *, create: bool = False) -> Path:

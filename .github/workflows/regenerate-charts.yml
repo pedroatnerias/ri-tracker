@@ -8,7 +8,7 @@ on:
         required: true
         default: all
         type: choice
-        options: [all, saude, construcao_civil]
+        options: [all, saude, construcao_civil, varejo]
       chart_scope:
         description: "Escopo dos gráficos"
         required: true

@@ -17,7 +17,7 @@ purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações a
 > calculados automaticamente. Se o Yahoo não fornecer uma quantidade válida, a
 > CVM é usada como fallback.
 >
-> A regra financeira é idêntica para Saúde e Construção Civil. A separação por
+> A regra financeira é compartilhada por Saúde, Construção Civil e Varejo. A separação por
 > setor aplica-se somente ao bloco operacional: Saúde pode usar planilhas e
 > documentos de RI; Construção Civil usa exclusivamente PDFs oficiais de RI.
 >
@@ -28,7 +28,7 @@ purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações a
 
 ## 1. Objetivo e princípios
 
-O Acompanhador de Mercado consolida informações financeiras, de mercado e, no setor de saúde, operacionais para permitir comparação histórica e entre companhias abertas.
+O Acompanhador de Mercado consolida informações financeiras e de mercado nos três setores e dados operacionais em Saúde e Construção Civil.
 
 A metodologia prioriza cinco princípios:
 
@@ -38,12 +38,13 @@ A metodologia prioriza cinco princípios:
 4. **separação entre reportado e calculado**: valores divulgados pelas companhias não substituem silenciosamente indicadores padronizados calculados pelo modelo;
 5. **rastreabilidade**: sempre que possível, valores derivados preservam período, componentes, fonte e sinais de qualidade.
 
-O modelo cobre dois setores:
+O modelo cobre três setores:
 
 - **Saúde**, com dados financeiros, de mercado e operacionais;
-- **Construção Civil**, com dados financeiros e de mercado.
+- **Construção Civil**, com dados financeiros, de mercado e operacionais;
+- **Varejo**, com dados financeiros e de mercado, sem pipeline operacional.
 
-As companhias acompanhadas são definidas no cadastro central do modelo. O escopo contábil é, em regra, **consolidado**; a principal exceção é **RDOR3**, cujos demonstrativos financeiros são tratados no escopo **individual**.
+As companhias acompanhadas são definidas no cadastro central do modelo. O escopo contábil é, em regra, **consolidado**; RDOR3 e WEST3 são tratados no escopo **individual**.
 
 ---
 
@@ -259,6 +260,12 @@ A quantidade de ações atual é obtida preferencialmente do histórico de açõ
 
 Empresas sem preço ou número de ações válido permanecem com market cap indisponível.
 
+Quando há mais de uma classe, o cálculo soma `preço × quantidade × peso
+econômico` por classe. CGRA3/CGRA4 e WHRL3/WHRL4 usam peso 1 por classe. Em
+TFCO4, a PN é a referência negociada e cada ON representa 1/10 do direito
+econômico de uma PN; por isso, as ON entram com peso 0,1. Ausência de preço,
+quantidade ou divergência material bloqueia o valor em vez de gerar aproximação.
+
 ---
 
 ## 4.6. Market cap histórico
@@ -458,6 +465,7 @@ A fórmula de PMR, PME, PMP e ciclo financeiro permanece a mesma; o que muda é 
 O modelo calcula variações aproximadas de preço para os horizontes atualmente disponíveis:
 
 - 30 dias;
+- 90 dias;
 - 360 dias.
 
 ```text
@@ -465,7 +473,9 @@ Variação de Preço =
 (Preço Atual / Preço de Referência - 1) × 100
 ```
 
-O preço de referência é o último fechamento disponível em ou antes da data-alvo.
+O preço de referência é o último fechamento ajustado disponível em ou antes da
+data-alvo. A série ajustada mantém comparabilidade econômica em desdobramentos
+e grupamentos; TOKY3 em agosto de 2026 é o caso de regressão obrigatório.
 
 ---
 

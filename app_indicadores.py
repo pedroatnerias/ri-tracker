@@ -522,7 +522,10 @@ def _market_cap_historico_map(payload: dict[str, Any] | None, ticker: str) -> di
     for periodo in empresa.get("periodos", []):
         data = periodo.get("data_referencia") or periodo.get("date") or periodo.get("periodo")
         market_cap = periodo.get("market_cap")
-        if market_cap is None and periodo.get("preco_acao") is not None and periodo.get("quantidade_acoes_total") is not None:
+        # Compatibilidade apenas com payloads legados, que nao tinham status.
+        # Em payload novo, market_cap=None pode ser um bloqueio deliberado de
+        # qualidade (por exemplo, shares_discrepancy) e nao deve ser recalculado.
+        if market_cap is None and periodo.get("status_validacao_acoes") is None and not periodo.get("classes_acoes") and periodo.get("preco_acao") is not None and periodo.get("quantidade_acoes_total") is not None:
             market_cap = _numero(periodo["preco_acao"]) * _numero(periodo["quantidade_acoes_total"])
         if data and market_cap is not None:
             result[str(data)] = {

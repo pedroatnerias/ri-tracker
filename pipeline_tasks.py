@@ -12,6 +12,7 @@ from pathlib import Path
 
 import chart_generation
 import data_publication
+from company_registry import SECTORS, operational_companies
 from sector_paths import expand_sectors, find_financial_statement_json, read_json_if_exists, resolve_sector_results_dir
 
 
@@ -48,6 +49,14 @@ def hydrate_existing_data(data_repo: Path, resultados: Path, sector: str, requir
         source = data_repo_sector_dir(data_repo, current_sector)
         target = resolve_sector_results_dir(resultados, current_sector, create=True)
         if not source.exists():
+            if requirements == "dashboard" and not operational_companies(current_sector):
+                restored["sectors"][current_sector] = {
+                    "source": str(source),
+                    "target": str(target),
+                    "status": "bootstrap_without_published_data",
+                    "files_restored": [],
+                }
+                continue
             raise FileNotFoundError(f"Dados publicados ausentes para {current_sector}: {source}")
         copied: list[str] = []
         for path in source.rglob("*"):
@@ -155,12 +164,12 @@ def main() -> int:
     hydrate = sub.add_parser("hydrate-existing-data")
     hydrate.add_argument("--data-repo", type=Path, required=True)
     hydrate.add_argument("--resultados", type=Path, default=Path("resultados"))
-    hydrate.add_argument("--sector", choices=("all", "saude", "construcao_civil"), default="all")
+    hydrate.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="all")
     hydrate.add_argument("--requirements", choices=("indicators", "charts", "dashboard"), required=True)
     for name in ("recalculate-indicators", "regenerate-charts", "rebuild-dashboard-no-fetch"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--resultados", type=Path, default=Path("resultados"))
-        cmd.add_argument("--sector", choices=("all", "saude", "construcao_civil"), default="saude")
+        cmd.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
         cmd.add_argument("--scope", choices=("all", "financial", "market", "sector_aggregates"), default="financial")
         cmd.add_argument("--chart-scope", choices=("all", "individual", "comparison", "sector"), default="all")
         cmd.add_argument("--ticker", default="all")

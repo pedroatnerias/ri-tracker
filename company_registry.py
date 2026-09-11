@@ -5,8 +5,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-SECTORS = frozenset({"saude", "construcao_civil", "all"})
-SECTOR_LABELS = {"saude": "Saúde", "construcao_civil": "Construção civil", "all": "Todos"}
+@dataclass(frozen=True, slots=True)
+class SectorConfig:
+    label: str
+    financial_enabled: bool
+    operational_enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ShareClass:
+    ticker: str
+    cvm_quantity_field: str
+    cvm_quantity_scale: int = 1
+    economic_weight: float = 1.0
+    class_label: str | None = None
+
+    @property
+    def yahoo_ticker(self) -> str:
+        return self.ticker if self.ticker.endswith(".SA") else f"{self.ticker}.SA"
+
+
+@dataclass(frozen=True, slots=True)
+class StatementScaleOverride:
+    document: str
+    start_date: str
+    end_date: str
+    declared_scale: str
+    multiplier: int
+    reason: str
+
+
+SECTOR_CONFIG = {
+    "saude": SectorConfig("Saúde", True, True),
+    "construcao_civil": SectorConfig("Construção civil", True, True),
+    "varejo": SectorConfig("Varejo", True, False),
+}
+REAL_SECTORS = tuple(SECTOR_CONFIG)
+SECTORS = frozenset((*REAL_SECTORS, "all"))
+SECTOR_LABELS = {**{sector: config.label for sector, config in SECTOR_CONFIG.items()}, "all": "Todos"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +60,8 @@ class Company:
     configuration_status: str = "validated"
     configuration_note: str | None = None
     legacy_tickers: tuple[str, ...] = ()
+    share_classes: tuple[ShareClass, ...] = ()
+    statement_scale_overrides: tuple[StatementScaleOverride, ...] = ()
 
     @property
     def scope_label(self) -> str:
@@ -42,10 +80,12 @@ class Company:
 def _c(ticker: str, sector: str, cd: str, cnpj: str, name: str, aliases: tuple[str, ...] = (),
        scope: str = "con", operational: bool | None = None, yahoo: str | None = None,
        status: str = "validated", note: str | None = None,
-       legacy_tickers: tuple[str, ...] = ()) -> Company:
-    operational_enabled = sector == "construcao_civil" if operational is None else operational
+       legacy_tickers: tuple[str, ...] = (), share_classes: tuple[ShareClass, ...] = (),
+       statement_scale_overrides: tuple[StatementScaleOverride, ...] = ()) -> Company:
+    operational_enabled = SECTOR_CONFIG[sector].operational_enabled if operational is None else operational
     return Company(ticker, sector, cd.zfill(6), cnpj, name, aliases or (name,), scope, True,
-                   operational_enabled, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers)
+                   operational_enabled, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers,
+                   share_classes, statement_scale_overrides)
 
 
 _COMPANIES = (
@@ -82,6 +122,22 @@ _COMPANIES = (
     _c("TEND3", "construcao_civil", "21148", "71.476.527/0001-35", "CONSTRUTORA TENDA S.A.", operational=True),
     _c("TRIS3", "construcao_civil", "21130", "08.811.643/0001-27", "TRISUL S.A.", operational=True),
     _c("VIVR3", "construcao_civil", "20702", "67.571.414/0001-41", "VIVER INCORPORADORA E CONSTRUTORA S.A.", operational=True),
+    _c("ALLD3", "varejo", "25330", "20.247.322/0001-47", "ALLIED TECNOLOGIA S.A."),
+    _c("AMAR3", "varejo", "22055", "61.189.288/0001-89", "MARISA LOJAS S.A."),
+    _c("AMER3", "varejo", "20990", "00.776.574/0001-56", "AMERICANAS S.A. - EM RECUPERACAO JUDICIAL", ("AMERICANAS S.A.", "AMERICANAS S.A. - EM RECUPERACAO JUDICIAL")),
+    _c("BHIA3", "varejo", "6505", "33.041.260/0652-90", "GRUPO CASAS BAHIA S.A.", ("GRUPO CASAS BAHIA S.A.", "VIA S.A.", "VIA VAREJO S.A.")),
+    _c("CEAB3", "varejo", "24848", "45.242.914/0001-05", "C&A MODAS S.A."),
+    _c("CGRA3", "varejo", "4537", "92.012.467/0001-70", "GRAZZIOTIN S.A.", share_classes=(ShareClass("CGRA3", "QT_ACAO_ORDIN_CAP_INTEGR"), ShareClass("CGRA4", "QT_ACAO_PREF_CAP_INTEGR"))),
+    _c("LJQQ3", "varejo", "25038", "96.418.264/0218-02", "LOJAS QUERO-QUERO S.A."),
+    _c("LREN3", "varejo", "8133", "92.754.738/0001-62", "LOJAS RENNER S.A."),
+    _c("MGLU3", "varejo", "22470", "47.960.950/0001-21", "MAGAZINE LUIZA S.A."),
+    _c("RIAA3", "varejo", "4669", "08.402.943/0001-52", "GUARARAPES CONFECCOES S.A.", ("GUARARAPES CONFECCOES S.A.", "RIACHUELO S.A."), legacy_tickers=("GUAR3",)),
+    _c("SBFG3", "varejo", "24694", "13.217.485/0001-11", "GRUPO SBF S.A."),
+    _c("TFCO4", "varejo", "25208", "59.418.806/0001-47", "TRACK & FIELD CO S.A.", share_classes=(ShareClass("TFCO4", "QT_ACAO_ORDIN_CAP_INTEGR", economic_weight=0.1, class_label="ON"), ShareClass("TFCO4", "QT_ACAO_PREF_CAP_INTEGR", class_label="PN"))),
+    _c("TOKY3", "varejo", "25461", "31.553.627/0001-01", "GRUPO TOKY S.A. - EM RECUPERACAO JUDICIAL", ("GRUPO TOKY S.A.", "GRUPO TOKY S.A. - EM RECUPERACAO JUDICIAL", "MOBLY S.A."), status="validated_with_scale_override", note="ITRs de 2025 ate 2T26 declaram UNIDADE, mas os valores monetarios permanecem em milhares; multiplicador auditavel x1000 aplicado apenas ao intervalo validado.", statement_scale_overrides=(StatementScaleOverride("ITR", "2025-01-01", "2026-06-30", "UNIDADE", 1_000, "Continuidade com DFPs e releases oficiais confirma valores em milhares apesar do rotulo UNIDADE."),)),
+    _c("VSTE3", "varejo", "21440", "49.669.856/0001-43", "VESTE S.A. ESTILO", ("VESTE S.A. ESTILO", "RESTOQUE COMERCIO E CONFECCOES DE ROUPAS S.A."), legacy_tickers=("LLIS3",)),
+    _c("WEST3", "varejo", "25518", "14.776.142/0001-50", "WESTWING COMERCIO VAREJISTA S.A.", scope="ind"),
+    _c("WHRL3", "varejo", "14346", "59.105.999/0001-86", "WHIRLPOOL S.A.", share_classes=(ShareClass("WHRL3", "QT_ACAO_ORDIN_CAP_INTEGR", 1_000), ShareClass("WHRL4", "QT_ACAO_PREF_CAP_INTEGR", 1_000))),
 )
 
 _BY_TICKER = {company.ticker: company for company in _COMPANIES}
@@ -114,6 +170,10 @@ def operational_companies(sector: str = "saude") -> tuple[Company, ...]:
     return tuple(c for c in companies_for_sector(sector) if c.operational_enabled)
 
 
+def operational_sectors() -> tuple[str, ...]:
+    return tuple(sector for sector, config in SECTOR_CONFIG.items() if config.operational_enabled)
+
+
 def tickers_for_sector(sector: str = "saude") -> tuple[str, ...]:
     return tuple(c.ticker for c in companies_for_sector(sector))
 
@@ -128,3 +188,19 @@ def company_by_ticker(ticker: str) -> Company:
 
 def canonical_ticker(ticker: str) -> str:
     return company_by_ticker(ticker).ticker
+
+
+def statement_value_factor(company: Company, document: object, reference_date: object, declared_scale: object, default_factor: float) -> float:
+    document_text = str(document or "").upper()
+    scale_text = str(declared_scale or "").upper()
+    reference_text = str(reference_date or "")[:10]
+    for override in company.statement_scale_overrides:
+        if document_text == override.document and scale_text == override.declared_scale and override.start_date <= reference_text <= override.end_date:
+            return float(override.multiplier)
+    matching_overrides = [override for override in company.statement_scale_overrides if document_text == override.document and scale_text == override.declared_scale]
+    if matching_overrides and reference_text > max(override.end_date for override in matching_overrides):
+        raise ValueError(
+            f"Escala {scale_text} de {company.ticker} em {reference_text} requer validacao; "
+            "o ultimo periodo coberto pelo override expirou."
+        )
+    return float(default_factor)

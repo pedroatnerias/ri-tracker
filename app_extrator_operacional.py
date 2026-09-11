@@ -1836,7 +1836,8 @@ async def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
+    from company_registry import operational_sectors
+    parser.add_argument("--sector", choices=operational_sectors(), default="saude")
     parser.add_argument("--result-json", default=None)
     parser.add_argument(
         "--output-dir",
@@ -1882,4 +1883,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -17,7 +17,7 @@ import pymupdf
 import pymupdf4llm
 import requests
 from bs4 import BeautifulSoup
-from company_registry import canonical_ticker, operational_companies
+from company_registry import canonical_ticker, operational_companies, operational_sectors
 from operational_sources import ACCEPTED_DOCUMENT_TYPES, operational_sources_for_sector
 from sector_paths import resolve_releases_input_dir, resolve_releases_manifest_path, resolve_releases_output_dir
 
@@ -1650,7 +1650,7 @@ def criar_parser_argumentos() -> argparse.ArgumentParser:
             "Pode reduzir a quantidade de documentos encontrados."
         ),
     )
-    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
+    parser.add_argument("--sector", choices=operational_sectors(), default="saude")
     parser.add_argument("--result-json", default=None, help="Arquivo JSON com o resultado estruturado da etapa.")
 
     parser.add_argument(

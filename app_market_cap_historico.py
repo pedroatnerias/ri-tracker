@@ -11,7 +11,7 @@ Dependencia externa: yfinance (pip install yfinance).
 from __future__ import annotations
 
 import argparse
-from company_registry import company_by_ticker, financial_companies
+from company_registry import SECTORS, ShareClass, company_by_ticker, financial_companies
 import csv
 import io
 import json
@@ -29,18 +29,11 @@ import pandas as pd
 
 ANO_INICIAL = 2022
 LIMITE_DIVERGENCIA_ACOES = 0.05
+MAX_PRICE_STALENESS_DAYS = 7
 
 # O ticker nao faz parte dos CSVs de ITR/DFP. O CNPJ e a chave estavel usada
 # para relacionar cada ticker solicitado a companhia nos arquivos da CVM.
-EMPRESAS = {
-    "AALR3": "42.771.949/0001-35",  # Centro de Imagem Diagnosticos / Alliar
-    "DASA3": "61.486.650/0001-83",  # Diagnosticos da America S.A.
-    "FLRY3": "60.840.055/0001-31",  # Fleury S.A.
-    "HAPV3": "05.197.443/0001-38",  # Hapvida Participacoes e Investimentos S.A.
-    "MATD3": "16.676.520/0001-59",  # Hospital Mater Dei S.A.
-    "ONCO3": "12.104.241/0004-02",  # Oncoclinicas do Brasil Servicos Medicos S.A.
-    "RDOR3": "06.047.087/0001-39",  # Rede D'Or Sao Luiz S.A.
-}
+EMPRESAS = {company.ticker: company.cnpj for company in financial_companies("saude")}
 
 URL_ZIP = "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/{tipo}/DADOS/{tipo_lower}_cia_aberta_{ano}.zip"
 
@@ -51,6 +44,8 @@ class Registro:
     cnpj: str
     data_referencia: str
     quantidade_acoes_total: int
+    quantidade_acoes_on: int
+    quantidade_acoes_pn: int
     versao: int
     documento: str
     denominacao: str
@@ -137,6 +132,8 @@ def extrair_ano(tipo: str, ano: int, conteudo_zip: bytes) -> list[Registro]:
                     cnpj=cnpj,
                     data_referencia=dt,
                     quantidade_acoes_total=inteiro(linha.get("QT_ACAO_TOTAL_CAP_INTEGR")),
+                    quantidade_acoes_on=inteiro(linha.get("QT_ACAO_ORDIN_CAP_INTEGR")),
+                    quantidade_acoes_pn=inteiro(linha.get("QT_ACAO_PREF_CAP_INTEGR")),
                     versao=inteiro(linha.get("VERSAO")),
                     documento=tipo.upper(),
                     denominacao=(linha.get("DENOM_CIA") or "").strip(),
@@ -176,6 +173,8 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
                 {
                     "data_referencia": dt,
                     "quantidade_acoes_total": r.quantidade_acoes_total if r else None,
+                    "quantidade_acoes_on_cvm": r.quantidade_acoes_on if r else None,
+                    "quantidade_acoes_pn_cvm": r.quantidade_acoes_pn if r else None,
                     "quantidade_acoes_yahoo": None,
                     "data_acoes_yahoo": None,
                     "quantidade_acoes_cvm": r.quantidade_acoes_total if r else None,
@@ -187,8 +186,10 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
                     "justificativa_acoes": "Yahoo ainda nao consultado; CVM preservada como fallback inicial." if r else "Quantidade CVM ausente.",
                     "fonte_documento": r.documento if r else None,
                     "preco_acao": None,
+                    "preco_acao_ajustado": None,
                     "data_preco": None,
                     "market_cap": None,
+                    "classes_acoes": [],
                 }
             )
         nomes = [r.denominacao for r in escolhidos.values() if r.ticker == ticker and r.denominacao]
@@ -205,8 +206,9 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
             "fonte_acoes_primaria": "Yahoo Finance via yfinance.get_shares_full",
             "limite_divergencia_acoes": LIMITE_DIVERGENCIA_ACOES,
             "fonte_preco": "Yahoo Finance via yfinance",
-            "campo_preco": "Close",
-            "criterio_preco": "fechamento da data de referencia; se nao houver pregao, ultimo fechamento anterior",
+            "campo_preco": "Close revertido por eventos Stock Splits posteriores",
+            "criterio_preco": "preco nominal ponto-no-tempo, compativel com a quantidade de acoes da data",
+            "defasagem_maxima_preco_dias": MAX_PRICE_STALENESS_DAYS,
             "data_inicial": f"{ANO_INICIAL}-01-01",
             "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
         },
@@ -214,17 +216,8 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
     }
 
 
-def buscar_preco_yfinance(yf, yahoo_ticker: str, referencia: date) -> tuple[float | None, str | None]:
-    """Faz uma chamada ao Yahoo para uma unica data de referencia trimestral."""
-    # Uma janela curta cobre fins de semana/feriados. `end` no yfinance e exclusivo.
-    inicio = referencia - timedelta(days=7)
-    fim_exclusivo = referencia + timedelta(days=1)
-    historico = yf.Ticker(yahoo_ticker).history(
-        start=inicio.isoformat(),
-        end=fim_exclusivo.isoformat(),
-        auto_adjust=False,
-        actions=False,
-    )
+def preco_market_cap_na_data(historico: pd.DataFrame, referencia: date) -> tuple[float | None, str | None]:
+    """Reverte o ajuste retroativo de splits do Yahoo para obter preco ponto-no-tempo."""
     if historico.empty or "Close" not in historico.columns:
         return None, None
 
@@ -234,7 +227,56 @@ def buscar_preco_yfinance(yf, yahoo_ticker: str, referencia: date) -> tuple[floa
         return None, None
 
     indice = fechamentos.index[-1]
+    if (referencia - indice.date()).days > MAX_PRICE_STALENESS_DAYS:
+        return None, None
+    preco = float(fechamentos.iloc[-1])
+    if "Stock Splits" in historico.columns:
+        eventos_futuros = historico.loc[historico.index > indice, "Stock Splits"].dropna()
+        for fator in eventos_futuros[eventos_futuros != 0]:
+            preco *= float(fator)
+    return round(preco, 6), indice.date().isoformat()
+
+
+def preco_ajustado_na_data(historico: pd.DataFrame, referencia: date) -> tuple[float | None, str | None]:
+    """Retorna serie economicamente comparavel, sem reverter splits futuros."""
+    if historico.empty:
+        return None, None
+    coluna = "Adj Close" if "Adj Close" in historico.columns else "Close"
+    if coluna not in historico.columns:
+        return None, None
+    fechamentos = historico[coluna].dropna()
+    fechamentos = fechamentos[fechamentos.index.date <= referencia]
+    if fechamentos.empty:
+        return None, None
+    indice = fechamentos.index[-1]
+    if (referencia - indice.date()).days > MAX_PRICE_STALENESS_DAYS:
+        return None, None
     return round(float(fechamentos.iloc[-1]), 6), indice.date().isoformat()
+
+
+def calcular_market_cap_classes(classes: list[dict[str, object]]) -> float | None:
+    """Soma preco x quantidade somente quando todas as classes sao validas."""
+    if not classes:
+        return None
+    total = 0.0
+    for item in classes:
+        preco = item.get("preco_acao")
+        quantidade = _quantidade_valida(item.get("quantidade_acoes"))
+        if preco is None or quantidade is None:
+            return None
+        peso = float(item.get("peso_economico", 1.0))
+        if peso <= 0:
+            return None
+        total += float(preco) * quantidade * peso
+    return total
+
+
+def _quantidade_classe(periodo: dict, share_class: ShareClass) -> int | None:
+    fields = {
+        "QT_ACAO_ORDIN_CAP_INTEGR": "quantidade_acoes_on_cvm",
+        "QT_ACAO_PREF_CAP_INTEGR": "quantidade_acoes_pn_cvm",
+    }
+    return _quantidade_valida(periodo.get(fields[share_class.cvm_quantity_field]))
 
 
 def buscar_acoes_yfinance(yf, yahoo_ticker: str) -> list[tuple[date, int]]:
@@ -267,27 +309,31 @@ def validar_quantidade_acoes(yahoo: int | None, cvm: int | None) -> dict[str, ob
     yahoo = _quantidade_valida(yahoo)
     cvm = _quantidade_valida(cvm)
     if yahoo and cvm:
-        diferenca = abs(yahoo - cvm) / cvm
+        candidatos = ((cvm, 1), (cvm * 1_000, 1_000))
+        cvm_normalizado, escala_cvm = min(candidatos, key=lambda item: abs(yahoo - item[0]) / item[0])
+        diferenca = abs(yahoo - cvm_normalizado) / cvm_normalizado
         if diferenca > LIMITE_DIVERGENCIA_ACOES:
             return {
                 "quantidade": None,
                 "fonte": None,
                 "diferenca_pct": diferenca * 100.0,
                 "status": "shares_discrepancy",
-                "justificativa": "Yahoo e CVM divergem acima de 5%; market cap bloqueado para revisao.",
+                "escala_cvm": None,
+                "justificativa": "Yahoo e CVM divergem acima de 5%, inclusive apos testar escala CVM de milhares; market cap bloqueado para revisao.",
             }
         return {
             "quantidade": yahoo,
             "fonte": "Yahoo Finance",
             "diferenca_pct": diferenca * 100.0,
             "status": "validated",
-            "justificativa": "Yahoo utilizado; diferenca contra CVM dentro do limite de 5%.",
+            "escala_cvm": escala_cvm,
+            "justificativa": f"Yahoo utilizado; diferenca contra CVM dentro do limite de 5% (escala CVM x{escala_cvm}).",
         }
     if yahoo:
-        return {"quantidade": yahoo, "fonte": "Yahoo Finance", "diferenca_pct": None, "status": "yahoo_only", "justificativa": "Yahoo utilizado; CVM ausente para a data."}
+        return {"quantidade": yahoo, "fonte": "Yahoo Finance", "diferenca_pct": None, "status": "yahoo_only", "escala_cvm": None, "justificativa": "Yahoo utilizado; CVM ausente para a data."}
     if cvm:
-        return {"quantidade": cvm, "fonte": "CVM", "diferenca_pct": None, "status": "cvm_fallback", "justificativa": "CVM utilizada como fallback porque Yahoo nao retornou quantidade valida."}
-    return {"quantidade": None, "fonte": None, "diferenca_pct": None, "status": "missing", "justificativa": "Nenhuma fonte retornou quantidade valida."}
+        return {"quantidade": cvm, "fonte": "CVM", "diferenca_pct": None, "status": "cvm_fallback", "escala_cvm": None, "justificativa": "CVM utilizada sem ajuste de escala porque Yahoo nao retornou quantidade valida."}
+    return {"quantidade": None, "fonte": None, "diferenca_pct": None, "status": "missing", "escala_cvm": None, "justificativa": "Nenhuma fonte retornou quantidade valida."}
 
 
 def adicionar_precos_yfinance(resultado: dict) -> None:
@@ -304,8 +350,21 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
             "A dependencia 'yfinance' nao esta instalada. Execute: pip install yfinance"
         ) from exc
 
+    historicos_precos: dict[str, pd.DataFrame] = {}
+
+    def preco_na_data(yahoo_ticker: str, referencia: date) -> tuple[float | None, str | None]:
+        if yahoo_ticker not in historicos_precos:
+            historicos_precos[yahoo_ticker] = yf.Ticker(yahoo_ticker).history(
+                start=f"{ANO_INICIAL}-01-01",
+                end=(date.today() + timedelta(days=1)).isoformat(),
+                auto_adjust=False,
+                actions=True,
+            )
+        return preco_market_cap_na_data(historicos_precos[yahoo_ticker], referencia)
+
     for ticker, empresa in resultado["empresas"].items():
-        yahoo_tickers = company_by_ticker(ticker).yahoo_tickers
+        company = company_by_ticker(ticker)
+        yahoo_tickers = company.yahoo_tickers
         shares_series: list[tuple[date, int]] = []
         ticker_shares = None
         for yahoo_ticker in yahoo_tickers:
@@ -319,6 +378,46 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
         for periodo in empresa["periodos"]:
             referencia = date.fromisoformat(periodo["data_referencia"])
             yahoo_shares, yahoo_date = _acoes_yahoo_na_data(shares_series, referencia)
+            if company.share_classes:
+                classes = []
+                for share_class in company.share_classes:
+                    try:
+                        preco_classe, data_classe = preco_na_data(share_class.yahoo_ticker, referencia)
+                    except Exception as exc:
+                        print(f"Aviso: falha ao buscar classe {share_class.yahoo_ticker} em {referencia}: {exc}", file=sys.stderr)
+                        preco_classe, data_classe = None, None
+                    quantidade_reportada = _quantidade_classe(periodo, share_class)
+                    classes.append({
+                        "classe": share_class.class_label,
+                        "ticker": share_class.ticker,
+                        "ticker_yahoo": share_class.yahoo_ticker,
+                        "campo_quantidade_cvm": share_class.cvm_quantity_field,
+                        "quantidade_acoes_cvm_reportada": quantidade_reportada,
+                        "quantidade_acoes": quantidade_reportada * share_class.cvm_quantity_scale if quantidade_reportada else None,
+                        "peso_economico": share_class.economic_weight,
+                        "quantidade_acoes_equivalentes": quantidade_reportada * share_class.cvm_quantity_scale * share_class.economic_weight if quantidade_reportada else None,
+                        "escala_cvm": share_class.cvm_quantity_scale,
+                        "fonte_acoes": "CVM",
+                        "preco_acao": preco_classe,
+                        "data_preco": data_classe,
+                    })
+                periodo["classes_acoes"] = classes
+                periodo["quantidade_acoes_yahoo"] = yahoo_shares
+                periodo["data_acoes_yahoo"] = yahoo_date.isoformat() if yahoo_date else None
+                periodo["quantidade_acoes_utilizada"] = sum(float(item["quantidade_acoes_equivalentes"]) for item in classes) if all(item["quantidade_acoes_equivalentes"] for item in classes) else None
+                periodo["quantidade_acoes_total"] = periodo["quantidade_acoes_utilizada"]
+                periodo["fonte_acoes_utilizada"] = "CVM por classe" if periodo["quantidade_acoes_utilizada"] else None
+                periodo["diferenca_acoes_pct"] = None
+                periodo["status_validacao_acoes"] = "validated_class_sum" if periodo["quantidade_acoes_utilizada"] and all(item["preco_acao"] is not None for item in classes) else "missing_share_class_data"
+                periodo["escala_cvm"] = sorted({item["escala_cvm"] for item in classes})
+                periodo["justificativa_acoes"] = "Market cap calculado pela soma de preco x quantidade x peso economico de cada classe." if periodo["status_validacao_acoes"] == "validated_class_sum" else "Market cap bloqueado: preco ou quantidade ausente para ao menos uma classe."
+                principal = next((item for item in classes if item["ticker"] == company.ticker), classes[0])
+                periodo["preco_acao"] = principal["preco_acao"]
+                periodo["preco_acao_ajustado"] = preco_ajustado_na_data(historicos_precos[principal["ticker_yahoo"]], referencia)[0]
+                periodo["data_preco"] = principal["data_preco"]
+                periodo["ticker_yahoo"] = principal["ticker_yahoo"]
+                periodo["market_cap"] = calcular_market_cap_classes(classes) if periodo["status_validacao_acoes"] == "validated_class_sum" else None
+                continue
             cvm_shares = _quantidade_valida(periodo.get("quantidade_acoes_cvm"))
             periodo["quantidade_acoes_yahoo"] = yahoo_shares
             periodo["data_acoes_yahoo"] = yahoo_date.isoformat() if yahoo_date else None
@@ -330,6 +429,7 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
             periodo["fonte_acoes_utilizada"] = resolved["fonte"]
             periodo["diferenca_acoes_pct"] = resolved["diferenca_pct"]
             periodo["status_validacao_acoes"] = resolved["status"]
+            periodo["escala_cvm"] = resolved["escala_cvm"]
             periodo["justificativa_acoes"] = resolved["justificativa"]
             preco = None
             data_preco = None
@@ -339,7 +439,7 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
                     file=sys.stderr,
                 )
                 try:
-                    preco, data_preco = buscar_preco_yfinance(yf, yahoo_ticker, referencia)
+                    preco, data_preco = preco_na_data(yahoo_ticker, referencia)
                 except Exception as exc:  # falha externa nao invalida os dados da CVM
                     print(
                         f"Aviso: falha ao buscar {yahoo_ticker} em {referencia.isoformat()}: {exc}",
@@ -350,13 +450,15 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
                     periodo["ticker_yahoo"] = yahoo_ticker
                     break
             periodo["preco_acao"] = preco
+            historico_usado = historicos_precos.get(periodo.get("ticker_yahoo") or "")
+            periodo["preco_acao_ajustado"] = preco_ajustado_na_data(historico_usado, referencia)[0] if historico_usado is not None else None
             periodo["data_preco"] = data_preco
             if periodo.get("quantidade_acoes_utilizada") and preco is not None and periodo.get("status_validacao_acoes") != "shares_discrepancy":
                 periodo["market_cap"] = preco * periodo["quantidade_acoes_utilizada"]
             else:
                 periodo["market_cap"] = None
             if ticker_shares:
-                periodo["ticker_yahoo"] = ticker_shares
+                periodo["ticker_yahoo_acoes"] = ticker_shares
 
 
 def executar(saida: str, ano_final: int | None = None) -> dict:
@@ -390,7 +492,7 @@ def main() -> None:
         default="acoes_totais_trimestrais_cvm.json",
         help="Arquivo JSON de saida (padrao: %(default)s).",
     )
-    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     args = parser.parse_args()
     global EMPRESAS
     EMPRESAS = {c.ticker: c.cnpj for c in financial_companies(args.sector)}

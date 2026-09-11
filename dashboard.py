@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import io
 import json
 import os
@@ -41,7 +42,7 @@ from manual_operational import (
     write_manual_overrides_file,
 )
 from operational_dictionary import TARGET_METRICS, all_metric_names
-from company_registry import SECTOR_LABELS, financial_companies, operational_companies, tickers_for_sector, validate_sector
+from company_registry import REAL_SECTORS, SECTOR_LABELS, SECTORS, financial_companies, operational_companies, tickers_for_sector, validate_sector
 from sector_aggregates import build_sector_aggregates
 from sector_paths import find_financial_statement_json, resolve_releases_input_dir, resolve_releases_output_dir
 from tracking import TrackingRun
@@ -75,8 +76,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--atualizar", action="store_true", help="Roda os apps antes de iniciar o servidor.")
     parser.add_argument("--update-scope", choices=tuple(sorted(UPDATE_SCOPES)), default="all", help="Escopo usado com --atualizar.")
-    parser.add_argument("--update-sector", choices=("saude", "construcao_civil", "all"), default="saude", help="Setor usado com --atualizar.")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude", help="Setor exibido no dashboard.")
+    parser.add_argument("--update-sector", choices=tuple(sorted(SECTORS)), default="saude", help="Setor usado com --atualizar.")
+    parser.add_argument("--sector", choices=REAL_SECTORS, default="saude", help="Setor exibido no dashboard.")
     parser.add_argument("--update-mode", choices=tuple(sorted(UPDATE_MODES)), default="full", help="Modo usado com --atualizar.")
     parser.add_argument(
         "--nao-liberar-porta",
@@ -461,11 +462,17 @@ def run_update(
     if sector == "all":
         (resultados.expanduser().resolve() / "saude").mkdir(parents=True, exist_ok=True)
         results = []
-        if scope in {"all", "financial", "operational"}:
-            health_scope = scope
-            results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
-        if scope in {"all", "financial", "operational"}:
-            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
+        for current_sector in REAL_SECTORS:
+            has_financial = bool(financial_companies(current_sector))
+            has_operational = bool(operational_companies(current_sector))
+            if scope == "financial" and not has_financial:
+                continue
+            if scope == "operational" and not has_operational:
+                continue
+            effective_scope = scope
+            if scope == "all" and has_financial != has_operational:
+                effective_scope = "financial" if has_financial else "operational"
+            results.append(run_update(resultados, anos, mode=mode, scope=effective_scope, sector=current_sector, diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
         return {
             "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
             "warnings": [w for r in results for w in r.get("warnings", [])],
@@ -497,8 +504,8 @@ def run_update(
     step_results: list[dict[str, object]] = []
     warnings: list[str] = []
     started_total = time.monotonic()
-    run_financial = scope in {"all", "financial"}
-    run_operational = scope in {"all", "operational"}
+    run_financial = scope in {"all", "financial"} and bool(financial_companies(sector))
+    run_operational = scope in {"all", "operational"} and bool(operational_companies(sector))
     selected_financial = [c.ticker for c in financial_companies(sector)] if run_financial else []
     selected_operational = [c.ticker for c in operational_companies(sector)] if run_operational else []
     if run_operational:
@@ -613,8 +620,8 @@ def run_update(
         assert balanco_path is not None
         step_results.append(run_update_command("Divida liquida", [sys.executable, script_path("app_divida_liquida.py"), "calculate", str(balanco_path), "--output", str(divida_path)]))
         step_results.append(run_update_command("Ciclo financeiro", [sys.executable, script_path("app_ciclo_financeiro.py"), str(balanco_path), str(ciclo_path), "--dre", str(dre_path), "--sector", sector]))
-        step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path), "--sector", sector]))
         step_results.append(run_update_command("Market cap historico", [sys.executable, script_path("app_market_cap_historico.py"), "--saida", str(market_hist_path), "--sector", sector]))
+        step_results.append(run_update_command("Market cap atual", [sys.executable, script_path("app_market_cap.py"), "--saida", str(market_path), "--sector", sector, "--market-cap-historico", str(market_hist_path)]))
         step_results.append(
             run_update_command(
                 "Indicadores financeiros",
@@ -1136,15 +1143,16 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
         for item in items
         if isinstance(item, dict)
     )
+    operational_tickers = tuple(company.ticker for company in operational_companies(sector))
     operational_coverage = {
-        "companies_requested": len(tickers_for_sector(sector)),
+        "companies_requested": len(operational_tickers),
         "operational_files_loaded": len(operational_company_map),
         "companies_with_observations": companies_with_observations,
-        "companies_without_observations": len(tickers_for_sector(sector)) - companies_with_observations,
+        "companies_without_observations": len(operational_tickers) - companies_with_observations,
         "observations_rejected": observations_rejected,
-        "status": "complete" if companies_with_observations == len(tickers_for_sector(sector)) else "partial",
+        "status": "not_applicable" if not operational_tickers else ("complete" if companies_with_observations == len(operational_tickers) else "partial"),
     }
-    operational_coverage["warning"] = None if operational_coverage["status"] == "complete" else f"Cobertura operacional parcial: {companies_with_observations}/{len(tickers_for_sector(sector))} empresas com observações."
+    operational_coverage["warning"] = None if operational_coverage["status"] in {"complete", "not_applicable"} else f"Cobertura operacional parcial: {companies_with_observations}/{len(operational_tickers)} empresas com observações."
     indicators = {
         "indicadores": source.load_optional("indicadores", local_paths["indicadores"], remote_files.get("indicadores", "indicadores.json"), expected_paths["indicadores"]),
         "divida_liquida": source.load_optional("divida_liquida", local_paths["divida_liquida"], remote_files.get("divida_liquida", "divida_liquida.json"), expected_paths["divida_liquida"]),
@@ -1169,8 +1177,8 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     return {
         "sector": sector,
         "sector_label": SECTOR_LABELS[sector],
-        "operational_enabled": True,
-        "operational_metrics": all_metric_names(sector),
+        "operational_enabled": bool(operational_companies(sector)),
+        "operational_metrics": all_metric_names(sector) if operational_companies(sector) else [],
         "tickers": tickers_for_sector(sector),
         "has_data": has_data,
         "data_source": source.data_source,
@@ -2155,8 +2163,7 @@ HTML = """<!doctype html>
 <body>
   <div id="sector-selector" style="position:fixed;inset:0;z-index:9999;background:#f4f7fb;display:flex;align-items:center;justify-content:center">
     <div style="text-align:center"><h1>Selecione o setor</h1><p>Escolha os dados que deseja consultar.</p>
-      <button class="update-button" onclick="selectSector('saude')">Saúde</button>
-      <button class="update-button" onclick="selectSector('construcao_civil')">Construção civil</button>
+      <!-- SECTOR_BUTTONS -->
     </div>
   </div>
   <div class="topbar">
@@ -3878,6 +3885,7 @@ HTML = """<!doctype html>
 
     function renderAudit(ticker) {
       const isHealthSector = currentSector === "saude";
+      const hasOperational = DATA.operational_enabled === true;
       const op = DATA.operational?.companies?.[ticker] || {};
       const indicatorErrors = DATA.indicators?.indicadores?.errors?.[ticker] || {};
       const auditRow = (block, item, status, period, code, source, note) => ({ block, item, status, period, code, source, note });
@@ -3904,7 +3912,7 @@ HTML = """<!doctype html>
         financialRows.push(auditRow("Cálculos", key, companyData ? "OK" : "Dado faltante", "", "", file, ""));
       });
       const hiddenConstructionMetrics = new Set(["Receita Bruta", "Glosa/PCLD"]);
-      const opRows = isHealthSector ? Object.entries(op.metricas || {})
+      const opRows = hasOperational ? Object.entries(op.metricas || {})
         .filter(([metric]) => currentSector !== "construcao_civil" || !hiddenConstructionMetrics.has(metric))
         .map(([metric, items]) => {
         const sources = (items || []).map(item => item.fonte_documento || item.fonte_linha || item.escopo || "").filter(Boolean).join(" | ");
@@ -3914,24 +3922,23 @@ HTML = """<!doctype html>
         const note = validItems.map(item => `${item.nature || "reported"} / ${item.confidence || ""} / ${item.fonte_linha || ""}`).join(" | ");
         return auditRow("Operacional", metric, status, "", "", sources || op.fonte_planilha || op.fonte_alternativa || "", note || op.erro_planilha || "");
       }) : [];
-      if (isHealthSector) (op.warnings || []).forEach(item => {
+      if (hasOperational) (op.warnings || []).forEach(item => {
         const status = item.status === "not_found" ? "NOT_FOUND" : item.status === "medium_confidence" ? "MEDIUM" : item.status;
         opRows.push(auditRow("Operacional", item.metric || "", status, item.period || "", "", item.fonte_linha || item.escopo || op.fonte_planilha || op.fonte_alternativa || "", item.message || ""));
       });
-      const defaultOperationalMetrics = ["Ticket Médio", "N. Atendimentos", "N. Unidades", "N. Pacientes", "Receita Bruta", "Glosa/PCLD"];
       const existingOp = new Set(Object.keys(op.metricas || {}));
-      if (isHealthSector) defaultOperationalMetrics.forEach(metric => {
+      if (hasOperational) operationalMetrics.forEach(metric => {
         if (!existingOp.has(metric)) opRows.push(auditRow("Operacional", metric, "Dado faltante", "", "", op.fonte_alternativa || "", ""));
       });
       const errorRows = Object.entries(indicatorErrors).map(([period, message]) => auditRow("Erros", "Indicadores", "Erro", period, "", DATA.files?.indicadores?.path || "", message));
-      const sectorRows = isHealthSector
-        ? [auditRow("Setor", "Saúde", "Aplicável", "", "", "", "Auditoria operacional habilitada; saúde utiliza planilhas e documentos de RI.")]
-        : [auditRow("Setor", "Construção Civil", "Aplicável", "", "", "", "Auditoria operacional não aplicável; construção civil utiliza exclusivamente PDFs oficiais de RI.")];
+      const sectorRows = hasOperational
+        ? [auditRow("Setor", DATA.sector_label || currentSector, "Aplicável", "", "", "", isHealthSector ? "Auditoria operacional habilitada; saúde utiliza planilhas e documentos de RI." : "Auditoria operacional habilitada; construção civil utiliza PDFs oficiais de RI.")]
+        : [auditRow("Setor", DATA.sector_label || currentSector, "Não aplicável", "", "", "", "Setor exclusivamente financeiro; componentes operacionais são omitidos.")];
       const rows = [...sectorRows, ...financialRows, ...opRows, ...errorRows];
       if (!rows.length) return `<div class="empty">Sem mensagens de auditoria para ${escapeHtml(ticker)}.</div>`;
       const body = rows.map(row => `<tr><td>${escapeHtml(row.block)}</td><td class="desc">${escapeHtml(row.item)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.period)}</td><td>${escapeHtml(row.code)}</td><td class="desc">${escapeHtml(row.source)}</td><td class="desc">${escapeHtml(row.note)}</td></tr>`).join("");
       const colgroup = '<colgroup><col style="width:150px"><col style="width:260px"><col style="width:130px"><col style="width:120px"><col style="width:130px"><col style="width:460px"><col style="width:460px"></colgroup>';
-      const disclaimer = '<div class="disclaimer"><strong>Aviso:</strong> a auditoria dos dados operacionais reflete uma captura experimental e pode conter classificações ou leituras incorretas. A origem informada deve ser usada para validação manual nos documentos originais.</div>';
+      const disclaimer = hasOperational ? '<div class="disclaimer"><strong>Aviso:</strong> a auditoria dos dados operacionais reflete uma captura experimental e pode conter classificações ou leituras incorretas. A origem informada deve ser usada para validação manual nos documentos originais.</div>' : '';
       return `<h2>Auditoria - ${escapeHtml(ticker)}</h2>${disclaimer}<div class="table-wrap"><table class="fixed-layout audit-table">${colgroup}<thead><tr><th>Bloco</th><th>Item</th><th>Status</th><th>Período</th><th>Conta/código</th><th>Origem</th><th>Observação</th></tr></thead><tbody>${body}</tbody></table></div>`;
     }
 
@@ -3947,7 +3954,7 @@ HTML = """<!doctype html>
       if (currentMain === "comparativo") {
         document.getElementById("view-tabs").innerHTML = "";
         document.getElementById("view-tabs").style.display = "none";
-        document.getElementById("meta").textContent = "Comparativo | 7 empresas";
+        document.getElementById("meta").textContent = `Comparativo | ${DATA.tickers.length} empresas`;
         document.getElementById("content").innerHTML = renderComparison();
         return;
       }
@@ -4001,6 +4008,14 @@ HTML = """<!doctype html>
 </body>
 </html>
 """
+
+HTML = HTML.replace(
+    "<!-- SECTOR_BUTTONS -->",
+    "\n".join(
+        f'<button class="update-button" onclick="selectSector(\'{sector}\')">{html.escape(SECTOR_LABELS[sector])}</button>'
+        for sector in REAL_SECTORS
+    ),
+)
 
 
 def create_app(resultados: Path, anos: list[int] | None = None) -> Flask:

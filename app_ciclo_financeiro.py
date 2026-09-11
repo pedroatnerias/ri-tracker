@@ -28,6 +28,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from company_registry import REAL_SECTORS
 from typing import Any, Iterable, Optional
 
 
@@ -657,7 +658,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--target-end", type=str, help="Data final desejada (AAAA-MM-DD); padrao: periodo mais recente")
     parser.add_argument("--scope", choices=("auto", "consolidado", "individual"), default="auto")
     parser.add_argument("--dre", type=Path, help="JSON gerado pelo app_dre para receita e CMV")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
+    parser.add_argument("--sector", choices=REAL_SECTORS, default="saude")
     args = parser.parse_args(argv)
 
     try:

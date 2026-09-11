@@ -2,7 +2,7 @@
 
 ## Atualização estrutural — setembro de 2026
 
-- A atualização financeira segue a mesma regra para Saúde e Construção Civil.
+- A atualização financeira segue o mesmo pipeline para Saúde, Construção Civil e Varejo.
 - O Yahoo Finance é a fonte primária da quantidade histórica de ações; a CVM
   valida a informação e funciona como fallback quando o Yahoo não retorna dado
   válido.
@@ -12,8 +12,9 @@
   a cobertura utilizada.
 - Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
   somente PDFs oficiais de RI; planilhas não participam desse fluxo.
-- A auditoria é setorial: Saúde exibe o bloco operacional; Construção Civil
-  exibe a auditoria financeira e informa que o bloco operacional não se aplica.
+- A auditoria é setorial: Saúde e Construção Civil exibem seus blocos
+  operacionais; em Varejo, a aba permanece visível e informa que não há JSONs
+  operacionais publicados.
 - O tracking transversal registra cada etapa documental e gera manifesto
   detalhado por execução, além do resumo seguro publicado.
 
@@ -27,20 +28,28 @@ MELK3, MRVE3, MTRE3, PDGR3, PLPL3, RDNI3, RSID3, TCSA3, TEND3, TRIS3 e
 VIVR3. O cadastro auditável está centralizado em `company_registry.py`.
 INNC3 e o ticker atual da INC Empreendimentos; INNT3 e mantido como ticker
 historico/compatibilidade para consultas e leitura de dados legados.
-Construção civil usa somente dados financeiros; não há indicadores ou
-overrides operacionais nesse setor.
+Construção Civil preserva seu pipeline operacional baseado em PDFs oficiais de
+RI, além do pipeline financeiro.
+
+Varejo acompanha ALLD3, AMAR3, AMER3, BHIA3, CEAB3, CGRA3, LJQQ3, LREN3,
+MGLU3, RIAA3, SBFG3, TFCO4, TOKY3, VSTE3, WEST3 e WHRL3. O setor é
+exclusivamente financeiro. RIAA3/GUAR3 e VSTE3/LLIS3 usam a continuidade de
+ticker do cadastro; CGRA3/CGRA4 e WHRL3/WHRL4 têm market cap somado por classe.
+Em TFCO4, as ON são ponderadas a 1/10 da PN conforme a estrutura de direitos
+econômicos divulgada pela companhia.
 
 ```bash
 python update_data.py --sector saude --scope all --mode incremental
 python update_data.py --sector construcao_civil --scope financial --mode full
+python update_data.py --sector varejo --scope financial --mode incremental
 python update_data.py --sector all --scope financial --mode incremental
 python -m data_publication validate resultados --sector saude --scope financial
 python -m data_publication publish resultados data-repo/data --sector saude --scope financial
 ```
 
-Sem `--sector`, o padrão retrocompatível é `saude`. A combinação construção +
-operacional é rejeitada; construção + tudo executa apenas financeiro com aviso;
-e todos + operacional executa apenas saúde. Publicações setoriais usam manifesto
+Sem `--sector`, o padrão retrocompatível é `saude`. Varejo + tudo executa apenas
+o financeiro; Varejo + operacional retorna `not_applicable`; e todos +
+operacional executa Saúde e Construção Civil. Publicações setoriais usam manifesto
 v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
 somente fallback de leitura e representa saúde. A publicação substitui apenas a
 interseção setor × componente e preserva os demais snapshots e overrides.
@@ -60,8 +69,8 @@ liquida padronizada`. EBITDAs negativos validos entram na soma agregada; se o
 EBITDA LTM agregado for menor ou igual a zero, o multiplo fica nulo e o
 diagnostico explicita a causa.
 
-Os retornos setoriais de preco de 30 e 360 dias usam fechamento nao ajustado,
-coerente com o market cap historico. Para cada empresa, o retorno e
+Os retornos setoriais de preco de 30, 90 e 360 dias usam fechamento ajustado por
+corporate actions, evitando retornos artificiais em splits e grupamentos. Para cada empresa, o retorno e
 `preco_final / preco_inicial - 1`, usando o fechamento do proprio dia ou o
 ultimo pregao anterior disponivel. A ponderacao setorial usa o market cap do
 inicio do intervalo: `preco_inicial x quantidade historica de acoes em ou antes
@@ -71,6 +80,11 @@ setorial nao e publicado como representativo.
 Todos os agregados registram metodologia, empresas incluidas, empresas
 excluidas, cobertura, datas efetivas dos componentes e limitacoes de dados
 historicos.
+
+O market cap histórico é deliberadamente diferente: usa preço nominal
+ponto-no-tempo e quantidade de ações da mesma data. Como o Yahoo retroajusta o
+`Close` por splits, o pipeline reverte os eventos `Stock Splits` posteriores
+antes de combinar preço e quantidade.
 
 ## Cache CVM e workflows sem coleta
 

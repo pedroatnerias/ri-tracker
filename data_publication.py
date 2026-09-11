@@ -12,7 +12,7 @@ from pathlib import Path
 
 from manual_operational import MANUAL_OVERRIDES_FILENAME
 from manual_operational import normalize_manual_payload, resolve_operational_data_with_manual
-from company_registry import operational_companies
+from company_registry import REAL_SECTORS, financial_companies, operational_companies
 from sector_paths import find_financial_statement_json, read_json_if_exists, resolve_sector_results_dir
 from company_registry import SECTORS, tickers_for_sector, validate_sector
 
@@ -441,10 +441,28 @@ def build_operational_quality_report(base: Path, sector: str = "saude") -> dict[
 
 
 def validate_results(base: Path, scope: str = "all", sector: str = "saude") -> dict[str, object]:
-    if validate_sector(sector) == "all":
-        health = validate_results(base, scope=scope, sector="saude")
-        construction = validate_results(base, scope="financial" if scope != "operational" else "operational", sector="construcao_civil") if scope != "operational" else None
-        return {"sector": "all", "scope": scope, "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
+    scope = validate_scope(scope)
+    sector = validate_sector(sector)
+    if sector == "all":
+        sectors = {}
+        for current_sector in REAL_SECTORS:
+            has_financial = bool(financial_companies(current_sector))
+            has_operational = bool(operational_companies(current_sector))
+            if scope == "financial" and not has_financial or scope == "operational" and not has_operational:
+                continue
+            effective_scope = scope
+            if scope == "all" and has_financial != has_operational:
+                effective_scope = "financial" if has_financial else "operational"
+            sectors[current_sector] = validate_results(base, scope=effective_scope, sector=current_sector)
+        return {"sector": "all", "scope": scope, "sectors": sectors}
+    has_financial = bool(financial_companies(sector))
+    has_operational = bool(operational_companies(sector))
+    if scope == "operational" and not has_operational:
+        return {"sector": sector, "scope": scope, "status": "not_applicable"}
+    if scope == "financial" and not has_financial:
+        return {"sector": sector, "scope": scope, "status": "not_applicable"}
+    if scope == "all" and has_financial != has_operational:
+        scope = "financial" if has_financial else "operational"
     manifest = build_publish_manifest(base, scope, sector)
     if manifest.get("status") == "failed_quality_gate":
         raise SystemExit("Quality gate operacional falhou: nenhuma observacao valida auditavel foi encontrada.")
@@ -475,14 +493,28 @@ def publish_validated_data(
     scope: str = "all",
     sector: str = "saude",
 ) -> dict[str, object]:
-    if validate_sector(sector) == "all":
-        health = publish_validated_data(source, target, source_commit, workflow_run_id, scope, "saude")
-        construction = None
-        if scope != "operational":
-            construction = publish_validated_data(source, target, source_commit, workflow_run_id, "financial", "construcao_civil")
-        return {"sector": "all", "scope": scope, "status": "success", "sectors": {"saude": health, **({"construcao_civil": construction} if construction else {})}}
     scope = validate_scope(scope)
     sector = validate_sector(sector)
+    if sector == "all":
+        sectors = {}
+        for current_sector in REAL_SECTORS:
+            has_financial = bool(financial_companies(current_sector))
+            has_operational = bool(operational_companies(current_sector))
+            if scope == "financial" and not has_financial or scope == "operational" and not has_operational:
+                continue
+            effective_scope = scope
+            if scope == "all" and has_financial != has_operational:
+                effective_scope = "financial" if has_financial else "operational"
+            sectors[current_sector] = publish_validated_data(source, target, source_commit, workflow_run_id, effective_scope, current_sector)
+        return {"sector": "all", "scope": scope, "status": "success", "sectors": sectors}
+    has_financial = bool(financial_companies(sector))
+    has_operational = bool(operational_companies(sector))
+    if scope == "operational" and not has_operational:
+        return {"sector": sector, "scope": scope, "status": "not_applicable"}
+    if scope == "financial" and not has_financial:
+        return {"sector": sector, "scope": scope, "status": "not_applicable"}
+    if scope == "all" and has_financial != has_operational:
+        scope = "financial" if has_financial else "operational"
     source = source.resolve()
     publication_root = target.resolve()
     if publication_root.name != "data":

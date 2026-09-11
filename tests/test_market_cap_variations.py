@@ -31,6 +31,22 @@ class MarketCapVariationTests(unittest.TestCase):
         self.assertEqual(result["preco_90d"], 100.0)
         self.assertEqual(result["preco_360d"], 80.0)
         self.assertAlmostEqual(result["variacao_90d_pct"], 20.0)
+    def test_toky_reverse_split_does_not_create_artificial_return(self):
+        history = pd.DataFrame(
+            # Datas fixas atravessam o grupamento de 27/08/2026. A serie
+            # ajustada converte o preco nominal anterior para a mesma base.
+            {"Close": [10.00, 10.10, 10.40, 10.40]},
+            index=pd.to_datetime(["2026-08-12", "2026-08-26", "2026-08-28", "2026-09-11"], utc=True),
+        )
+        ticker = FakeTicker(history)
+
+        result = obter_variacoes_preco(ticker, 10.40)
+
+        self.assertTrue(ticker.auto_adjust)
+        self.assertAlmostEqual(result["variacao_30d_pct"], 4.0)
+        self.assertEqual(result["data_30d"], "2026-08-12")
+        self.assertIn("auto_adjust=True", result["metodologia_variacao"])
+
 
     def test_obter_variacoes_preco_error_payload_keeps_90d_schema(self):
         result = obter_variacoes_preco(FakeTicker(pd.DataFrame()), 120.0)

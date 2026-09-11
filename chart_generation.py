@@ -13,7 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dashboard import CHARTS, build_comparison_payload, dashboard_payload, make_chart_png
-from company_registry import tickers_for_sector
+from company_registry import SECTORS, tickers_for_sector
+from sector_paths import expand_sectors
 
 
 COMPARISON_CHARTS: dict[str, dict[str, str]] = {
@@ -294,7 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resultados", type=Path, default=Path("resultados"))
     parser.add_argument("--output-dir", type=Path, default=Path("resultados") / "charts")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     parser.add_argument("--chart-scope", choices=("all", "individual", "comparison", "sector"), default="all")
     parser.add_argument("--ticker", default="all")
     return parser.parse_args()
@@ -302,7 +303,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sectors = ("saude", "construcao_civil") if args.sector == "all" else (args.sector,)
+    sectors = expand_sectors(args.sector)
     generated = []
     for sector in sectors:
         sector_resultados = args.resultados.resolve() / sector if (args.resultados.resolve() / sector).is_dir() else args.resultados.resolve()

@@ -13,11 +13,12 @@ import re
 import sys
 import unicodedata
 import zipfile
+from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from company_registry import Company, financial_companies
+from company_registry import Company, SECTORS, financial_companies, statement_value_factor
 from company_identity import CompanyNotFoundError, select_company_rows
 import requests
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -216,6 +217,8 @@ def extrair(zips: list[Path], companies: tuple[Company, ...] | None = None) -> t
 
                 metodo, parte, cnpj, nome = encontrados[0]
                 parte = selecionar_ultima_versao(parte)
+                parte["FATOR_ESCALA"] = parte.apply(lambda row: statement_value_factor(companhia, documento, row.get("DT_REFER"), row.get("ESCALA_MOEDA"), row["FATOR_ESCALA"]), axis=1)
+                parte["VL_CONTA"] = parte["VL_CONTA_CVM"] * parte["FATOR_ESCALA"]
                 parte["METODO_DFC"] = metodo
                 parte["ESCOPO"] = "Consolidado" if companhia.statement_scope == "con" else "Individual"
                 parte["TICKER"] = companhia.ticker
@@ -511,7 +514,7 @@ def analisar_argumentos() -> argparse.Namespace:
     parser.add_argument("--saida", type=Path, help="Arquivo JSON; padrão: <diretorio>/DFC_ITR_CVM.json.")
     parser.add_argument("--sobrescrever-downloads", action="store_true")
     parser.add_argument("--sem-dfp", action="store_true", help="Nao incorpora DFPs anuais.")
-    parser.add_argument("--sector", choices=("saude", "construcao_civil", "all"), default="saude")
+    parser.add_argument("--sector", choices=tuple(sorted(SECTORS)), default="saude")
     return parser.parse_args()
 
 
@@ -555,7 +558,7 @@ def main() -> int:
         "anos": anos,
         "arquivo_saida": str(saida),
         "companhias": [
-            {field: getattr(c, field) for field in c.__dataclass_fields__}
+            asdict(c)
             for c in companies
         ],
     }, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -56,14 +56,14 @@ class SectorAggregateTests(unittest.TestCase):
             "empresas": {
                 "A": {
                     "periodos": [
-                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-30", "preco_acao": 20, "data_preco": "2026-06-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2025-06-30", "preco_acao_ajustado": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-06-30", "preco_acao_ajustado": 20, "data_preco": "2026-06-30", "quantidade_acoes_total": 10},
                     ]
                 },
                 "B": {
                     "periodos": [
-                        {"data_referencia": "2025-06-30", "preco_acao": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 30},
-                        {"data_referencia": "2026-06-30", "preco_acao": 5, "data_preco": "2026-06-30", "quantidade_acoes_total": 30},
+                        {"data_referencia": "2025-06-30", "preco_acao_ajustado": 10, "data_preco": "2025-06-30", "quantidade_acoes_total": 30},
+                        {"data_referencia": "2026-06-30", "preco_acao_ajustado": 5, "data_preco": "2026-06-30", "quantidade_acoes_total": 30},
                     ]
                 },
             }
@@ -80,14 +80,14 @@ class SectorAggregateTests(unittest.TestCase):
             "empresas": {
                 "A": {
                     "periodos": [
-                        {"data_referencia": "2026-03-30", "preco_acao": 10, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-28", "preco_acao": 12, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-03-30", "preco_acao_ajustado": 10, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-06-28", "preco_acao_ajustado": 12, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
                     ]
                 },
                 "B": {
                     "periodos": [
-                        {"data_referencia": "2026-03-30", "preco_acao": 20, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
-                        {"data_referencia": "2026-06-28", "preco_acao": 10, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-03-30", "preco_acao_ajustado": 20, "data_preco": "2026-03-30", "quantidade_acoes_total": 10},
+                        {"data_referencia": "2026-06-28", "preco_acao_ajustado": 10, "data_preco": "2026-06-28", "quantidade_acoes_total": 10},
                     ]
                 },
             }
@@ -97,11 +97,19 @@ class SectorAggregateTests(unittest.TestCase):
         self.assertAlmostEqual(row["value"], -0.2666666667)
 
     def test_sector_return_null_below_coverage(self):
-        payload = {"empresas": {"A": {"periodos": [{"data_referencia": "2026-06-30", "preco_acao": 10, "quantidade_acoes_total": 1}]}}}
+        payload = {"empresas": {"A": {"periodos": [{"data_referencia": "2026-06-30", "preco_acao_ajustado": 10, "quantidade_acoes_total": 1}]}}}
         row = sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["30d"][0]
         self.assertIsNone(row["value"])
         self.assertLess(row["coverage_count"], 0.70)
         self.assertIsNone(sector_price_returns(payload, ("A", "B"), coverage_threshold=0.70)["series"]["90d"][0]["value"])
+
+    def test_sector_return_uses_split_adjusted_price(self):
+        payload = {"empresas": {"TOKY3": {"periodos": [
+            {"data_referencia": "2026-06-30", "preco_acao": 0.50, "preco_acao_ajustado": 10.0, "quantidade_acoes_total": 54_000_000},
+            {"data_referencia": "2026-09-30", "preco_acao": 10.40, "preco_acao_ajustado": 10.4, "quantidade_acoes_total": 2_700_000},
+        ]}}}
+        row = next(item for item in sector_price_returns(payload, ("TOKY3",), 0.70)["series"]["90d"] if item["date"] == "2026-09-30")
+        self.assertAlmostEqual(row["return_pct"], 4.0)
 
 
 if __name__ == "__main__":

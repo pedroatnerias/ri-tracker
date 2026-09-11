@@ -170,7 +170,7 @@ def _historical_rows(market_payload: dict[str, Any], ticker: str) -> list[dict[s
     for row in empresa.get("periodos") or []:
         ref = parse_date(row.get("data_referencia") or row.get("date") or row.get("periodo"))
         price_date = parse_date(row.get("data_preco") or row.get("data_referencia"))
-        price = valid_positive(row.get("preco_acao"))
+        price = valid_positive(row.get("preco_acao_ajustado") if "preco_acao_ajustado" in row else row.get("preco_acao"))
         shares = valid_positive(row.get("quantidade_acoes_total"))
         if ref:
             rows.append({"ref": ref, "price_date": price_date or ref, "price": price, "shares": shares})

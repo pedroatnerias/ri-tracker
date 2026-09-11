@@ -17,6 +17,12 @@ def financial_outputs(base: Path, ticker: str) -> None:
 
 
 class SectorPublicationTests(unittest.TestCase):
+    def test_retail_operational_publication_is_not_applicable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(data_publication.validate_results(root, "operational", "varejo")["status"], "not_applicable")
+            self.assertEqual(data_publication.publish_validated_data(root, root / "data", scope="operational", sector="varejo")["status"], "not_applicable")
+
     def test_financial_publications_preserve_other_sector_and_manifest_v2(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -24,14 +30,29 @@ class SectorPublicationTests(unittest.TestCase):
             target = root / "repo" / "data"
             financial_outputs(source / "saude", "AALR3")
             financial_outputs(source / "construcao_civil", "CURY3")
-            for sector in ("saude", "construcao_civil"):
+            financial_outputs(source / "varejo", "MGLU3")
+            for sector in ("saude", "construcao_civil", "varejo"):
                 data_publication.validate_results(source, "financial", sector)
                 data_publication.publish_validated_data(source, target, "commit", "run", "financial", sector)
             self.assertTrue((target / "sectors" / "saude" / "indicadores.json").exists())
             self.assertTrue((target / "sectors" / "construcao_civil" / "indicadores.json").exists())
+            self.assertTrue((target / "sectors" / "varejo" / "indicadores.json").exists())
             manifest = json.loads((target / "data_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["schema_version"], 2)
-            self.assertEqual(set(manifest["sectors"]), {"saude", "construcao_civil"})
+            self.assertEqual(set(manifest["sectors"]), {"saude", "construcao_civil", "varejo"})
+
+    def test_all_financial_validates_and_publishes_three_sectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "resultados"
+            target = root / "repo" / "data"
+            for sector, ticker in (("saude", "AALR3"), ("construcao_civil", "CURY3"), ("varejo", "MGLU3")):
+                financial_outputs(source / sector, ticker)
+            validation = data_publication.validate_results(source, "financial", "all")
+            publication = data_publication.publish_validated_data(source, target, "commit", "run", "financial", "all")
+            self.assertEqual(set(validation["sectors"]), {"saude", "construcao_civil", "varejo"})
+            self.assertEqual(set(publication["sectors"]), {"saude", "construcao_civil", "varejo"})
+            self.assertTrue((target / "sectors" / "varejo" / "indicadores.json").exists())
 
     def test_construction_operational_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
