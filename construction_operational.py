@@ -94,7 +94,7 @@ def normalize_money(value: float, unit_text: str) -> tuple[float, str, str]:
     number = float(value)
     if "bilh" in unit or "billion" in unit:
         return number * 1000, "BRL", "million"
-    if re.search(r"\bmil\b|thousand", unit) and "milhao" not in unit and "million" not in unit:
+    if re.search(r"\bmil\b|milhares|thousand", unit) and "milhao" not in unit and "million" not in unit:
         return number / 1000, "BRL", "million"
     if re.search(r"(?:r\$|brl)\s*mm\b", unit) or "milhoes" in unit or "milhao" in unit or "million" in unit:
         return number, "BRL", "million"
@@ -107,7 +107,7 @@ def resolve_financial_unit(unit_text: str, source: str = "column_header") -> dic
     unit = normalize_text(unit_text)
     if "bilh" in unit or "billion" in unit:
         multiplier = 1000
-    elif re.search(r"\bmil\b|thousand", unit) and "milhao" not in unit and "million" not in unit:
+    elif re.search(r"\bmil\b|milhares|thousand", unit) and "milhao" not in unit and "million" not in unit:
         multiplier = .001
     elif re.search(r"(?:r\$|brl)\s*mm\b", unit) or "milhoes" in unit or "milhao" in unit or "million" in unit:
         multiplier = 1
@@ -131,6 +131,9 @@ def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale
     if isinstance(raw_value, (int, float)):
         parsed = float(raw_value)
     else:
+        numeric_text = raw.replace("**", "").replace(" ", "").replace("\u00a0", "")
+        if not re.fullmatch(r"\(?-?\d[\d.,]*\)?", numeric_text):
+            raise ValueError(f"celula numerica ambigua: {raw_value}")
         cleaned = re.sub(r"[^\d,.-]", "", raw)
         if not cleaned:
             raise ValueError(f"valor financeiro invÃ¡lido: {raw_value}")
@@ -139,6 +142,8 @@ def parse_brazilian_financial_value(raw_value: str | int | float, declared_scale
         elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", cleaned):
             cleaned = cleaned.replace(".", "")
         parsed = float(cleaned)
+        if numeric_text.startswith("(") and numeric_text.endswith(")"):
+            parsed = -abs(parsed)
     unit = resolve_financial_unit(declared_scale)
     normalized = parsed * float(unit["multiplier"])
     return {
@@ -192,11 +197,13 @@ def validate_observation_evidence(observation: dict[str, Any]) -> dict[str, Any]
     missing = [key for key in ("ticker", "indicator_id", "period", "value", "unit", "source_document") if observation.get(key) in (None, "")]
     if not isinstance(observation.get("value"), (int, float)) or not math.isfinite(observation.get("value", float("nan"))):
         missing.append("finite_value")
+    if str(observation.get("indicator_id", "")).startswith("units_") and isinstance(observation.get("value"), (int, float)) and observation["value"] < 0:
+        missing.append("nonnegative_quantity")
     status = "valid" if not missing and observation.get("confidence") in {"high", "medium"} else "low_confidence"
     if observation.get("validation_flags"):
         if "breakdown_without_explicit_total" in observation["validation_flags"]:
             status = "quarantined_scope"
-        elif any(flag.startswith(("profile_publication:", "ownership_basis_expected:", "unexpected_")) for flag in observation["validation_flags"]):
+        elif any(flag.startswith(("profile_publication:", "ownership_basis_expected:", "unexpected_", "missing_monetary_unit")) for flag in observation["validation_flags"]):
             status = "quarantined"
     return {**observation, "validation_status": status, "validation_missing_fields": missing}
 
@@ -205,8 +212,14 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
     if not table:
         return []
     headers = table[0]
+    header_index = 0
+    for i, row in enumerate(table):
+        if any(re.fullmatch(r"(?:[1-4][TQ]\s?\d{2,4}|[69]M\s?\d{2,4}|FY\s?\d{2,4}|20\d{2})", str(cell).replace("**", "").strip(), re.I) or ("<br>" in str(cell) and parse_composite_header(cell)["periods"]) for cell in row[1:]):
+            header_index = i
+            headers = [" ".join(str(table[j][col]) for j in range(i + 1) if col < len(table[j])) for col in range(len(row))]
+            break
     observations: list[dict[str, Any]] = []
-    for row in table[1:]:
+    for row in table[header_index + 1:]:
         if not row:
             continue
         label = row[0]
@@ -214,6 +227,10 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
         indicator_id, flags = identify_metric(label, context_text, " ".join(headers))
         if not indicator_id or flags:
             continue
+        unit_context = " ".join((label, context_text))
+        if indicator_id.startswith("units_") and re.search(r"r\$|brl|recebiveis|contas a receber", normalize_text(unit_context)):
+            continue
+        monetary_unit = next((part for part in (label, " ".join(headers), str(context.get("table_title") or ""), str(context.get("document_unit") or "")) if re.search(r"r\$|brl|milhares de reais|milhoes de reais", normalize_text(part))), "")
         for period, raw_value in align_periods_and_values(headers[1:], row[1:]):
             try:
                 parsed = parse_brazilian_financial_value(raw_value, " ".join(headers))
@@ -223,14 +240,14 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
                     value=parsed["parsed_value"],
                     period=period,
                     label=label,
-                    unit=" ".join(headers),
+                    unit=monetary_unit if indicator_id.endswith("_vgv") else unit_context,
                     context=context_text,
                     source_document=str(context.get("source_document") or ""),
                     source_url=str(context.get("source_url") or ""),
                     table_title=context_text,
                     column_label=period,
                     raw_value=raw_value,
-                    raw_unit=" ".join(headers),
+                    raw_unit=monetary_unit if indicator_id.endswith("_vgv") else unit_context,
                 )
             except (ValueError, KeyError):
                 continue
@@ -239,7 +256,10 @@ def extract_table_observations(table: list[list[str]], context: dict[str, Any]) 
 
 
 def _markdown_page_for_line(lines: list[str], index: int) -> int | None:
-    for line in reversed(lines[: index + 1]):
+    for line in reversed(lines[:index + 1]):
+        match = re.search(r"end of page=(\d+)", line)
+        if match:
+            return int(match.group(1)) + 2
         match = re.search(r"(?:pagina|page)\s*(\d+)", normalize_text(line))
         if match:
             return int(match.group(1))
@@ -253,7 +273,7 @@ def _markdown_tables(lines: list[str]) -> list[tuple[list[list[str]], int, str]]
     title = ""
     for index, raw_line in enumerate(lines):
         line = raw_line.strip()
-        if line.startswith("#"):
+        if line.startswith("#") and not current:
             title = line.lstrip("# ").strip()
         if line.startswith("|") and line.endswith("|"):
             cells = [cell.strip() for cell in line.strip("|").split("|")]
@@ -294,6 +314,8 @@ def _dedupe_observations(observations: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def identify_metric(label: str, context: str = "", unit: str = "") -> tuple[str | None, list[str]]:
+    label = re.sub(r"r\$\s*(?:milh[o?]es|mil|mm)\s*", "", label, flags=re.I)
+    label = re.sub(r"\s+-\s+", " ", label)
     haystack = normalize_text(" ".join((label, context)))
     matches: list[tuple[int, str]] = []
     flags: list[str] = []
@@ -350,6 +372,8 @@ def build_evidence_observation(*, ticker: str, indicator_id: str, value: float, 
     normalized_value, currency, scale = (normalize_money(value, unit) if indicator_id.endswith("_vgv") else (float(value), None, "units"))
     rules = profile_for(ticker).get("metrics", {}).get(indicator_id, {})
     validation_flags: list[str] = []
+    if indicator_id.endswith("_vgv") and not unit:
+        validation_flags.append("missing_monetary_unit")
     expected_basis = rules.get("preferred_ownership_basis")
     if expected_basis and basis != expected_basis:
         validation_flags.append(f"ownership_basis_expected:{expected_basis}")
@@ -387,10 +411,12 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
     """Extrai linhas de tabelas Markdown; exige rotulo, periodo e valor explicitos."""
     lines = text.splitlines()
     observations: list[dict[str, Any]] = []
+    initial_text = normalize_text(text[:8000])
+    document_unit = "R$ milhares" if re.search(r"(?:em|express[oa]s? em) milhares de reais", initial_text) else ""
     for table, start, title in _markdown_tables(lines):
         rows = extract_table_observations(
             table,
-            {"ticker": ticker, "source_document": source_document, "source_url": source_url, "table_title": title},
+            {"ticker": ticker, "source_document": source_document, "source_url": source_url, "table_title": title, "document_unit": document_unit},
         )
         page = _markdown_page_for_line(lines, start)
         for row in rows:
@@ -398,57 +424,56 @@ def extract_markdown_observations(text: str, *, ticker: str, source_document: st
                 row["page"] = page
             row["extraction_method"] = "markdown_composite_table"
             observations.append(row)
-    table_title = ""
-    page: int | None = None
-    headers: list[str] = []
-    for index, raw_line in enumerate(lines):
-        line = raw_line.strip()
-        page_match = re.search(r"(?:pagina|page)\s*(\d+)", normalize_text(line))
-        if page_match:
-            page = int(page_match.group(1))
-        if line.startswith("#"):
-            table_title = line.lstrip("# ").strip()
-        if not (line.startswith("|") and line.endswith("|")):
+    observations.extend(extract_narrative_observations(text, ticker=ticker, source_document=source_document, source_url=source_url))
+    return [validate_observation_evidence(row) for row in observations]
+
+
+def extract_narrative_observations(text: str, *, ticker: str, source_document: str, source_url: str = "") -> list[dict[str, Any]]:
+    """Only accept an explicit metric, quarter and monetary value in one paragraph."""
+    observations = []
+    rules = profile_for(ticker).get("metrics", {})
+    page_parts = re.split(r"(?:<!-- page \d+ -->|--- end of page=\d+ ---)", text)
+    cursor = 0
+    for paragraph in page_parts:
+        page_offset = text.find(paragraph, cursor)
+        cursor = page_offset + len(paragraph)
+        original_paragraph = paragraph
+        if "|" in paragraph:
+            paragraph = "\n".join(line for line in paragraph.splitlines() if "|" not in line)
+        normalized = normalize_text(paragraph)
+        periods = set(re.findall(r"\b[1-4]t\s*\d{2}(?:\d{2})?\b", normalized))
+        if len(periods) != 1:
             continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) < 2 or all(re.fullmatch(r":?-+:?", cell) for cell in cells):
-            continue
-        if any(re.fullmatch(r"(?:[1-4][TQ]\s?\d{2,4}|[69]M\s?\d{2,4}|FY\s?\d{2,4}|20\d{2})", cell, re.I) for cell in cells[1:]):
-            headers = cells
-            continue
-        if not headers or len(cells) < 2:
-            continue
-        context = " ".join((ticker, *lines[max(0, index - 3): min(len(lines), index + 4)]))
-        indicator_id, flags = identify_metric(cells[0], context, context)
-        normalized_context = normalize_text(context)
-        normalized_label = normalize_text(cells[0])
-        if any(term in normalized_context for term in ("por regiao", "por produto", "by region", "by product")) and not any(term in normalized_label for term in ("total", "consolidado", "consolidated")):
-            flags.append("breakdown_without_explicit_total")
-        if not indicator_id or flags:
-            continue
-        for column, raw_value in enumerate(cells[1:], start=1):
-            if column >= len(headers) or raw_value in {"", "-", "â€”", "N/A"}:
-                continue
-            cleaned = re.sub(r"[^\d,.-]", "", raw_value)
-            if not cleaned:
-                continue
-            if "," in cleaned:
-                cleaned = cleaned.replace(".", "").replace(",", ".")
-            elif re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", cleaned):
-                cleaned = cleaned.replace(".", "")
-            try:
-                value = float(cleaned)
-                observation = build_evidence_observation(
-                    ticker=ticker, indicator_id=indicator_id, value=value, period=headers[column],
-                    label=cells[0], unit=" ".join((cells[0], table_title, context)), context=context,
-                    source_document=source_document, source_url=source_url, page=page,
-                    table_title=table_title, column_label=headers[column],
-                    raw_value=raw_value, raw_unit=" ".join((cells[0], table_title, context)),
-                )
-            except (ValueError, KeyError):
-                continue
-            observations.append(observation)
-    return _dedupe_observations(observations)
+        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", re.sub(r"\s+", " ", paragraph))
+        for sentence in sentences:
+            extracted = _extract_narrative_sentence(sentence, ticker, source_document, source_url, next(iter(periods)), rules, text, original_paragraph)
+            for row in extracted:
+                preceding = text[:page_offset].splitlines()
+                row["page"] = _markdown_page_for_line(preceding, len(preceding) - 1)
+            observations.extend(extracted)
+    return observations
+
+
+def _extract_narrative_sentence(paragraph, ticker, source_document, source_url, period, rules, text, page_text):
+    observations = []
+    normalized = normalize_text(paragraph)
+    periods = {period}
+    values = list(re.finditer(r"r\$\s*([\d.,]+)\s*(bilhoes|bilhao|milhoes|milhao|mil|mm)\b", normalized))
+    if len(values) == 1:
+        metric, flags = identify_metric(paragraph, ticker, paragraph)
+        if not metric or flags or not any("narrative" in source for source in rules.get(metric, {}).get("preferred_sources", [])):
+            return []
+        value = values[0]
+        parsed = parse_brazilian_financial_value(value.group(1), value.group(0))
+        observation = build_evidence_observation(ticker=ticker, indicator_id=metric,
+            value=parsed["parsed_value"], period=next(iter(periods)), label=paragraph,
+            unit=value.group(0), context=paragraph, source_document=source_document,
+            source_url=source_url, raw_value=value.group(1), raw_unit=value.group(0))
+        observation["extraction_method"] = "explicit_narrative"
+        preceding = text[:text.find(page_text)].splitlines()
+        observation["page"] = _markdown_page_for_line(preceding, len(preceding) - 1)
+        observations.append(validate_observation_evidence(observation))
+    return observations
 
 
 def extract_workbook_observations(workbook_path: Any, *, ticker: str, source_document: str = "", source_url: str = "") -> list[dict[str, Any]]:

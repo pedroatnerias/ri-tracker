@@ -14,8 +14,8 @@
   ponderados pelo market cap inicial validado e com cobertura explícita.
 - Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
   somente PDFs oficiais de RI; planilhas não participam desse fluxo.
-- A auditoria é setorial: Saúde exibe o bloco operacional; Construção Civil
-  exibe a auditoria financeira e informa que o bloco operacional não se aplica.
+- A auditoria é setorial: Saúde usa planilhas/RI; Construção Civil usa PDFs
+  oficiais de RI e registra evidência, cobertura e estado por indicador.
 - O tracking transversal registra cada etapa documental e gera manifesto
   detalhado por execução, além do resumo seguro publicado.
 
@@ -29,20 +29,35 @@ MELK3, MRVE3, MTRE3, PDGR3, PLPL3, RDNI3, RSID3, TCSA3, TEND3, TRIS3 e
 VIVR3. O cadastro auditável está centralizado em `company_registry.py`.
 INNC3 e o ticker atual da INC Empreendimentos; INNT3 e mantido como ticker
 historico/compatibilidade para consultas e leitura de dados legados.
-Construção civil usa somente dados financeiros; não há indicadores ou
-overrides operacionais nesse setor.
+Construção civil usa PDFs oficiais de RI para os indicadores operacionais. O
+período-alvo pode ser fixado para validação ou atualização incremental.
 
 ```bash
 python update_data.py --sector saude --scope all --mode incremental
 python update_data.py --sector construcao_civil --scope financial --mode full
+python update_data.py --sector construcao_civil --scope operational --periodo-alvo 2026T2
 python update_data.py --sector all --scope financial --mode incremental
 python -m data_publication validate resultados --sector saude --scope financial
 python -m data_publication publish resultados data-repo/data --sector saude --scope financial
 ```
 
-Sem `--sector`, o padrão retrocompatível é `saude`. A combinação construção +
-operacional é rejeitada; construção + tudo executa apenas financeiro com aviso;
-e todos + operacional executa apenas saúde. Publicações setoriais usam manifesto
+Para validar construção civil em diretório isolado, primeiro colete os documentos
+do período e depois execute a conversão, extração e comparação com as matrizes de
+revisão:
+
+```bash
+python discover_construction_validation.py --periodo-alvo 2026T2 --output tmp/operational_validation/discovery
+python validate_construction_extraction.py --periodo-alvo 2026T2 --source tmp/operational_validation/discovery/pdfs --output tmp/operational_validation/result
+python diagnose_construction_run.py --discovery tmp/operational_validation/discovery/discovery_result.json --output tmp/operational_validation/diagnosis.json
+```
+
+O diretório de validação mantém descoberta, PDFs, derivados, snapshots e relatório
+separados do fluxo publicado. A opção `--system-ca` do coletor usa a cadeia de
+certificados do sistema quando a validação HTTPS exigir isso.
+
+Sem `--sector`, o padrão retrocompatível é `saude`. Construção + operacional
+executa a descoberta e extração de PDFs oficiais, com diagnóstico de cobertura;
+construção + tudo executa os escopos solicitados. Publicações setoriais usam manifesto
 v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
 somente fallback de leitura e representa saúde. A publicação substitui apenas a
 interseção setor × componente e preserva os demais snapshots e overrides.

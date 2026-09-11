@@ -487,6 +487,7 @@ def run_update(
     sector: str = "saude",
     diagnostico_ri: bool = False,
     refresh_cvm_files: str = "auto",
+    periodo_alvo: str | None = None,
 ) -> dict[str, object]:
     global ACTIVE_TRACKER
     mode = validate_update_mode(mode)
@@ -501,7 +502,7 @@ def run_update(
             health_scope = scope
             results.append(run_update(resultados, anos, mode=mode, scope=health_scope, sector="saude", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
         if scope in {"all", "financial", "operational"}:
-            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files))
+            results.append(run_update(resultados, anos, mode=mode, scope=scope, sector="construcao_civil", diagnostico_ri=diagnostico_ri, refresh_cvm_files=refresh_cvm_files, periodo_alvo=periodo_alvo))
         return {
             "status": "success_with_warnings" if any(r.get("warnings") for r in results) else "success",
             "warnings": [w for r in results for w in r.get("warnings", [])],
@@ -593,6 +594,10 @@ def run_update(
 
     if run_operational:
         parser_cmd = [sys.executable, script_path("app_parser_operacional.py"), "--sector", sector, "--output", str(releases_output_dir), "--result-json", str(parser_result_json)]
+        if sector == "construcao_civil":
+            from operational_periods import target_quarter
+            periodo_alvo = target_quarter(periodo_alvo)
+            parser_cmd.extend(["--periodo-alvo", periodo_alvo])
         if full_mode:
             parser_cmd.append("--sobrescrever-downloads")
         if diagnostico_ri:
@@ -622,7 +627,7 @@ def run_update(
         else:
             extractor_result = run_update_command(
                 "Dados operacionais",
-                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--md-dir", str(releases_output_dir), "--sector", sector, "--result-json", str(extractor_result_json)],
+                [sys.executable, script_path("app_extrator_operacional.py"), "--output-dir", str(operational_dir), "--md-dir", str(releases_output_dir), "--sector", sector, "--result-json", str(extractor_result_json)] + (["--periodo-alvo", periodo_alvo] if sector == "construcao_civil" else []),
                 critical=False,
             )
             step_results.append(extractor_result)

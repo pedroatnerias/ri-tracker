@@ -28,7 +28,7 @@ TERMINAL_EVENTS = frozenset({"published", "preserved_existing", "rejected", "unr
 RESERVED_EVENT_FIELDS = frozenset({"run_id", "document_id", "state", "at"})
 ALLOWED_TRANSITIONS = {
     None: {"discovered"},
-    "discovered": {"discovered", "accepted", "rejected", "extraction_error"},
+    "discovered": {"discovered", "accepted", "rejected", "unresolved", "extraction_error"},
     "accepted": {"accepted", "downloaded", "imported", "converted", "read", "published", "rejected", "extraction_error"},
     "downloaded": {"imported", "converted", "read", "extraction_error"},
     "imported": {"converted", "read", "extraction_error"},

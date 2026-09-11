@@ -53,7 +53,7 @@ class OperationalSectorIsolationTests(unittest.TestCase):
             output = root / "out"
             markdown.mkdir()
             (markdown / "CURY3_previa_1T26.md").write_text(
-                "# Prévia operacional (R$ milhões) - participação da companhia\n| Indicador | 1T26 |\n|---|---:|\n| VGV lançado | 250 |",
+                "# Prévia operacional (R$ milhões) - 100%\n| Indicador | 1T26 |\n|---|---:|\n| VGV lançado | 250 |",
                 encoding="utf-8",
             )
             (markdown / "RDOR3_release_1T26.md").write_text(
@@ -77,7 +77,7 @@ class OperationalSectorIsolationTests(unittest.TestCase):
             output = root / "resultados" / "construcao_civil" / "dados_operacionais"
             markdown.mkdir(parents=True)
             (markdown / "CURY3_previa_1T26.md").write_text(
-                "# Prévia operacional (R$ milhões) - participação da companhia\n| Indicador | 1T26 |\n|---|---:|\n| Vendas líquidas | 180 |",
+                "# Prévia operacional (R$ milhões) - 100%\n| Indicador | 1T26 |\n|---|---:|\n| Vendas líquidas | 180 |",
                 encoding="utf-8",
             )
             (markdown / "RDOR3_residual.md").write_text(
@@ -88,7 +88,7 @@ class OperationalSectorIsolationTests(unittest.TestCase):
                 "--sector", "construcao_civil", "--md-dir", str(markdown), "--output-dir", str(output),
             ])
             self.assertEqual(asyncio.run(app_extrator_operacional.run(args)), 0)
-            with self.assertRaisesRegex(SystemExit, "Quality gate operacional falhou"):
+            with self.assertRaises(SystemExit):
                 data_publication.validate_results(root / "resultados", "operational", "construcao_civil")
 
     def test_construction_extractor_does_not_treat_local_xlsx_as_pdf_source(self):

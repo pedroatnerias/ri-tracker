@@ -1576,19 +1576,32 @@ async def run(args: argparse.Namespace) -> int:
         from construction_company_profiles import resolve_company_for_document
         from document_catalog import catalog_record, write_catalog
         from tracking import TrackingRun
+        from construction_extraction_audit import merge_observations, coverage_matrix
+        from operational_periods import target_quarter, display_quarter
+        from operational_document_handoff import resolve_markdown
+        target = target_quarter(getattr(args, "periodo_alvo", None))
+        target_period = display_quarter(target)
         markdown_dir = Path(args.md_dir).expanduser().resolve()
         tracker = TrackingRun(sector="construcao_civil", pipeline="operational_extractor", extractor_version="construction_tracking_v1")
         output_dir.mkdir(parents=True, exist_ok=True)
         # Local review PDFs are valid offline fixtures. Convert them to the
         # same Markdown representation used by the production parser.
+        conversion_failures = []
         if converter_pdf_para_markdown is not None and markdown_dir.exists():
             with tracker.stage("pdf_conversion", files_found=len(list(markdown_dir.rglob("*.pdf")))):
                 for review_pdf in markdown_dir.rglob("*.pdf"):
                     try:
-                        converter_pdf_para_markdown(review_pdf, diretorio_saida=markdown_dir, extrair_imagens=False, mostrar_progresso=False)
+                        converter_pdf_para_markdown(review_pdf, diretorio_saida=markdown_dir / review_pdf.parent.name, extrair_imagens=False, mostrar_progresso=False, construction_recovery=True)
                     except Exception as exc:
+                        conversion_failures.append({"document": str(review_pdf), "ticker": review_pdf.parent.name, "reason": "conversion_failed", "error": type(exc).__name__})
                         safe_print(f"[PDF] aviso: falha ao converter {review_pdf.name}: {exc}")
-        allowed_tickers = {company.ticker for company in operational_companies("construcao_civil")}
+        companies = operational_companies("construcao_civil")
+        allowed_tickers = {company.ticker for company in companies}
+        selected = {str(ticker).upper() for ticker in getattr(args, "only", [])}
+        if selected - allowed_tickers:
+            raise ValueError(f"tickers invalidos: {sorted(selected - allowed_tickers)}")
+        companies = [company for company in companies if not selected or company.ticker in selected]
+        allowed_tickers = {company.ticker for company in companies}
         # Construction civil is PDF-only. Markdown is accepted only as the
         # local, inspectable text derivative of a PDF; spreadsheets are never
         # an operational source for this sector.
@@ -1600,6 +1613,10 @@ async def run(args: argparse.Namespace) -> int:
         if catalog_records:
             write_catalog(catalog_records, output_dir / "construction_document_catalog.json")
         all_observations: list[dict[str, Any]] = []
+        new_observations = []
+        rejected_observations = []
+        coverage = []
+        preserved_count = 0
         documents_processed: set[str] = set()
         unresolved_documents: list[dict[str, Any]] = []
         snapshots_preserved = 0
@@ -1614,16 +1631,21 @@ async def run(args: argparse.Namespace) -> int:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             tracker.event(document_id, "read", characters=len(text))
-            resolution = resolve_company_for_document(path.name, text, "construcao_civil")
+            try:
+                resolution, metadata, reason = resolve_markdown(path, text)
+            except (OSError, ValueError) as exc:
+                resolution, metadata, reason = None, {}, "invalid_metadata"
+
             if not resolution:
-                unresolved_documents.append({"document": path.name, "reason": "company_unresolved"})
-                tracker.event(document_id, "unresolved", reason="company_unresolved")
+                unresolved_documents.append({"document": str(path), "reason": reason})
+                tracker.event(document_id, "unresolved", reason=reason)
             else:
                 tracker.event(document_id, "company_resolved", ticker=resolution["ticker"], resolution_method=resolution["method"], confidence=resolution.get("confidence"))
-            prepared_documents.append({"path": path, "document_id": document_id, "text": text, "resolution": resolution})
-        for company in operational_companies("construcao_civil"):
+            prepared_documents.append({"path": path, "document_id": document_id, "text": text, "resolution": resolution, "metadata": metadata})
+        for company in companies:
             observations: list[dict[str, Any]] = []
             company_documents: set[str] = set()
+            target_documents = set()
             aliases = tuple(normalise_text(alias) for alias in (company.ticker, *company.legacy_tickers, company.expected_name, *company.aliases))
             for prepared in prepared_documents:
                 path = prepared["path"]
@@ -1636,21 +1658,23 @@ async def run(args: argparse.Namespace) -> int:
                 # Processamento é contabilizado independentemente de haver
                 # observações: ausência de divulgação é um estado auditável.
                 company_documents.add(path.name)
-                extracted = extract_markdown_observations(text, ticker=company.ticker, source_document=path.name)
+                metadata = prepared.get("metadata", {})
+                if target_period in path.name or metadata.get("periodo") == target_period or target_period in text[:3000]:
+                    target_documents.add(str(path))
+                extracted = extract_markdown_observations(text, ticker=company.ticker,
+                    source_document=metadata.get("source_pdf", str(path)), source_url=metadata.get("url_documento", ""))
                 for observation in extracted:
+                    observation["source_sha256"] = metadata.get("source_sha256")
+                    observation["document_id"] = metadata.get("source_sha256") or document_id
                     observation["company_resolution_method"] = company_resolution_method
                     observation["company_resolution"] = resolution
                 if extracted:
                     tracker.event(document_id, "parsed", observations_count=len(extracted))
                 else:
-                    tracker.event(document_id, "validated", observations_count=0, document_without_disclosure=True)
+                    tracker.event(document_id, "validated", observations_count=0, extraction_without_candidates=True)
                 documents_processed.add(path.name)
                 tracker._documents[document_id]["observations_count"] = len(extracted)
                 observations.extend(extracted)
-            metricas: dict[str, list[dict[str, Any]]] = {}
-            for observation in observations:
-                name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
-                metricas.setdefault(name, []).append({"metric": name, "indicator_id": observation["indicator_id"], "confidence": observation["confidence"], "calculated": False, "serie": {observation["period"]: observation["value"]}, "observations": [observation]})
             previous_payload = {}
             previous_path = output_dir / f"{company.ticker}.json"
             if previous_path.exists():
@@ -1658,22 +1682,40 @@ async def run(args: argparse.Namespace) -> int:
                     previous_payload = read_json(previous_path)
                 except json.JSONDecodeError:
                     previous_payload = {}
-            preserved = bool(not observations and previous_payload.get("observations"))
+            previous_observations = previous_payload.get("observations", [])
+            merged, accepted, rejected, preserved_items = merge_observations(previous_observations, observations)
+            new_observations.extend(accepted)
+            rejected_observations.extend(rejected)
+            preserved_count += preserved_items
+            accepted_keys = {tuple(item.get(key) for key in ("ticker", "indicator_id", "period", "ownership_basis", "segment")) for item in accepted}
+            retained_target = [item for item in previous_observations
+                               if item.get("period") == target_period
+                               and tuple(item.get(key) for key in ("ticker", "indicator_id", "period", "ownership_basis", "segment")) not in accepted_keys]
+            coverage.extend(coverage_matrix(company.ticker, target_period, accepted, rejected, target_documents,
+                [item for item in conversion_failures if item["ticker"] == company.ticker], retained_target))
+            observations = merged
+            metricas: dict[str, list[dict[str, Any]]] = {}
+            for observation in observations:
+                name = CONSTRUCTION_OPERATIONAL_DICTIONARY[observation["indicator_id"]]["display_name"]
+                metricas.setdefault(name, []).append({"metric": name, "indicator_id": observation["indicator_id"], "confidence": observation["confidence"], "calculated": False, "serie": {observation["period"]: observation["value"]}, "observations": [observation]})
+            preserved = bool(not accepted and previous_payload.get("observations"))
             payload = {
                 "schema_version": "construction_operational_v1", "sector": "construcao_civil",
                 "generated_at": datetime.now(timezone.utc).isoformat(), "extractor_version": "construction_operational_v1",
                 "ticker": company.ticker, "companhia": company.expected_name,
                 "companies_requested": len(allowed_tickers), "documents_processed": len(company_documents),
                 "metricas": metricas, "observations": observations,
-                "status": "found_new_data" if observations else "not_found_no_previous_data",
-                "coverage_status": "found" if observations else ("unresolved" if unresolved_documents else "not_found"),
+                "target_period": target,
+                "rejected_observations": rejected,
+                "coverage": [row for row in coverage if row["ticker"] == company.ticker],
+                "status": "found_new_data" if accepted else "not_found_no_previous_data",
+                "coverage_status": "found" if observations else ("unresolved" if any(Path(item["document"]).parent.name.upper() == company.ticker for item in unresolved_documents) else "not_found"),
                 "discovery": {"source_policy": "official_ri_pdf_only", "documents_processed": sorted(company_documents)},
                 "tracking": tracker.summary(),
                 "calculation_metadata": calculate_derived_from_observations(observations),
                 "warnings": (["Nenhuma métrica operacional válida encontrada nos documentos processados."] if not observations else []) + ["ROE e PCLD/Recebíveis não calculados: dependências financeiras hidratadas não disponíveis nesta extração."],
             }
             if preserved:
-                payload = previous_payload
                 payload["status"] = "preserved_existing_data"
                 payload.setdefault("warnings", []).append("Snapshot anterior preservado: nenhuma observação válida nova encontrada.")
                 snapshots_preserved += 1
@@ -1681,34 +1723,48 @@ async def run(args: argparse.Namespace) -> int:
             all_observations.extend(payload.get("observations") or observations)
         observations_by_metric: dict[str, int] = {}
         observations_by_confidence: dict[str, int] = {}
+        rejection_reasons: dict[str, int] = {}
         for observation in all_observations:
             observations_by_metric[observation["indicator_id"]] = observations_by_metric.get(observation["indicator_id"], 0) + 1
             confidence = str(observation.get("confidence") or "unknown")
             observations_by_confidence[confidence] = observations_by_confidence.get(confidence, 0) + 1
+        for observation in rejected_observations:
+            reason = str(observation.get("rejection_reason") or observation.get("validation_status") or "unknown")
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         companies_with_observations = sum(1 for path in output_dir.glob("*.json") if path.stem in allowed_tickers and read_json(path).get("observations"))
         result = {
             "sector": "construcao_civil", "companies_requested": len(allowed_tickers),
-            "documents_processed": len(documents_processed), "observations_candidates": len(all_observations),
-            "observations_valid": len(all_observations), "observations_rejected": 0,
+            "documents_processed": len(documents_processed), "observations_candidates": len(new_observations) + len(rejected_observations),
+            "observations_valid": len(new_observations), "observations_rejected": len(rejected_observations),
+            "observations_new": len(new_observations), "observations_preserved": preserved_count,
+            "target_period": target, "coverage": coverage,
             "snapshot_generated": bool(all_observations),
             "snapshot_path": str(output_dir) if all_observations else None,
-            "status": "success_new_snapshot" if all_observations else "no_valid_observations",
+            "status": "success_new_snapshot" if new_observations else ("preserved_existing_snapshot" if all_observations else "no_valid_observations"),
             "errors": [] if all_observations else ["Nenhuma observação válida de construcao_civil foi gerada."],
             "warnings": [],
             "unresolved_documents": unresolved_documents,
-            "coverage_status": "complete" if companies_with_observations == len(allowed_tickers) else ("partial" if companies_with_observations else "none"),
-            "companies_with_documents": len({Path(path).name.split("_", 1)[0] for path in documents_processed}),
+            "coverage_status": "complete" if coverage and all(row["status"] == "extracted" for row in coverage) else ("partial" if any(row["status"] == "extracted" for row in coverage) else "none"),
+            "companies_with_documents": len({item["resolution"]["ticker"] for item in prepared_documents if item.get("resolution") and item["resolution"]["ticker"] in allowed_tickers}),
+            "conversion_failures": conversion_failures,
             "companies_with_observations": companies_with_observations,
             "companies_without_observations": len(allowed_tickers) - companies_with_observations,
             "operational_files_generated": len(allowed_tickers),
             "snapshots_preserved": snapshots_preserved,
             "observations_by_metric": observations_by_metric,
             "observations_by_confidence": observations_by_confidence,
+            "rejection_reasons": rejection_reasons,
             "tracking": tracker.summary(),
         }
-        if 0 < companies_with_observations < len(allowed_tickers):
+        if new_observations and 0 < companies_with_observations < len(allowed_tickers):
             result["status"] = "success_with_warnings"
             result["warnings"] = [f"Cobertura operacional parcial: {companies_with_observations}/{len(allowed_tickers)} empresas com observações."]
+        if conversion_failures:
+            result["status"] = "success_with_warnings" if all_observations else result["status"]
+            result.setdefault("warnings", []).append(f"Atualização parcial: {len(conversion_failures)} documento(s) não puderam ser convertidos.")
+        if unresolved_documents:
+            result["status"] = "success_with_warnings" if all_observations else result["status"]
+            result.setdefault("warnings", []).append(f"{len(unresolved_documents)} documento(s) ficaram sem identidade resolvida.")
         if all_observations:
             write_observations_json(all_observations, output_dir)
         if args.result_json:
@@ -1782,6 +1838,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sector", choices=("saude", "construcao_civil"), default="saude")
     parser.add_argument("--result-json", default=None)
+    from operational_periods import target_quarter
+    parser.add_argument("--periodo-alvo", type=target_quarter, default=None)
     parser.add_argument(
         "--output-dir",
         default=".",

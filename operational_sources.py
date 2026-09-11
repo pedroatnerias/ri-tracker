@@ -71,6 +71,7 @@ def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[
     return {
         ticker: {
             "ticker": ticker, "legacy_tickers": list(company.legacy_tickers),
+            "sector": sector,
             "empresa": company.expected_name, "aliases": list(company.aliases),
             "homepage": urls[ticker],
             "url": urls[ticker],

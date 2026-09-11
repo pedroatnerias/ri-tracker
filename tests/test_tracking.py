@@ -78,6 +78,12 @@ class TrackingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run.event(document_id, "published")
 
+    def test_discovery_can_end_as_unresolved(self):
+        run = TrackingRun(sector="construcao_civil", pipeline="discovery", extractor_version="test")
+        document_id = run.document(source_url="https://example.test/results", source_type="results_page")
+        run.event(document_id, "unresolved", reason="ConnectionError")
+        self.assertEqual(run.summary()["documents_unresolved"], 1)
+
     def test_reserved_event_fields_are_rejected(self):
         run = TrackingRun(sector="saude", pipeline="test", extractor_version="test")
         document_id = run.document(source_url="https://example.test/file.xlsx", source_type="XLSX")

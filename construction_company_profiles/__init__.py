@@ -83,7 +83,7 @@ def resolve_company_for_document(path: Any, content: str = "", sector: str = "co
         elif domain_match:
             hits.append(f"DOMAIN:{source_domain}")
         if hits:
-            if company.ticker in str(path).upper():
+            if re.search(rf"(?<![A-Z0-9]){re.escape(company.ticker)}(?![A-Z0-9])", str(path).upper()):
                 method = "filename_ticker"
             elif cnpj_match:
                 method = "content_cnpj"
@@ -91,7 +91,8 @@ def resolve_company_for_document(path: Any, content: str = "", sector: str = "co
                 method = "official_domain"
             else:
                 method = "content_alias"
-            candidates.append((len(max(hits, key=len)), company, method, max(hits, key=len)))
+            priority = {"filename_ticker": 4, "content_cnpj": 3, "official_domain": 2, "content_alias": 1}[method]
+            candidates.append(((priority, len(max(hits, key=len))), company, method, max(hits, key=len)))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0], reverse=True)
