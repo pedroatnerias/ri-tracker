@@ -107,7 +107,7 @@ class CvmDownloadsTests(unittest.TestCase):
                 )
             mocked.assert_not_called()
 
-    def test_404_is_not_retried(self):
+    def test_transient_404_is_retried(self):
         with tempfile.TemporaryDirectory() as tmp, patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError("u", 404, "missing", {}, None)):
             with self.assertRaises(CvmDownloadError) as ctx:
                 fetch_cvm_zip(
@@ -120,7 +120,10 @@ class CvmDownloadsTests(unittest.TestCase):
                     policy=CvmDownloadPolicy(refresh="force", max_attempts=5),
                     sleep=lambda _seconds: None,
                 )
-            self.assertEqual(len(ctx.exception.events), 1)
+            self.assertEqual(len(ctx.exception.events), 5)
+            self.assertTrue(all(event.http_status == 404 for event in ctx.exception.events))
+            self.assertTrue(all(event.next_action == "retry" for event in ctx.exception.events[:-1]))
+            self.assertEqual(ctx.exception.events[-1].next_action, "fail")
 
 
 if __name__ == "__main__":

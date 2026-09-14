@@ -542,9 +542,12 @@ def run_update(
         balanco_cmd = [sys.executable, script_path("app_balancos.py"), "--output-dir", str(resultados), "--sector", sector]
         if year_args:
             balanco_cmd.extend(["--years", *year_args])
-        if full_mode:
+        # "full" controla a recomputacao do pipeline. A politica de download
+        # dos ZIPs e independente e deve respeitar exatamente a opcao exposta
+        # no CLI/workflow (auto, force ou never).
+        if refresh_cvm_files == "force":
             balanco_cmd.append("--force-download")
-        balanco_cmd.extend(["--refresh-cvm-files", "force" if full_mode else refresh_cvm_files])
+        balanco_cmd.extend(["--refresh-cvm-files", refresh_cvm_files])
         step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
         balanco_path = find_balanco_json(resultados)
 

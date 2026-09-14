@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Callable
 
 
-RECOVERABLE_HTTP = {429, 500, 502, 503, 504}
-PERMANENT_HTTP = {403, 404}
+# O servidor da CVM ocasionalmente responde 404 de forma transitoria para ZIPs
+# anuais que existem. Repetir o pedido evita que uma falha momentanea do CDN
+# interrompa a atualizacao; 403 continua sendo uma resposta definitiva.
+RECOVERABLE_HTTP = {404, 429, 500, 502, 503, 504}
+PERMANENT_HTTP = {403}
 DEFAULT_BACKOFF_SECONDS = (5, 15, 30, 60, 120)
 MIN_ZIP_BYTES = 1024
 

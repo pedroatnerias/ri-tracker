@@ -49,15 +49,22 @@ class UpdateModeTests(unittest.TestCase):
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_parser_operacional.py"))
 
-    def test_full_forces_supported_downloads(self):
+    def test_full_respects_auto_download_policy(self):
         labels, commands, _ = self.capture_commands(mode="full")
 
         self.assertTrue(any("[FULL]" in label for label in labels))
-        self.assertIn("--force-download", command_for(commands, "app_balancos.py"))
-        self.assertEqual(command_for(commands, "app_balancos.py")[command_for(commands, "app_balancos.py").index("--refresh-cvm-files") + 1], "force")
+        self.assertNotIn("--force-download", command_for(commands, "app_balancos.py"))
+        self.assertEqual(command_for(commands, "app_balancos.py")[command_for(commands, "app_balancos.py").index("--refresh-cvm-files") + 1], "auto")
         self.assertNotIn("--sobrescrever-zips", command_for(commands, "app_dre.py"))
         self.assertNotIn("--sobrescrever-downloads", command_for(commands, "app_dfc.py"))
         self.assertIn("--sobrescrever-downloads", command_for(commands, "app_parser_operacional.py"))
+
+    def test_full_forces_cvm_download_only_when_requested(self):
+        _labels, commands, _ = self.capture_commands(mode="full", refresh_cvm_files="force")
+
+        bp = command_for(commands, "app_balancos.py")
+        self.assertIn("--force-download", bp)
+        self.assertEqual(bp[bp.index("--refresh-cvm-files") + 1], "force")
 
     def test_financial_extractors_share_cvm_zip_cache(self):
         _labels, commands, _ = self.capture_commands(mode="full", scope="financial")
