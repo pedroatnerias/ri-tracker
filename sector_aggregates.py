@@ -295,10 +295,8 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
             if total_initial_market_cap > 0:
                 for item in included:
                     item["weight"] = item["initial_market_cap"] / total_initial_market_cap
-            coverage_is_sufficient = (
-                coverage >= coverage_threshold
-                and coverage_market_cap is not None
-                and coverage_market_cap >= coverage_threshold
+            coverage_is_sufficient = coverage >= coverage_threshold and (
+                coverage_market_cap is None or coverage_market_cap >= coverage_threshold
             )
             value = sum(item["weight"] * item["return"] for item in included) if included and coverage_is_sufficient else None
             diagnostics = []

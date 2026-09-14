@@ -1096,7 +1096,12 @@ def load_manual_overrides_from_source(source: DashboardDataSource, resultados: P
     return empty_manual_payload(), {}
 
 
-def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refresh: bool = False) -> dict:
+def dashboard_payload(
+    resultados: Path,
+    sector: str = "saude",
+    force_remote_refresh: bool = False,
+    data_source_mode: str | None = None,
+) -> dict:
     sector = validate_sector(sector)
     if sector == "all":
         raise ValueError("O dashboard requer um setor especifico.")
@@ -1104,7 +1109,12 @@ def dashboard_payload(resultados: Path, sector: str = "saude", force_remote_refr
     sector_dir = resultados / sector
     data_dir = sector_dir if sector_dir.exists() or sector != "saude" else resultados
     data_dir.mkdir(parents=True, exist_ok=True)
-    source = DashboardDataSource(data_dir, force_remote_refresh=force_remote_refresh, sector=sector)
+    source = DashboardDataSource(
+        data_dir,
+        mode=data_source_mode,
+        force_remote_refresh=force_remote_refresh,
+        sector=sector,
+    )
     remote_files = source.remote_file_map()
     balanco_relative = remote_files.get("balanco")
     local_paths = {

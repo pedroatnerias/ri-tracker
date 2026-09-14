@@ -242,7 +242,10 @@ def generate_comparison_charts(
     include_standard: bool = True,
     include_sector: bool = True,
 ) -> list[Path]:
-    payload = dashboard_payload(resultados, sector=sector)
+    # A geracao ocorre antes da publicacao. Usar ``auto`` aqui faria o
+    # dashboard preferir os artefatos remotos da execucao anterior e ignorar
+    # os JSONs que o pipeline acabou de gerar localmente.
+    payload = dashboard_payload(resultados, sector=sector, data_source_mode="local")
     tickers = tickers_for_sector(sector)
     chart_tickers = comparison_chart_tickers(payload, sector, tickers)
     comparison = payload.get("comparison") or build_comparison_payload(payload.get("indicators") or {}, payload.get("operational") or {}, tickers)

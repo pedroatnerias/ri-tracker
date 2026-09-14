@@ -166,6 +166,14 @@ class ChartAssetTests(unittest.TestCase):
         self.assertEqual(chart_generation.comparison_chart_tickers(payload, "construcao_civil", ("A", "B", "C", "D", "E", "F", "G", "H")), ("C", "G", "H", "E", "F"))
         self.assertEqual(chart_generation.comparison_chart_tickers(payload, "saude", ("A", "B")), ("A",))
 
+    def test_comparison_chart_generation_forces_fresh_local_data(self):
+        payload = {"comparison": {"charts": {}, "sector_aggregates": {}}, "indicators": {}}
+        with patch.object(chart_generation, "dashboard_payload", return_value=payload) as mocked_payload:
+            chart_generation.generate_comparison_charts(Path("resultados"), Path("resultados/charts"), "tecnologia")
+        mocked_payload.assert_called_once_with(
+            Path("resultados"), sector="tecnologia", data_source_mode="local"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

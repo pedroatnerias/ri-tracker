@@ -155,6 +155,35 @@ class SectorAggregateTests(unittest.TestCase):
         self.assertIsNone(row["value"])
         self.assertTrue(any("market cap abaixo" in message for message in row["diagnostics"]))
 
+    def test_unknown_market_cap_coverage_keeps_return_when_count_coverage_is_sufficient(self):
+        empresas = {}
+        for ticker in ("A", "B", "C", "D"):
+            empresas[ticker] = {
+                "periodos": [
+                    {"data_referencia": "2026-03-31", "market_cap": 25},
+                    {"data_referencia": "2026-06-29", "market_cap": 27.5},
+                ],
+                "precos_diarios_ajustados": [
+                    {"data": "2026-03-31", "preco_ajustado": 10},
+                    {"data": "2026-06-29", "preco_ajustado": 11},
+                ],
+            }
+        empresas["E"] = {
+            "periodos": [
+                {"data_referencia": "2026-03-31", "market_cap": None},
+                {"data_referencia": "2026-06-29", "market_cap": None},
+            ],
+            "precos_diarios_ajustados": [
+                {"data": "2026-03-31", "preco_ajustado": 10},
+                {"data": "2026-06-29", "preco_ajustado": 11},
+            ],
+        }
+        row = sector_price_returns({"empresas": empresas}, tuple(empresas))["series"]["90d"][-1]
+        self.assertAlmostEqual(row["coverage_count"], 0.8)
+        self.assertIsNone(row["coverage_market_cap"])
+        self.assertAlmostEqual(row["return_pct"], 10.0)
+        self.assertTrue(any("indisponivel" in message for message in row["diagnostics"]))
+
     def test_legacy_quarterly_schema_without_daily_prices_fails_closed(self):
         payload = {"metadata": {"schema_version": "market_cap_historico_v2"}, "empresas": {"A": {"periodos": [
             {"data_referencia": "2026-03-31", "preco_acao_raw": 1, "preco_acao": 10, "market_cap": 100, "status_market_cap": "validated"},

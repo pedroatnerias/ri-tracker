@@ -110,6 +110,8 @@ jobs:
 
       - name: Gerar graficos Matplotlib
         if: ${{ inputs.update_scope != 'operational' }}
+        env:
+          NERIAS_DATA_SOURCE: local
         run: python -m chart_generation --resultados resultados --sector "${{ inputs.update_sector }}"
 
       - name: Diagnosticar artefatos operacionais
