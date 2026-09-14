@@ -30,6 +30,7 @@ import pandas as pd
 ANO_INICIAL = 2022
 LIMITE_DIVERGENCIA_ACOES = 0.05
 MAX_PRICE_STALENESS_DAYS = 7
+MARKET_CAP_HISTORICO_SCHEMA_VERSION = "market_cap_historico_v3"
 
 # O ticker nao faz parte dos CSVs de ITR/DFP. O CNPJ e a chave estavel usada
 # para relacionar cada ticker solicitado a companhia nos arquivos da CVM.
@@ -201,6 +202,7 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
 
     return {
         "metadata": {
+            "schema_version": MARKET_CAP_HISTORICO_SCHEMA_VERSION,
             "fonte": "Yahoo Finance primario; CVM para validacao e fallback",
             "campo_cvm": "QT_ACAO_TOTAL_CAP_INTEGR",
             "fonte_acoes_primaria": "Yahoo Finance via yfinance.get_shares_full",
@@ -208,6 +210,8 @@ def consolidar(registros: Iterable[Registro], hoje: date) -> dict:
             "fonte_preco": "Yahoo Finance via yfinance",
             "campo_preco": "Close revertido por eventos Stock Splits posteriores",
             "criterio_preco": "preco nominal ponto-no-tempo, compativel com a quantidade de acoes da data",
+            "campo_preco_retorno": "preco_ajustado diario (Adj Close; fallback Close)",
+            "criterio_retorno": "ultimo pregao em ou antes da data-alvo, com defasagem maxima de 7 dias",
             "defasagem_maxima_preco_dias": MAX_PRICE_STALENESS_DAYS,
             "data_inicial": f"{ANO_INICIAL}-01-01",
             "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
@@ -304,7 +308,22 @@ def _acoes_yahoo_na_data(serie: list[tuple[date, int]], referencia: date) -> tup
     return quantidade, data
 
 
-def validar_quantidade_acoes(yahoo: int | None, cvm: int | None) -> dict[str, object]:
+def inferir_escala_cvm(yahoo: int | None, cvm: int | None) -> int | None:
+    yahoo = _quantidade_valida(yahoo)
+    cvm = _quantidade_valida(cvm)
+    if not yahoo or not cvm:
+        return None
+    candidatos = ((cvm, 1), (cvm * 1_000, 1_000))
+    cvm_normalizado, escala = min(candidatos, key=lambda item: abs(yahoo - item[0]) / item[0])
+    diferenca = abs(yahoo - cvm_normalizado) / cvm_normalizado
+    return escala if diferenca <= LIMITE_DIVERGENCIA_ACOES else None
+
+
+def validar_quantidade_acoes(
+    yahoo: int | None,
+    cvm: int | None,
+    escala_cvm_comprovada: int | None = None,
+) -> dict[str, object]:
     """Resolve a fonte de acoes sem ocultar divergencias materiais."""
     yahoo = _quantidade_valida(yahoo)
     cvm = _quantidade_valida(cvm)
@@ -332,8 +351,48 @@ def validar_quantidade_acoes(yahoo: int | None, cvm: int | None) -> dict[str, ob
     if yahoo:
         return {"quantidade": yahoo, "fonte": "Yahoo Finance", "diferenca_pct": None, "status": "yahoo_only", "escala_cvm": None, "justificativa": "Yahoo utilizado; CVM ausente para a data."}
     if cvm:
-        return {"quantidade": cvm, "fonte": "CVM", "diferenca_pct": None, "status": "cvm_fallback", "escala_cvm": None, "justificativa": "CVM utilizada sem ajuste de escala porque Yahoo nao retornou quantidade valida."}
+        if escala_cvm_comprovada in {1, 1_000}:
+            return {
+                "quantidade": cvm * escala_cvm_comprovada,
+                "fonte": "CVM",
+                "diferenca_pct": None,
+                "status": "cvm_fallback_validated_scale",
+                "escala_cvm": escala_cvm_comprovada,
+                "justificativa": f"CVM utilizada com escala x{escala_cvm_comprovada}, comprovada por observacoes da mesma companhia com Yahoo disponivel.",
+            }
+        return {
+            "quantidade": None,
+            "fonte": None,
+            "diferenca_pct": None,
+            "status": "cvm_scale_ambiguous",
+            "escala_cvm": None,
+            "justificativa": "Yahoo ausente e escala CVM sem evidencia suficiente; market cap bloqueado.",
+        }
     return {"quantidade": None, "fonte": None, "diferenca_pct": None, "status": "missing", "escala_cvm": None, "justificativa": "Nenhuma fonte retornou quantidade valida."}
+
+
+def serie_precos_diarios_ajustados(
+    historicos: dict[str, pd.DataFrame], yahoo_tickers: tuple[str, ...]
+) -> list[dict[str, object]]:
+    """Consolida aliases em uma unica serie diaria ajustada, priorizando o ticker atual."""
+    por_data: dict[str, dict[str, object]] = {}
+    for yahoo_ticker in reversed(yahoo_tickers):
+        historico = historicos.get(yahoo_ticker)
+        if historico is None or historico.empty:
+            continue
+        coluna = "Adj Close" if "Adj Close" in historico.columns else "Close"
+        if coluna not in historico.columns:
+            continue
+        for indice, valor in historico[coluna].dropna().sort_index().items():
+            data = _data_indice(indice)
+            preco = float(valor)
+            if data and preco > 0:
+                por_data[data.isoformat()] = {
+                    "data": data.isoformat(),
+                    "preco_ajustado": round(preco, 6),
+                    "ticker_yahoo": yahoo_ticker,
+                }
+    return [por_data[data] for data in sorted(por_data)]
 
 
 def adicionar_precos_yfinance(resultado: dict) -> None:
@@ -375,6 +434,22 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
                     break
             except Exception as exc:
                 print(f"Aviso: falha ao buscar acoes {yahoo_ticker}: {exc}", file=sys.stderr)
+        evidencias_escala = []
+        for periodo in empresa["periodos"]:
+            referencia_escala = date.fromisoformat(periodo["data_referencia"])
+            escala = inferir_escala_cvm(
+                _acoes_yahoo_na_data(shares_series, referencia_escala)[0],
+                periodo.get("quantidade_acoes_cvm"),
+            )
+            if escala is not None:
+                evidencias_escala.append({"data_referencia": periodo["data_referencia"], "escala_cvm": escala})
+        escalas_observadas = {item["escala_cvm"] for item in evidencias_escala}
+        escala_cvm_comprovada = next(iter(escalas_observadas)) if len(escalas_observadas) == 1 else None
+        empresa["validacao_escala_cvm"] = {
+            "status": "comprovada" if escala_cvm_comprovada is not None else "ambigua_ou_sem_evidencia",
+            "escala_cvm_comprovada": escala_cvm_comprovada,
+            "evidencias": evidencias_escala,
+        }
         for periodo in empresa["periodos"]:
             referencia = date.fromisoformat(periodo["data_referencia"])
             yahoo_shares, yahoo_date = _acoes_yahoo_na_data(shares_series, referencia)
@@ -423,7 +498,7 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
             periodo["data_acoes_yahoo"] = yahoo_date.isoformat() if yahoo_date else None
             periodo["quantidade_acoes_cvm"] = cvm_shares
             periodo["data_acoes_cvm"] = periodo["data_referencia"] if cvm_shares else None
-            resolved = validar_quantidade_acoes(yahoo_shares, cvm_shares)
+            resolved = validar_quantidade_acoes(yahoo_shares, cvm_shares, escala_cvm_comprovada)
             periodo["quantidade_acoes_utilizada"] = resolved["quantidade"]
             periodo["quantidade_acoes_total"] = resolved["quantidade"]
             periodo["fonte_acoes_utilizada"] = resolved["fonte"]
@@ -459,6 +534,7 @@ def adicionar_precos_yfinance(resultado: dict) -> None:
                 periodo["market_cap"] = None
             if ticker_shares:
                 periodo["ticker_yahoo_acoes"] = ticker_shares
+        empresa["precos_diarios_ajustados"] = serie_precos_diarios_ajustados(historicos_precos, yahoo_tickers)
 
 
 def executar(saida: str, ano_final: int | None = None) -> dict:

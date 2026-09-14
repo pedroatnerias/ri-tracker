@@ -804,6 +804,47 @@ O objetivo da reconciliação é explicar diferenças, e não forçar igualdade 
 
 ---
 
+# 14. Retornos setoriais ponderados por market cap
+
+Os retornos e os pesos usam grandezas diferentes e explicitamente separadas:
+
+```text
+Retorno da empresa = Preço Ajustado Final / Preço Ajustado Inicial - 1
+Peso da empresa = Market Cap Nominal Inicial / Soma dos Market Caps Nominais Iniciais
+Retorno Setorial = Soma(Peso da empresa x Retorno da empresa)
+```
+
+O retorno utiliza a série diária ajustada por proventos e corporate actions.
+Para cada horizonte de 30, 90 ou 360 dias, a data-alvo é calculada em dias
+corridos e o preço utilizado é o do último pregão em ou antes dessa data. A
+data-alvo, as datas efetivas e suas defasagens permanecem no diagnóstico do
+agregado. Preços com mais de sete dias de defasagem são bloqueados.
+
+O peso utiliza exclusivamente o `market_cap` nominal ponto-no-tempo já
+validado no snapshot trimestral. Preço ajustado nunca é multiplicado pela
+quantidade nominal de ações para valuation. A observação de market cap deve
+ser anterior ou igual à data inicial e ter no máximo 120 dias de defasagem.
+
+`coverage_count` mede a parcela das companhias cadastradas que entrou no
+retorno. `coverage_market_cap` mede o market cap das companhias incluídas
+dividido pelo market cap das companhias elegíveis com valuation inicial
+válido. Quando o denominador econômico não puder ser determinado, a cobertura
+por market cap fica indisponível em vez de ser preenchida artificialmente.
+
+A quantidade de ações da CVM pode estar em unidades ou milhares. Quando o
+Yahoo está disponível, as duas escalas candidatas são comparadas e a escala só
+é aceita dentro da tolerância definida. Quando o Yahoo falta, a CVM só pode
+ser usada se a escala tiver sido comprovada em outra observação da mesma
+companhia. Sem essa evidência, o status é `cvm_scale_ambiguous` e o market cap
+fica bloqueado.
+
+O schema `market_cap_historico_v3` acrescenta
+`precos_diarios_ajustados` a cada companhia. Schemas anteriores continuam
+legíveis para valuation quando contiverem `market_cap` válido, mas não são
+usados silenciosamente para retornos de 30/90/360 dias sem a série diária.
+
+---
+
 ## Nota de interpretação
 
 O Acompanhador de Mercado deve ser entendido como uma ferramenta de **padronização e apoio analítico**, não como substituto da leitura dos demonstrativos e documentos originais.

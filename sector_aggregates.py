@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 
 SECTOR_EV_EBITDA_METHODOLOGY = "sector_aggregate_ev_ebitda_v1"
-SECTOR_RETURN_METHODOLOGY = "sector_market_cap_weighted_price_return_v1"
+SECTOR_RETURN_METHODOLOGY = "sector_market_cap_weighted_price_return_v2"
 MARKET_CAP_SHARE_METHODOLOGY = "sector_market_cap_share_v1"
 MIN_RETURN_COVERAGE = 0.70
 
@@ -95,7 +95,7 @@ def market_cap_share(market_payload: dict[str, Any], tickers: Iterable[str]) -> 
         "companies_included": len(items),
         "companies_excluded": excluded,
         "coverage_count": len(items) / len(tickers) if tickers else 0.0,
-        "coverage_market_cap": 1.0,
+        "coverage_market_cap": None if excluded else 1.0,
         "total_market_cap": total,
         "items": items,
         "share_sum_pct": sum(item["share_pct"] for item in items),
@@ -164,17 +164,53 @@ def aggregate_ev_ebitda(indicators_payload: dict[str, Any], tickers: Iterable[st
     return {"methodology": SECTOR_EV_EBITDA_METHODOLOGY, "series": series}
 
 
-def _historical_rows(market_payload: dict[str, Any], ticker: str) -> list[dict[str, Any]]:
+BLOCKED_MARKET_CAP_STATUSES = {
+    "blocked",
+    "excluded",
+    "invalid",
+    "missing",
+    "missing_share_class_data",
+    "shares_discrepancy",
+    "cvm_scale_ambiguous",
+    "unresolved",
+}
+MAX_RETURN_PRICE_STALENESS_DAYS = 7
+MAX_MARKET_CAP_STALENESS_DAYS = 120
+
+
+def _market_cap_is_valid(row: dict[str, Any]) -> bool:
+    statuses = {
+        str(row.get(field) or "").strip().lower()
+        for field in ("status_market_cap", "status_validacao_acoes", "status_validacao_market_cap")
+    }
+    return valid_positive(row.get("market_cap")) is not None and not (statuses & BLOCKED_MARKET_CAP_STATUSES)
+
+
+def _historical_rows(market_payload: dict[str, Any], ticker: str) -> dict[str, list[dict[str, Any]]]:
     empresa = ((market_payload or {}).get("empresas") or {}).get(ticker) or ((market_payload or {}).get("companies") or {}).get(ticker) or {}
-    rows = []
+    market_caps = []
     for row in empresa.get("periodos") or []:
         ref = parse_date(row.get("data_referencia") or row.get("date") or row.get("periodo"))
-        price_date = parse_date(row.get("data_preco") or row.get("data_referencia"))
-        price = valid_positive(row.get("preco_acao_ajustado") if "preco_acao_ajustado" in row else row.get("preco_acao"))
-        shares = valid_positive(row.get("quantidade_acoes_total"))
         if ref:
-            rows.append({"ref": ref, "price_date": price_date or ref, "price": price, "shares": shares})
-    return sorted(rows, key=lambda item: item["ref"])
+            market_caps.append(
+                {
+                    "ref": ref,
+                    "market_cap": valid_positive(row.get("market_cap")) if _market_cap_is_valid(row) else None,
+                    "nominal_price": valid_positive(row.get("preco_acao_raw") if row.get("preco_acao_raw") is not None else row.get("preco_acao")),
+                    "shares": valid_positive(row.get("quantidade_acoes_utilizada") if row.get("quantidade_acoes_utilizada") is not None else row.get("quantidade_acoes_total")),
+                    "status": row.get("status_market_cap") or row.get("status_validacao_acoes") or row.get("status_validacao_market_cap"),
+                }
+            )
+    return_prices = []
+    for row in empresa.get("precos_diarios_ajustados") or empresa.get("daily_adjusted_prices") or []:
+        price_date = parse_date(row.get("data") or row.get("date"))
+        price = valid_positive(row.get("preco_ajustado") if row.get("preco_ajustado") is not None else row.get("return_price"))
+        if price_date and price is not None:
+            return_prices.append({"ref": price_date, "price_date": price_date, "price": price})
+    return {
+        "market_caps": sorted(market_caps, key=lambda item: item["ref"]),
+        "return_prices": sorted(return_prices, key=lambda item: item["ref"]),
+    }
 
 
 def _row_at_or_before(rows: list[dict[str, Any]], target: date, field: str) -> dict[str, Any] | None:
@@ -182,29 +218,53 @@ def _row_at_or_before(rows: list[dict[str, Any]], target: date, field: str) -> d
     return candidates[-1] if candidates else None
 
 
+def _price_at_or_before(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    row = _row_at_or_before(rows, target, "price")
+    if row is None or (target - row["price_date"]).days > MAX_RETURN_PRICE_STALENESS_DAYS:
+        return None
+    return row
+
+
+def _market_cap_at_or_before(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    row = _row_at_or_before(rows, target, "market_cap")
+    if row is None or (target - row["ref"]).days > MAX_MARKET_CAP_STALENESS_DAYS:
+        return None
+    return row
+
+
 def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str], coverage_threshold: float = MIN_RETURN_COVERAGE) -> dict[str, Any]:
     tickers = tuple(tickers)
     rows_by_ticker = {ticker: _historical_rows(market_payload, ticker) for ticker in tickers}
-    dates = sorted({row["ref"] for rows in rows_by_ticker.values() for row in rows})
+    dates = sorted({row["ref"] for history in rows_by_ticker.values() for row in history["market_caps"]})
     by_horizon: dict[str, list[dict[str, Any]]] = {"30d": [], "90d": [], "360d": []}
     for horizon in (30, 90, 360):
         key = f"{horizon}d"
+        previous_total_market_cap: float | None = None
         for ref in dates:
             target_start = ref - timedelta(days=horizon)
             included = []
             excluded = []
             total_initial_market_cap = 0.0
+            eligible_market_cap = 0.0
+            unknown_market_cap_count = 0
             for ticker in tickers:
-                rows = rows_by_ticker[ticker]
-                final_row = _row_at_or_before(rows, ref, "price")
-                initial_price_row = _row_at_or_before(rows, target_start, "price")
-                initial_shares_row = _row_at_or_before(rows, target_start, "shares")
-                if not final_row or not initial_price_row or not initial_shares_row:
-                    excluded.append({"ticker": ticker, "reason": "preco ou quantidade historica indisponivel"})
+                history = rows_by_ticker[ticker]
+                initial_market_cap_row = _market_cap_at_or_before(history["market_caps"], target_start)
+                if not initial_market_cap_row:
+                    unknown_market_cap_count += 1
+                    excluded.append({"ticker": ticker, "reason": "market cap historico nominal inicial ausente, invalido ou bloqueado"})
                     continue
-                initial_market_cap = initial_price_row["price"] * initial_shares_row["shares"]
-                if initial_market_cap <= 0:
-                    excluded.append({"ticker": ticker, "reason": "market cap inicial invalido"})
+                initial_market_cap = initial_market_cap_row["market_cap"]
+                eligible_market_cap += initial_market_cap
+                final_row = _price_at_or_before(history["return_prices"], ref)
+                initial_price_row = _price_at_or_before(history["return_prices"], target_start)
+                if not final_row or not initial_price_row:
+                    excluded.append({
+                        "ticker": ticker,
+                        "reason": "serie diaria de preco ajustado indisponivel ou defasada",
+                        "eligible_market_cap": initial_market_cap,
+                        "market_cap_date": initial_market_cap_row["ref"].isoformat(),
+                    })
                     continue
                 total_initial_market_cap += initial_market_cap
                 included.append(
@@ -215,21 +275,51 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
                         "price_initial": initial_price_row["price"],
                         "target_initial_date": target_start.isoformat(),
                         "price_initial_date": initial_price_row["price_date"].isoformat(),
-                        "shares": initial_shares_row["shares"],
-                        "shares_date": initial_shares_row["ref"].isoformat(),
+                        "nominal_price": initial_market_cap_row.get("nominal_price"),
+                        "shares": initial_market_cap_row.get("shares"),
+                        "market_cap_date": initial_market_cap_row["ref"].isoformat(),
+                        "market_cap_status": initial_market_cap_row.get("status"),
                         "return": final_row["price"] / initial_price_row["price"] - 1.0,
                         "initial_market_cap": initial_market_cap,
-                        "approximation": initial_shares_row["ref"] != target_start,
+                        "initial_date_gap_days": (target_start - initial_price_row["price_date"]).days,
+                        "final_date_gap_days": (ref - final_row["price_date"]).days,
+                        "market_cap_date_gap_days": (target_start - initial_market_cap_row["ref"]).days,
                     }
                 )
             coverage = len(included) / len(tickers) if tickers else 0.0
+            coverage_market_cap = (
+                total_initial_market_cap / eligible_market_cap
+                if eligible_market_cap > 0 and unknown_market_cap_count == 0
+                else None
+            )
             if total_initial_market_cap > 0:
                 for item in included:
                     item["weight"] = item["initial_market_cap"] / total_initial_market_cap
-            value = sum(item["weight"] * item["return"] for item in included) if included and coverage >= coverage_threshold else None
+            coverage_is_sufficient = (
+                coverage >= coverage_threshold
+                and coverage_market_cap is not None
+                and coverage_market_cap >= coverage_threshold
+            )
+            value = sum(item["weight"] * item["return"] for item in included) if included and coverage_is_sufficient else None
             diagnostics = []
             if coverage < coverage_threshold:
                 diagnostics.append(f"Cobertura por quantidade abaixo do minimo de {coverage_threshold:.0%}.")
+            if unknown_market_cap_count:
+                diagnostics.append(
+                    "Cobertura por market cap indisponivel: "
+                    f"{unknown_market_cap_count} empresa(s) sem valuation inicial confiavel."
+                )
+            elif coverage_market_cap is not None and coverage_market_cap < coverage_threshold:
+                diagnostics.append(f"Cobertura por market cap abaixo do minimo de {coverage_threshold:.0%}.")
+            largest = max(included, key=lambda item: item.get("weight", 0.0), default=None)
+            largest_weight = largest.get("weight") if largest else None
+            if largest_weight is not None and largest_weight > 0.80:
+                diagnostics.append(f"Maior peso individual acima de 80%: {largest['ticker']} ({largest_weight:.1%}).")
+            market_cap_change_ratio = None
+            if previous_total_market_cap and total_initial_market_cap > 0:
+                market_cap_change_ratio = max(total_initial_market_cap, previous_total_market_cap) / min(total_initial_market_cap, previous_total_market_cap)
+                if market_cap_change_ratio >= 10:
+                    diagnostics.append(f"Market cap inicial agregado mudou {market_cap_change_ratio:.1f}x contra o ponto anterior.")
             by_horizon[key].append(
                 {
                     "period": period_label_from_date(ref.isoformat()),
@@ -238,7 +328,11 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
                     "return_pct": value * 100.0 if value is not None else None,
                     "total_initial_market_cap": total_initial_market_cap if included else None,
                     "coverage_count": coverage,
-                    "coverage_market_cap": 1.0 if included else 0.0,
+                    "eligible_initial_market_cap": eligible_market_cap if eligible_market_cap > 0 else None,
+                    "coverage_market_cap": coverage_market_cap,
+                    "largest_weight": largest_weight,
+                    "largest_weight_ticker": largest.get("ticker") if largest else None,
+                    "market_cap_change_ratio": market_cap_change_ratio,
                     "companies_registered": len(tickers),
                     "companies_included": len(included),
                     "included_companies": included,
@@ -247,6 +341,8 @@ def sector_price_returns(market_payload: dict[str, Any], tickers: Iterable[str],
                     "diagnostics": diagnostics,
                 }
             )
+            if total_initial_market_cap > 0:
+                previous_total_market_cap = total_initial_market_cap
     return {"methodology": SECTOR_RETURN_METHODOLOGY, "coverage_threshold": coverage_threshold, "series": by_horizon}
 
 

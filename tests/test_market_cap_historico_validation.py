@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 from unittest.mock import patch
 
-from app_market_cap_historico import adicionar_precos_yfinance, calcular_market_cap_classes, preco_ajustado_na_data, preco_market_cap_na_data, validar_quantidade_acoes
+from app_market_cap_historico import adicionar_precos_yfinance, calcular_market_cap_classes, preco_ajustado_na_data, preco_market_cap_na_data, serie_precos_diarios_ajustados, validar_quantidade_acoes
 from app_market_cap import _market_cap_classes_atual, _quantidades_classes_historico, processar_ticker
 from app_indicadores import _market_cap_historico_map
 from company_registry import company_by_ticker
@@ -16,6 +16,13 @@ def test_yahoo_is_primary_when_sources_are_within_tolerance():
     assert result["quantidade"] == 100_000
     assert result["fonte"] == "Yahoo Finance"
     assert result["status"] == "validated"
+
+
+def test_yahoo_proves_cvm_thousands_scale_when_values_are_compatible():
+    result = validar_quantidade_acoes(95_962_000, 95_962)
+    assert result["quantidade"] == 95_962_000
+    assert result["status"] == "validated"
+    assert result["escala_cvm"] == 1_000
 
 
 def test_material_discrepancy_blocks_market_cap():
@@ -117,11 +124,38 @@ def test_current_multiclass_discrepancy_preserves_components_and_blocks_value():
     assert len(result["classes_acoes"]) == 2
 
 
-def test_cvm_is_fallback_when_yahoo_is_missing():
-    result = validar_quantidade_acoes(None, 123_456)
+def test_cvm_fallback_uses_only_proven_unit_scale_when_yahoo_is_missing():
+    result = validar_quantidade_acoes(None, 123_456, escala_cvm_comprovada=1)
     assert result["quantidade"] == 123_456
     assert result["fonte"] == "CVM"
-    assert result["status"] == "cvm_fallback"
+    assert result["status"] == "cvm_fallback_validated_scale"
+    assert result["escala_cvm"] == 1
+
+
+def test_cvm_fallback_uses_proven_thousands_scale_when_yahoo_is_missing():
+    result = validar_quantidade_acoes(None, 95_962, escala_cvm_comprovada=1_000)
+    assert result["quantidade"] == 95_962_000
+    assert result["fonte"] == "CVM"
+    assert result["status"] == "cvm_fallback_validated_scale"
+
+
+def test_cvm_fallback_blocks_ambiguous_scale_when_yahoo_is_missing():
+    result = validar_quantidade_acoes(None, 123_456)
+    assert result["quantidade"] is None
+    assert result["fonte"] is None
+    assert result["status"] == "cvm_scale_ambiguous"
+
+
+def test_daily_adjusted_series_prioritizes_current_ticker_over_legacy_alias():
+    histories = {
+        "NEW3.SA": pd.DataFrame({"Adj Close": [12.0]}, index=pd.to_datetime(["2026-01-02"], utc=True)),
+        "OLD3.SA": pd.DataFrame({"Adj Close": [10.0, 11.0]}, index=pd.to_datetime(["2025-12-30", "2026-01-02"], utc=True)),
+    }
+    rows = serie_precos_diarios_ajustados(histories, ("NEW3.SA", "OLD3.SA"))
+    assert rows == [
+        {"data": "2025-12-30", "preco_ajustado": 10.0, "ticker_yahoo": "OLD3.SA"},
+        {"data": "2026-01-02", "preco_ajustado": 12.0, "ticker_yahoo": "NEW3.SA"},
+    ]
 
 
 def test_same_rule_is_independent_of_sector():
@@ -158,3 +192,5 @@ def test_ecom_historical_price_falls_back_to_trad_without_duplicate_company():
     assert period["ticker_yahoo"] == "TRAD3.SA"
     assert period["ticker_yahoo_acoes"] == "TRAD3.SA"
     assert period["market_cap"] == 25_000
+    assert payload["empresas"]["ECOM3"]["validacao_escala_cvm"]["escala_cvm_comprovada"] == 1
+    assert payload["empresas"]["ECOM3"]["precos_diarios_ajustados"][0]["ticker_yahoo"] == "TRAD3.SA"

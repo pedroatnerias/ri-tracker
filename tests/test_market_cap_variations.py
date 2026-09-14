@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from app_market_cap import obter_variacoes_preco
+from app_market_cap import obter_variacoes_preco, obter_variacoes_preco_persistidas
 
 
 class FakeTicker:
@@ -54,6 +54,19 @@ class MarketCapVariationTests(unittest.TestCase):
         for key in ("preco_30d", "data_30d", "variacao_30d_pct", "preco_90d", "data_90d", "variacao_90d_pct", "preco_360d", "data_360d", "variacao_360d_pct"):
             self.assertIn(key, result)
             self.assertIsNone(result[key])
+
+    def test_persisted_daily_prices_are_reused_without_yahoo_query(self):
+        payload = {"empresas": {"TEST3": {"precos_diarios_ajustados": [
+            {"data": "2025-06-30", "preco_ajustado": 80},
+            {"data": "2026-03-31", "preco_ajustado": 100},
+            {"data": "2026-05-30", "preco_ajustado": 110},
+            {"data": "2026-06-29", "preco_ajustado": 120},
+        ]}}}
+        result = obter_variacoes_preco_persistidas(payload, "TEST3")
+        self.assertEqual(result["preco_30d"], 110)
+        self.assertEqual(result["preco_90d"], 100)
+        self.assertEqual(result["preco_360d"], 80)
+        self.assertIn("persistida", result["metodologia_variacao"])
 
 
 if __name__ == "__main__":

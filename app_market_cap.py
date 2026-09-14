@@ -113,6 +113,46 @@ def obter_variacoes_preco(acao: yf.Ticker, preco_atual: float) -> dict[str, Any]
     }
 
 
+def obter_variacoes_preco_persistidas(
+    market_cap_historico: dict[str, Any] | None, ticker: str
+) -> dict[str, Any] | None:
+    empresa = (((market_cap_historico or {}).get("empresas") or {}).get(ticker) or {})
+    rows = empresa.get("precos_diarios_ajustados") or []
+    serie = []
+    for row in rows:
+        try:
+            data = pd.Timestamp(row.get("data"))
+            preco = float(row.get("preco_ajustado"))
+        except (TypeError, ValueError):
+            continue
+        if preco > 0:
+            serie.append((data, preco))
+    if not serie:
+        return None
+    serie.sort(key=lambda item: item[0])
+    data_final, preco_final = serie[-1]
+
+    def referencia(dias: int) -> tuple[float | None, str | None, float | None]:
+        alvo = data_final - pd.Timedelta(days=dias)
+        candidatos = [(data, preco) for data, preco in serie if data <= alvo]
+        if not candidatos:
+            return None, None, None
+        data_ref, preco_ref = candidatos[-1]
+        variacao = (preco_final / preco_ref - 1.0) * 100.0
+        return preco_ref, data_ref.date().isoformat(), variacao
+
+    values: dict[str, Any] = {
+        "data_preco_final_variacoes": data_final.date().isoformat(),
+        "metodologia_variacao": "Serie diaria ajustada persistida no market_cap_historico; ultimo pregao em ou antes da data-alvo",
+    }
+    for days in (30, 90, 360):
+        price, price_date, variation = referencia(days)
+        values[f"preco_{days}d"] = price
+        values[f"data_{days}d"] = price_date
+        values[f"variacao_{days}d_pct"] = variation
+    return values
+
+
 def obter_acoes_em_circulacao(
     acao: yf.Ticker,
 ) -> tuple[int, pd.Timestamp | None, str]:
@@ -174,7 +214,9 @@ def processar_ticker(company: Company, market_cap_historico: dict[str, Any] | No
         acao = yf.Ticker(ticker_yahoo)
         try:
             preco, fonte_preco = obter_preco(acao)
-            variacoes = obter_variacoes_preco(acao, preco)
+            variacoes = obter_variacoes_preco_persistidas(market_cap_historico, company.ticker)
+            if variacoes is None:
+                variacoes = obter_variacoes_preco(acao, preco)
             if company.share_classes:
                 quantidades, data_acoes_referencia = _quantidades_classes_historico(market_cap_historico, company)
                 market_cap, classes_acoes = _market_cap_classes_atual(company, quantidades, data_acoes_referencia)
