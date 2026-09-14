@@ -79,6 +79,41 @@ class UpdateModeTests(unittest.TestCase):
         self.assertEqual(dre[dre.index("--pasta-zips-dfp") + 1], expected_dfp)
         self.assertEqual(dfc[dfc.index("--pasta-zips-dfp") + 1], expected_dfp)
 
+    def test_downstream_extractors_receive_only_materialized_itr_years(self):
+        labels: list[str] = []
+        commands: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            resultados = Path(tmp)
+
+            def fake_run(label: str, command: list[str], critical: bool = True) -> dict[str, object]:
+                labels.append(label)
+                commands.append(command)
+                if "app_balancos.py" in " ".join(command):
+                    cache = resultados / "tecnologia" / "downloads" / "itr"
+                    cache.mkdir(parents=True)
+                    for year in (2024, 2026):
+                        (cache / f"itr_cia_aberta_{year}.zip").write_bytes(b"zip")
+                return {"label": label, "status": "ok", "critical": critical, "returncode": 0}
+
+            with (
+                patch("dashboard.run_update_command", side_effect=fake_run),
+                patch("dashboard.find_balanco_json", return_value=resultados / "balancos.json"),
+                patch("dashboard.cached_cvm_years", return_value=[2024, 2026]),
+            ):
+                result = dashboard.run_update(
+                    resultados,
+                    anos=[2024, 2025, 2026],
+                    mode="full",
+                    scope="financial",
+                    sector="tecnologia",
+                    refresh_cvm_files="auto",
+                )
+
+        for script in ("app_dre.py", "app_dfc.py"):
+            command = command_for(commands, script)
+            self.assertEqual(command[command.index("--anos") + 1 :], ["2024", "2026"])
+        self.assertTrue(any("2025" in warning for warning in result["warnings"]))
+
     def test_refresh_cvm_never_is_passed_to_balanco(self):
         _labels, commands, _ = self.capture_commands(scope="financial", refresh_cvm_files="never")
         bp = command_for(commands, "app_balancos.py")

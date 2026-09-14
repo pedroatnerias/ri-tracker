@@ -18,7 +18,14 @@ from pathlib import Path
 
 import pandas as pd
 from company_registry import SECTORS, financial_companies, statement_value_factor
-from cvm_downloads import CvmDownloadPolicy, fetch_cvm_zip, validate_zip, write_events_json
+from cvm_downloads import (
+    CvmDownloadError,
+    CvmDownloadPolicy,
+    fetch_cvm_zip,
+    is_confirmed_remote_missing,
+    validate_zip,
+    write_events_json,
+)
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -820,7 +827,18 @@ def main() -> int:
         download_events = []
         zip_paths = []
         for year in args.years:
-            path, events = download_zip(year, downloads / "itr", args.force_download, args.offline, "itr", policy)
+            try:
+                path, events = download_zip(year, downloads / "itr", args.force_download, args.offline, "itr", policy)
+            except CvmDownloadError as exc:
+                download_events.extend(exc.events)
+                if refresh == "auto" and year < date.today().year and is_confirmed_remote_missing(exc):
+                    logging.warning(
+                        "ITR %s omitido pela CVM e sem cache local valido; "
+                        "o ano sera ignorado com rastreabilidade e os demais anos serao processados.",
+                        year,
+                    )
+                    continue
+                raise
             download_events.extend(events)
             zip_paths.append(("itr", year, path))
         if not args.no_dfp:

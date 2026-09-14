@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from cvm_downloads import CvmDownloadError, CvmDownloadPolicy, fetch_cvm_zip, validate_zip
+from cvm_downloads import CvmDownloadError, CvmDownloadPolicy, fetch_cvm_zip, is_confirmed_remote_missing, validate_zip
 
 
 def zip_bytes(year=2022):
@@ -124,6 +124,7 @@ class CvmDownloadsTests(unittest.TestCase):
             self.assertTrue(all(event.http_status == 404 for event in ctx.exception.events))
             self.assertTrue(all(event.next_action == "retry" for event in ctx.exception.events[:-1]))
             self.assertEqual(ctx.exception.events[-1].next_action, "fail")
+            self.assertTrue(is_confirmed_remote_missing(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -60,6 +60,11 @@ class CvmDownloadError(RuntimeError):
         self.original = original
 
 
+def is_confirmed_remote_missing(error: CvmDownloadError) -> bool:
+    """Retorna True quando todas as tentativas terminaram em HTTP 404."""
+    return bool(error.events) and all(event.http_status == 404 for event in error.events)
+
+
 def expected_members(doc: str, year: int, kind: str = "bp") -> set[str]:
     prefix = "dfp" if doc == "dfp" else "itr"
     if kind == "dre":
