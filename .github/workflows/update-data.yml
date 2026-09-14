@@ -12,6 +12,7 @@ on:
           - saude
           - construcao_civil
           - varejo
+          - tecnologia
           - all
       update_scope:
         description: "Escopo de atualizacao"

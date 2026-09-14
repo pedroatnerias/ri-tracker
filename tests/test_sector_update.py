@@ -48,11 +48,11 @@ class SectorUpdateTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["companies"]["operational"], [])
 
-    def test_all_financial_expands_to_three_sector_pipelines(self):
+    def test_all_financial_expands_to_all_sector_pipelines(self):
         with tempfile.TemporaryDirectory() as tmp, patch("dashboard.run_update_command", return_value={"status": "ok"}) as command, patch("dashboard.find_balanco_json", return_value=Path(tmp) / "x.json"):
             result = dashboard.run_update(Path(tmp), [2026], sector="all", scope="financial")
         commands = [call.args[1] for call in command.call_args_list]
         balance_commands = [item for item in commands if any("app_balancos.py" in part for part in item)]
-        self.assertEqual(len(balance_commands), 3)
-        self.assertEqual({item[item.index("--sector") + 1] for item in balance_commands}, {"saude", "construcao_civil", "varejo"})
+        self.assertEqual(len(balance_commands), 4)
+        self.assertEqual({item[item.index("--sector") + 1] for item in balance_commands}, {"saude", "construcao_civil", "varejo", "tecnologia"})
         self.assertEqual(result["sector"], "all")

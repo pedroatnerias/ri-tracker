@@ -299,6 +299,17 @@ def section_fill(code: str) -> str | None:
     return None
 
 
+def scope_note(companies: tuple[Company, ...] | None = None) -> str:
+    companies = tuple(companies or COMPANIES)
+    consolidated = [company.ticker for company in companies if company.statement_scope == "con"]
+    individual = [company.ticker for company in companies if company.statement_scope == "ind"]
+    if consolidated and not individual:
+        return "Consolidado"
+    if individual and not consolidated:
+        return "Individual"
+    return f"Consolidado, exceto {', '.join(individual)} (individual)"
+
+
 def add_cover_sheet(wb: Workbook, years: list[int], output_name: str) -> None:
     ws = wb.active
     ws.title = "Capa"
@@ -315,7 +326,7 @@ def add_cover_sheet(wb: Workbook, years: list[int], output_name: str) -> None:
         ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
         ("Fonte", SOURCE_PAGE),
         ("Critério", "Maior versão por companhia e data; apenas ORDEM_EXERC = ÚLTIMO"),
-        ("Escopo", "Consolidado, exceto RDOR3 (individual)"),
+        ("Escopo", scope_note()),
     ]
     for row, (label, value) in enumerate(rows, start=4):
         ws.cell(row, 1, label).font = Font(bold=True, color=NAVY)
@@ -735,7 +746,7 @@ def export_json(
         "dfp_source": DFP_SOURCE_PAGE,
         "years": years,
         "criteria": "ITR trimestral e DFP anual quando disponivel; maior versao por companhia e data; apenas ORDEM_EXERC = ULTIMO",
-        "scope_note": "Consolidado, exceto RDOR3 (individual)",
+        "scope_note": scope_note(),
         "coverage": coverage,
         "sources": [
             {

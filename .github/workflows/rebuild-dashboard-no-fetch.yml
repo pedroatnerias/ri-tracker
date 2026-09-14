@@ -8,7 +8,7 @@ on:
         required: true
         default: all
         type: choice
-        options: [all, saude, construcao_civil, varejo]
+        options: [all, saude, construcao_civil, varejo, tecnologia]
       publish:
         description: "Publicar no ri-tracker-data"
         required: true

@@ -1,9 +1,11 @@
 from datetime import date
+import sys
+from types import SimpleNamespace
 
 import pandas as pd
 from unittest.mock import patch
 
-from app_market_cap_historico import calcular_market_cap_classes, preco_ajustado_na_data, preco_market_cap_na_data, validar_quantidade_acoes
+from app_market_cap_historico import adicionar_precos_yfinance, calcular_market_cap_classes, preco_ajustado_na_data, preco_market_cap_na_data, validar_quantidade_acoes
 from app_market_cap import _market_cap_classes_atual, _quantidades_classes_historico, processar_ticker
 from app_indicadores import _market_cap_historico_map
 from company_registry import company_by_ticker
@@ -125,3 +127,34 @@ def test_cvm_is_fallback_when_yahoo_is_missing():
 def test_same_rule_is_independent_of_sector():
     assert validar_quantidade_acoes(100, 100)["fonte"] == "Yahoo Finance"
     assert validar_quantidade_acoes(100, 110)["status"] == "shares_discrepancy"
+
+
+def test_ecom_historical_price_falls_back_to_trad_without_duplicate_company():
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def get_shares_full(self, start):
+            if self.ticker == "TRAD3.SA":
+                return pd.Series([10_000], index=pd.to_datetime(["2025-01-02"], utc=True))
+            return pd.Series(dtype=float)
+
+        def history(self, **kwargs):
+            if self.ticker == "TRAD3.SA":
+                return pd.DataFrame(
+                    {"Close": [2.5], "Adj Close": [2.5], "Stock Splits": [0.0]},
+                    index=pd.to_datetime(["2025-12-30"], utc=True),
+                )
+            return pd.DataFrame(columns=["Close", "Adj Close", "Stock Splits"])
+
+    payload = {"empresas": {"ECOM3": {"periodos": [{
+        "data_referencia": "2025-12-31",
+        "quantidade_acoes_cvm": 10_000,
+    }]}}}
+    with patch.dict(sys.modules, {"yfinance": SimpleNamespace(Ticker=FakeTicker)}):
+        adicionar_precos_yfinance(payload)
+    period = payload["empresas"]["ECOM3"]["periodos"][0]
+    assert set(payload["empresas"]) == {"ECOM3"}
+    assert period["ticker_yahoo"] == "TRAD3.SA"
+    assert period["ticker_yahoo_acoes"] == "TRAD3.SA"
+    assert period["market_cap"] == 25_000

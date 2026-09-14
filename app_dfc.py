@@ -166,6 +166,31 @@ def selecionar_ultima_versao(df: pd.DataFrame) -> pd.DataFrame:
     return dados[dados["VERSAO"].eq(max_versao)].copy()
 
 
+def selecionar_metodos_sem_sobreposicao(
+    encontrados: list[tuple[str, pd.DataFrame, str, str]], ticker: str, ano: int
+) -> list[tuple[str, pd.DataFrame, str, str]]:
+    """Aceita mudanca de metodo entre periodos, mas nunca duas DFCs para a mesma data."""
+    selecionados = [
+        (metodo, selecionar_ultima_versao(parte), cnpj, nome)
+        for metodo, parte, cnpj, nome in encontrados
+    ]
+    datas_por_metodo = {
+        metodo: set(parte["DT_REFER"].dropna().dt.date)
+        for metodo, parte, _cnpj, _nome in selecionados
+    }
+    metodos = sorted(datas_por_metodo)
+    for indice, metodo in enumerate(metodos):
+        for outro in metodos[indice + 1:]:
+            sobrepostas = sorted(datas_por_metodo[metodo] & datas_por_metodo[outro])
+            if sobrepostas:
+                datas = ", ".join(data.isoformat() for data in sobrepostas)
+                raise RuntimeError(
+                    f"{ticker}/{ano}: ha DFC {metodo} e {outro} para a(s) mesma(s) data(s) {datas}; "
+                    "selecao manual necessaria."
+                )
+    return selecionados
+
+
 def extrair(zips: list[Path], companies: tuple[Company, ...] | None = None) -> tuple[dict[str, list[pd.DataFrame]], list[dict[str, object]]]:
     companies = companies or tuple(financial_companies("saude"))
     blocos: dict[str, list[pd.DataFrame]] = {c.ticker: [] for c in companies}
@@ -211,20 +236,23 @@ def extrair(zips: list[Path], companies: tuple[Company, ...] | None = None) -> t
                         "status": "DFC ausente no arquivo anual",
                     })
                     continue
-                metodos = {x[0] for x in encontrados}
-                if len(metodos) > 1:
-                    raise RuntimeError(f"{companhia.ticker}/{ano}: há DFC MD e MI; seleção manual necessária.")
-
-                metodo, parte, cnpj, nome = encontrados[0]
-                parte = selecionar_ultima_versao(parte)
-                parte["FATOR_ESCALA"] = parte.apply(lambda row: statement_value_factor(companhia, documento, row.get("DT_REFER"), row.get("ESCALA_MOEDA"), row["FATOR_ESCALA"]), axis=1)
-                parte["VL_CONTA"] = parte["VL_CONTA_CVM"] * parte["FATOR_ESCALA"]
-                parte["METODO_DFC"] = metodo
-                parte["ESCOPO"] = "Consolidado" if companhia.statement_scope == "con" else "Individual"
-                parte["TICKER"] = companhia.ticker
-                parte["ANO_ARQUIVO"] = ano
-                parte["DOCUMENTO_CVM"] = documento
-                blocos[companhia.ticker].append(parte)
+                selecionados = selecionar_metodos_sem_sobreposicao(encontrados, companhia.ticker, ano)
+                partes_ano = []
+                for metodo, parte, cnpj, nome in selecionados:
+                    parte["FATOR_ESCALA"] = parte.apply(lambda row: statement_value_factor(companhia, documento, row.get("DT_REFER"), row.get("ESCALA_MOEDA"), row["FATOR_ESCALA"]), axis=1)
+                    parte["VL_CONTA"] = parte["VL_CONTA_CVM"] * parte["FATOR_ESCALA"]
+                    parte["METODO_DFC"] = metodo
+                    parte["ESCOPO"] = "Consolidado" if companhia.statement_scope == "con" else "Individual"
+                    parte["TICKER"] = companhia.ticker
+                    parte["ANO_ARQUIVO"] = ano
+                    parte["DOCUMENTO_CVM"] = documento
+                    blocos[companhia.ticker].append(parte)
+                    partes_ano.append(parte)
+                parte = pd.concat(partes_ano, ignore_index=True)
+                metodos_ordenados = list(dict.fromkeys(
+                    parte.sort_values("DT_REFER")["METODO_DFC"].astype(str)
+                ))
+                metodo = " -> ".join(metodos_ordenados)
                 auditoria.append({
                     "ticker": companhia.ticker,
                     "ano_arquivo": ano,
@@ -235,7 +263,7 @@ def extrair(zips: list[Path], companies: tuple[Company, ...] | None = None) -> t
                     "linhas": len(parte),
                     "datas_referencia": ", ".join(sorted(parte["DT_REFER"].dt.strftime("%Y-%m-%d").dropna().unique())),
                     "versoes": ", ".join(map(str, sorted(parte["VERSAO"].dropna().unique()))),
-                    "status": "OK",
+                    "status": "OK" if len(metodos_ordenados) == 1 else "OK - transicao de metodo sem sobreposicao de datas",
                 })
     sem_dados = [ticker for ticker, partes in blocos.items() if not partes]
     if sem_dados:
@@ -531,6 +559,15 @@ def main() -> int:
         if not disponiveis:
             raise
         logging.warning("Nao foi possivel consultar a CVM (%s); usando ZIPs locais: %s", erro, disponiveis)
+    else:
+        locais = anos_locais(pasta_zips, max(args.quantidade_anos, len(disponiveis) + 10), "itr")
+        somente_locais = sorted(set(locais) - set(disponiveis))
+        if somente_locais:
+            logging.warning(
+                "O indice remoto omitiu anos com ZIP local integro; mantendo no universo disponivel: %s",
+                somente_locais,
+            )
+        disponiveis = sorted(set(disponiveis) | set(locais))
     anos = sorted(set(args.anos)) if args.anos else disponiveis[-args.quantidade_anos:]
     ausentes = sorted(set(anos) - set(disponiveis))
     if ausentes:

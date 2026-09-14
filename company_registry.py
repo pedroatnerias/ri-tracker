@@ -39,6 +39,7 @@ SECTOR_CONFIG = {
     "saude": SectorConfig("Saúde", True, True),
     "construcao_civil": SectorConfig("Construção civil", True, True),
     "varejo": SectorConfig("Varejo", True, False),
+    "tecnologia": SectorConfig("Tecnologia", True, False),
 }
 REAL_SECTORS = tuple(SECTOR_CONFIG)
 SECTORS = frozenset((*REAL_SECTORS, "all"))
@@ -138,6 +139,19 @@ _COMPANIES = (
     _c("VSTE3", "varejo", "21440", "49.669.856/0001-43", "VESTE S.A. ESTILO", ("VESTE S.A. ESTILO", "RESTOQUE COMERCIO E CONFECCOES DE ROUPAS S.A."), legacy_tickers=("LLIS3",)),
     _c("WEST3", "varejo", "25518", "14.776.142/0001-50", "WESTWING COMERCIO VAREJISTA S.A.", scope="ind"),
     _c("WHRL3", "varejo", "14346", "59.105.999/0001-86", "WHIRLPOOL S.A.", share_classes=(ShareClass("WHRL3", "QT_ACAO_ORDIN_CAP_INTEGR", 1_000), ShareClass("WHRL4", "QT_ACAO_PREF_CAP_INTEGR", 1_000))),
+    _c("BMOB3", "tecnologia", "25500", "09.042.817/0001-05", "BEMOBI MOBILE TECH S.A."),
+    _c("BRQB3", "tecnologia", "23817", "36.542.025/0001-64", "BRQ SOLUCOES EM INFORMATICA S.A."),
+    _c("CASH3", "tecnologia", "25232", "14.110.585/0001-07", "MELIUZ S.A."),
+    _c("ECOM3", "tecnologia", "26077", "26.345.998/0001-50", "ECONOMATICA S.A.", ("ECONOMATICA S.A.", "TC S.A.", "TC TRADERS CLUB S.A."), legacy_tickers=("TRAD3",)),
+    _c("IFCM3", "tecnologia", "25747", "38.456.921/0001-36", "INFRACOMMERCE CXAAS S.A."),
+    _c("INTB3", "tecnologia", "25453", "82.901.000/0001-27", "INTELBRAS S.A. IND. DE TELECOMUNICACAO ELETRONICA BRASILEIRA"),
+    _c("LWSA3", "tecnologia", "24910", "02.351.877/0001-52", "LWSA S/A", ("LWSA S/A", "LOCAWEB SERVICOS DE INTERNET S.A.")),
+    _c("MLAS3", "tecnologia", "26034", "59.717.553/0001-02", "GRUPO MULTILASER S.A.", ("GRUPO MULTILASER S.A.", "MULTILASER INDUSTRIAL S.A.")),
+    _c("PDTC3", "tecnologia", "18414", "02.365.069/0001-44", "PADTEC HOLDING S.A."),
+    _c("POSI3", "tecnologia", "20362", "81.243.735/0001-48", "POSITIVO TECNOLOGIA S.A."),
+    _c("QUSW3", "tecnologia", "23302", "35.791.391/0001-94", "QUALITY SOFTWARE S.A."),
+    _c("TOTS3", "tecnologia", "19992", "53.113.791/0001-22", "TOTVS S.A."),
+    _c("WDCN3", "tecnologia", "25895", "05.917.486/0001-40", "LIVETECH DA BAHIA INDUSTRIA E COMERCIO S.A.", ("LIVETECH DA BAHIA INDUSTRIA E COMERCIO S.A.", "WDC NETWORKS"), legacy_tickers=("LVTC3",)),
 )
 
 _BY_TICKER = {company.ticker: company for company in _COMPANIES}

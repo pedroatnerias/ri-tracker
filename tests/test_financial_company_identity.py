@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 
+import app_balancos
 import app_dfc
 import app_dre
 from company_identity import select_company_rows
@@ -63,6 +64,25 @@ class FinancialCompanyIdentityTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected.iloc[0]["IDENTITY_MATCH"], "cd_cvm")
 
+    def test_dfc_accepts_auditable_method_transition_between_periods(self):
+        mi = pd.DataFrame([dre_row(DT_REFER="2022-06-30", DT_FIM_EXERC="2022-06-30")])
+        md = pd.DataFrame([dre_row(DT_REFER="2022-09-30", DT_FIM_EXERC="2022-09-30")])
+        selected = app_dfc.selecionar_metodos_sem_sobreposicao(
+            [("MI", mi, "73.178.600/0001-18", "CYRELA"), ("MD", md, "73.178.600/0001-18", "CYRELA")],
+            "CYRE3",
+            2022,
+        )
+        self.assertEqual({method for method, *_ in selected}, {"MI", "MD"})
+
+    def test_dfc_rejects_two_methods_for_the_same_reference_date(self):
+        row = pd.DataFrame([dre_row(DT_REFER="2022-06-30", DT_FIM_EXERC="2022-06-30")])
+        with self.assertRaisesRegex(RuntimeError, "mesma.*data"):
+            app_dfc.selecionar_metodos_sem_sobreposicao(
+                [("MI", row, "73.178.600/0001-18", "CYRELA"), ("MD", row, "73.178.600/0001-18", "CYRELA")],
+                "CYRE3",
+                2022,
+            )
+
     def test_all_financial_companies_have_identifiers_for_dre_and_dfc(self):
         for company in financial_companies("all"):
             with self.subTest(company=company.ticker):
@@ -70,3 +90,6 @@ class FinancialCompanyIdentityTests(unittest.TestCase):
                 self.assertFalse(select_company_rows(pd.DataFrame([row]), company, "DRE").empty)
                 self.assertFalse(select_company_rows(pd.DataFrame([row]), company, "DFC").empty)
 
+    def test_balance_scope_metadata_is_derived_from_selected_companies(self):
+        self.assertEqual(app_balancos.scope_note(tuple(financial_companies("tecnologia"))), "Consolidado")
+        self.assertEqual(app_balancos.scope_note(tuple(financial_companies("saude"))), "Consolidado, exceto RDOR3 (individual)")
