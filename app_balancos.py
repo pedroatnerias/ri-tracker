@@ -19,10 +19,9 @@ from pathlib import Path
 import pandas as pd
 from company_registry import SECTORS, financial_companies, statement_value_factor
 from cvm_downloads import (
-    CvmDownloadError,
     CvmDownloadPolicy,
+    discover_cvm_download_urls,
     fetch_cvm_zip,
-    is_confirmed_remote_missing,
     validate_zip,
     write_events_json,
 )
@@ -174,6 +173,18 @@ def download_zip(
         timeout=(policy.timeout if policy else 120),
         backoff_seconds=(policy.backoff_seconds if policy else (5, 15, 30, 60, 120)),
     )
+    local_zip = destination / f"{prefix}_cia_aberta_{year}.zip"
+    should_discover = refresh == "force" or (refresh == "auto" and not valid_zip(local_zip, year, doc))
+    catalog_urls = (
+        discover_cvm_download_urls(
+            doc,
+            year,
+            user_agent=USER_AGENT,
+            timeout=min(effective_policy.timeout, 30),
+        )
+        if should_discover
+        else ()
+    )
     return fetch_cvm_zip(
         url=url,
         year=year,
@@ -183,6 +194,7 @@ def download_zip(
         user_agent=USER_AGENT,
         kind="bp",
         policy=effective_policy,
+        alternate_urls=catalog_urls,
     )
 
 
@@ -827,18 +839,7 @@ def main() -> int:
         download_events = []
         zip_paths = []
         for year in args.years:
-            try:
-                path, events = download_zip(year, downloads / "itr", args.force_download, args.offline, "itr", policy)
-            except CvmDownloadError as exc:
-                download_events.extend(exc.events)
-                if refresh == "auto" and year < date.today().year and is_confirmed_remote_missing(exc):
-                    logging.warning(
-                        "ITR %s omitido pela CVM e sem cache local valido; "
-                        "o ano sera ignorado com rastreabilidade e os demais anos serao processados.",
-                        year,
-                    )
-                    continue
-                raise
+            path, events = download_zip(year, downloads / "itr", args.force_download, args.offline, "itr", policy)
             download_events.extend(events)
             zip_paths.append(("itr", year, path))
         if not args.no_dfp:

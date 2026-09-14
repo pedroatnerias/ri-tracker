@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote, urlencode, urlsplit
 
 
 # O servidor da CVM ocasionalmente responde 404 de forma transitoria para ZIPs
@@ -60,9 +62,49 @@ class CvmDownloadError(RuntimeError):
         self.original = original
 
 
-def is_confirmed_remote_missing(error: CvmDownloadError) -> bool:
-    """Retorna True quando todas as tentativas terminaram em HTTP 404."""
-    return bool(error.events) and all(event.http_status == 404 for event in error.events)
+def discover_cvm_download_urls(
+    doc: str,
+    year: int,
+    *,
+    user_agent: str,
+    timeout: int = 30,
+) -> tuple[str, ...]:
+    """Descobre candidatos de download no catalogo CKAN oficial da CVM."""
+    dataset = f"cia_aberta-doc-{doc.lower()}"
+    query = urlencode({"id": dataset})
+    api_url = f"https://dados.cvm.gov.br/api/3/action/package_show?{query}"
+    request = urllib.request.Request(api_url, headers={"User-Agent": user_agent})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except Exception as exc:
+        logging.warning("Nao foi possivel consultar o catalogo CVM para %s %s: %s", doc.upper(), year, exc)
+        return ()
+
+    result = payload.get("result") if isinstance(payload, dict) else None
+    resources = result.get("resources", []) if isinstance(result, dict) else []
+    candidates: list[str] = []
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        searchable = " ".join(str(resource.get(key, "")) for key in ("name", "description", "url"))
+        resource_url = str(resource.get("url", "")).strip()
+        fmt = str(resource.get("format", "")).lower()
+        mimetype = str(resource.get("mimetype", "")).lower()
+        if str(year) not in searchable or not resource_url:
+            continue
+        if "zip" not in fmt and "zip" not in mimetype and not resource_url.lower().endswith(".zip"):
+            continue
+        candidates.append(resource_url)
+        resource_id = str(resource.get("id", "")).strip()
+        if resource_id:
+            parsed = urlsplit(resource_url)
+            filename = Path(parsed.path).name or f"{doc.lower()}_cia_aberta_{year}.zip"
+            candidates.append(
+                f"https://dados.cvm.gov.br/dataset/{quote(dataset)}/resource/"
+                f"{quote(resource_id)}/download/{quote(filename)}"
+            )
+    return tuple(dict.fromkeys(candidates))
 
 
 def expected_members(doc: str, year: int, kind: str = "bp") -> set[str]:
@@ -135,6 +177,7 @@ def fetch_cvm_zip(
     user_agent: str,
     kind: str = "bp",
     policy: CvmDownloadPolicy | None = None,
+    alternate_urls: tuple[str, ...] = (),
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[Path, list[CvmDownloadEvent]]:
     policy = policy or CvmDownloadPolicy()
@@ -157,12 +200,14 @@ def fetch_cvm_zip(
 
     last_error: Exception | None = None
     max_attempts = max(1, policy.max_attempts)
+    candidate_urls = tuple(dict.fromkeys((url, *alternate_urls)))
     for attempt in range(1, max_attempts + 1):
         started = time.monotonic()
         temporary: Path | None = None
-        event = CvmDownloadEvent(url=url, year=year, doc=doc.upper(), attempt=attempt)
+        candidate_url = candidate_urls[min(attempt - 1, len(candidate_urls) - 1)]
+        event = CvmDownloadEvent(url=candidate_url, year=year, doc=doc.upper(), attempt=attempt)
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+            request = urllib.request.Request(candidate_url, headers={"User-Agent": user_agent})
             with urllib.request.urlopen(request, timeout=policy.timeout) as response:
                 event.etag = response.headers.get("ETag")
                 event.last_modified = response.headers.get("Last-Modified")

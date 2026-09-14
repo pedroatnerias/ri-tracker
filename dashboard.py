@@ -26,7 +26,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
-from cvm_downloads import validate_zip
 
 from manual_operational import (
     MANUAL_OVERRIDES_FILENAME,
@@ -349,18 +348,6 @@ def effective_update_years(anos: list[int] | None = None, quantidade: int = 5) -
     return list(range(ano_atual - quantidade + 1, ano_atual + 1))
 
 
-def cached_cvm_years(directory: Path, doc: str = "itr") -> list[int]:
-    """Lista anos materializados pelo extrator principal no cache compartilhado."""
-    years: list[int] = []
-    for path in directory.glob(f"{doc}_cia_aberta_*.zip"):
-        match = re.fullmatch(fr"{doc}_cia_aberta_(20\d{{2}})\.zip", path.name, re.IGNORECASE)
-        if match:
-            year = int(match.group(1))
-            if validate_zip(path, year, doc, "bp"):
-                years.append(year)
-    return sorted(set(years))
-
-
 def validate_update_mode(mode: str) -> str:
     normalized = (mode or "incremental").lower()
     if normalized not in UPDATE_MODES:
@@ -566,29 +553,14 @@ def run_update(
         step_results.append(run_update_command(f"Balanço Patrimonial CVM{full_suffix}", balanco_cmd))
         balanco_path = find_balanco_json(resultados)
 
-        cached_years = cached_cvm_years(shared_itr_cache, "itr")
-        downstream_year_args = year_args
-        if cached_years:
-            downstream_year_args = [str(year) for year in anos_efetivos if year in cached_years]
-            omitted_years = [year for year in anos_efetivos if year not in cached_years]
-            if omitted_years:
-                warning = (
-                    "ITRs indisponiveis sem cache foram omitidos de DRE/DFC: "
-                    + ", ".join(str(year) for year in omitted_years)
-                )
-                warnings.append(warning)
-                append_update_log(f"[WARNING] {warning}")
-        if not downstream_year_args:
-            raise RuntimeError("Nenhum ZIP ITR valido ficou disponivel para DRE/DFC.")
-
         dre_cmd = [sys.executable, script_path("app_dre.py"), "--saida", str(dre_path), "--sector", sector, "--pasta-zips", str(shared_itr_cache), "--pasta-zips-dfp", str(shared_dfp_cache)]
-        if downstream_year_args:
-            dre_cmd.extend(["--anos", *downstream_year_args])
+        if year_args:
+            dre_cmd.extend(["--anos", *year_args])
         step_results.append(run_update_command(f"DRE CVM{full_suffix}", dre_cmd))
 
         dfc_cmd = [sys.executable, script_path("app_dfc.py"), "--diretorio", str(resultados), "--saida", str(dfc_path), "--sector", sector, "--pasta-zips", str(shared_itr_cache), "--pasta-zips-dfp", str(shared_dfp_cache)]
-        if downstream_year_args:
-            dfc_cmd.extend(["--anos", *downstream_year_args])
+        if year_args:
+            dfc_cmd.extend(["--anos", *year_args])
         step_results.append(run_update_command(f"DFC CVM{full_suffix}", dfc_cmd))
     else:
         step_results.extend([skipped_step("Balanço Patrimonial CVM"), skipped_step("DRE CVM"), skipped_step("DFC CVM")])

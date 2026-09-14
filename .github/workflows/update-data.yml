@@ -85,6 +85,9 @@ jobs:
             cvm-zips-${{ inputs.update_sector }}-
             cvm-zips-
 
+      - name: Compartilhar ZIPs CVM restaurados entre setores
+        run: python -m cvm_cache_seed --resultados resultados --sector "${{ inputs.update_sector }}"
+
       - name: Checkout ri-tracker-data para hidratacao
         if: ${{ inputs.publish || inputs.update_scope == 'operational' || inputs.update_scope == 'all' }}
         uses: actions/checkout@v6
