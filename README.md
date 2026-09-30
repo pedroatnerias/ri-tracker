@@ -11,10 +11,10 @@
 - Retornos setoriais excluem períodos com divergência não resolvida e informam
   a cobertura utilizada.
 - Saúde mantém dados operacionais com planilhas e RI. Construção Civil usa
-  somente PDFs oficiais de RI; planilhas não participam desse fluxo.
-- A auditoria é setorial: Saúde e Construção Civil exibem seus blocos
-  operacionais; em Varejo, a aba permanece visível e informa que não há JSONs
-  operacionais publicados.
+  somente PDFs oficiais de RI. Varejo prioriza planilhas oficiais e usa PDFs
+  oficiais apenas para preencher lacunas não cobertas por Excel.
+- A auditoria é setorial: Saúde, Construção Civil e Varejo exibem seus blocos
+  operacionais com fonte, período, unidade e evidência preservados.
 - O tracking transversal registra cada etapa documental e gera manifesto
   detalhado por execução, além do resumo seguro publicado.
 
@@ -32,8 +32,8 @@ Construção Civil preserva seu pipeline operacional baseado em PDFs oficiais de
 RI, além do pipeline financeiro.
 
 Varejo acompanha ALLD3, AMAR3, AMER3, BHIA3, CEAB3, CGRA3, LJQQ3, LREN3,
-MGLU3, RIAA3, SBFG3, TFCO4, TOKY3, VSTE3, WEST3 e WHRL3. O setor é
-exclusivamente financeiro. RIAA3/GUAR3 e VSTE3/LLIS3 usam a continuidade de
+MGLU3, RIAA3, SBFG3, TFCO4, TOKY3, VSTE3, WEST3 e WHRL3. Além do financeiro,
+o setor acompanha lojas, área de vendas e receitas física/digital. RIAA3/GUAR3 e VSTE3/LLIS3 usam a continuidade de
 ticker do cadastro; CGRA3/CGRA4 e WHRL3/WHRL4 têm market cap somado por classe.
 Em TFCO4, as ON são ponderadas a 1/10 da PN conforme a estrutura de direitos
 econômicos divulgada pela companhia.
@@ -41,15 +41,16 @@ econômicos divulgada pela companhia.
 ```bash
 python update_data.py --sector saude --scope all --mode incremental
 python update_data.py --sector construcao_civil --scope financial --mode full
-python update_data.py --sector varejo --scope financial --mode incremental
+python update_data.py --sector varejo --scope all --mode incremental
+python update_data.py --sector varejo --scope operational --mode full
 python update_data.py --sector all --scope financial --mode incremental
 python -m data_publication validate resultados --sector saude --scope financial
 python -m data_publication publish resultados data-repo/data --sector saude --scope financial
 ```
 
-Sem `--sector`, o padrão retrocompatível é `saude`. Varejo + tudo executa apenas
-o financeiro; Varejo + operacional retorna `not_applicable`; e todos +
-operacional executa Saúde e Construção Civil. Publicações setoriais usam manifesto
+Sem `--sector`, o padrão retrocompatível é `saude`. Varejo participa dos escopos
+`all` e `operational`; `all + operational` executa Saúde, Construção Civil e
+Varejo. Publicações setoriais usam manifesto
 v2, `data/sectors/<setor>/` e `charts/<setor>/`. O formato plano anterior é
 somente fallback de leitura e representa saúde. A publicação substitui apenas a
 interseção setor × componente e preserva os demais snapshots e overrides.
@@ -268,8 +269,9 @@ O workflow usa o secret `DATA_REPO_TOKEN` configurado no GitHub. O valor do toke
 - `app_balancos.py`: extrai BP a partir de ITR/DFP CVM.
 - `app_dre.py`: extrai DRE a partir de ITR/DFP CVM.
 - `app_dfc.py`: extrai DFC a partir de ITR/DFP CVM.
-- `app_parser_operacional.py`: baixa releases/relatorios de RI e converte PDFs para Markdown.
-- `app_extrator_operacional.py`: extrai KPIs operacionais dos documentos baixados.
+- `app_parser_operacional.py`: baixa planilhas/releases oficiais, preserva Excel e converte PDFs para Markdown.
+- `app_extrator_operacional.py`: extrai KPIs operacionais dos documentos baixados, com precedência Excel em Varejo.
+- `retail_operational.py`: normaliza evidências, unidades, canais e cálculos operacionais de Varejo.
 - `app_divida_liquida.py`: calcula divida liquida a partir do BP.
 - `app_ciclo_financeiro.py`: calcula ciclo financeiro a partir do BP e DRE.
 - `app_market_cap.py`: calcula market cap atual.

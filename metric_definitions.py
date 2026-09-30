@@ -98,6 +98,70 @@ MATERIALITY_THRESHOLDS = {
 }
 
 
+# Contrato operacional de Varejo. Os aliases identificam apenas divulgações
+# explícitas; GMV, sell-out e vendas de terceiros são mantidos fora das
+# receitas de canal para evitar equivalências silenciosas.
+RETAIL_OPERATIONAL_DICTIONARY: dict[str, dict[str, object]] = {
+    "stores_count": {
+        "display_name": "Número de lojas",
+        "definition": "Quantidade de lojas no fechamento do período, sem somar aberturas que possam se sobrepor ao estoque final.",
+        "unit": "lojas",
+        "nature": "stock",
+        "aliases": ("numero de lojas", "número de lojas", "total de lojas", "lojas totais", "store count", "number of stores"),
+        "forbidden_contexts": ("aberturas", "openings", "lojas abertas", "fechamentos", "closures"),
+    },
+    "sales_area_sqm": {
+        "display_name": "Área total de vendas",
+        "definition": "Área comercial divulgada no fechamento ou média do período, normalizada para m².",
+        "unit": "m²",
+        "nature": "stock",
+        "aliases": ("area total de vendas", "área total de vendas", "area de vendas", "área de vendas", "selling area", "sales area"),
+        "forbidden_contexts": ("area media por loja", "área média por loja", "average area per store"),
+    },
+    "physical_revenue_brl": {
+        "display_name": "Receita física",
+        "definition": "Receita explicitamente atribuída ao canal de lojas físicas, no escopo divulgado.",
+        "unit": "R$",
+        "nature": "flow",
+        "aliases": ("receita fisica", "receita física", "receita lojas fisicas", "receita lojas físicas", "receita canal fisico", "physical store revenue", "brick and mortar revenue"),
+        "forbidden_contexts": ("gmv", "sell-out", "sell out", "vendas em lojas", "same store sales", "sss"),
+    },
+    "digital_revenue_brl": {
+        "display_name": "Receita digital",
+        "definition": "Receita explicitamente atribuída ao canal digital; GMV e sell-out não são tratados como receita.",
+        "unit": "R$",
+        "nature": "flow",
+        "aliases": ("receita digital", "receita e-commerce", "receita ecommerce", "receita online", "digital revenue", "e-commerce revenue", "online revenue"),
+        "forbidden_contexts": ("gmv", "sell-out", "sell out", "vendas digitais", "participacao digital", "participação digital"),
+    },
+    "comparable_total_revenue_brl": {
+        "display_name": "Receita total comparável",
+        "definition": "Base de receita explicitamente compatível com as receitas física e digital.",
+        "unit": "R$",
+        "nature": "flow",
+        "aliases": ("receita total dos canais", "receita total varejo", "receita total comparavel", "receita total comparável", "total channel revenue", "retail revenue"),
+        "forbidden_contexts": ("gmv", "sell-out", "servicos financeiros", "serviços financeiros", "atacado", "wholesale", "intercompany"),
+        "dependency_only": True,
+    },
+    "digital_revenue_share": {
+        "display_name": "Receita digital / receita total",
+        "definition": "Receita digital dividida pela receita total comparável, somente com escopo e período reconciliados.",
+        "unit": "%",
+        "nature": "ratio",
+        "derived": True,
+    },
+    "physical_revenue_per_sqm": {
+        "display_name": "Receita física / área total de vendas",
+        "definition": "Receita física do período dividida pela área média; na ausência desta, usa área de fechamento com sinalização explícita.",
+        "unit": "R$/m²",
+        "nature": "ratio",
+        "derived": True,
+    },
+}
+
+RETAIL_METRIC_IDS = tuple(RETAIL_OPERATIONAL_DICTIONARY)
+
+
 def company_rule(ticker: str) -> CompanyMetricRule:
     return COMPANY_METRIC_RULES.get(ticker.upper(), CompanyMetricRule(ticker=ticker.upper()))
 

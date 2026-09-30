@@ -27,13 +27,13 @@ class SectorUpdateTests(unittest.TestCase):
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
         self.assertFalse(result["warnings"])
 
-    def test_retail_all_runs_financial_without_operational_commands(self):
+    def test_retail_all_runs_financial_and_operational_commands(self):
         with tempfile.TemporaryDirectory() as tmp, patch("dashboard.run_update_command", return_value={"status": "ok"}) as command, patch("dashboard.find_balanco_json", return_value=Path(tmp) / "x.json"):
             result = dashboard.run_update(Path(tmp), [2026], sector="varejo", scope="all")
         flat = [part for call in command.call_args_list for part in call.args[1]]
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_balancos.py"), flat)
-        self.assertNotIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
-        self.assertEqual(result["companies"]["operational"], [])
+        self.assertIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
+        self.assertEqual(len(result["companies"]["operational"]), 16)
 
     def test_retail_first_deploy_does_not_require_published_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,12 +41,14 @@ class SectorUpdateTests(unittest.TestCase):
             result = pipeline_tasks.hydrate_existing_data(root / "data-repo", root / "resultados", "varejo", "dashboard")
         self.assertEqual(result["sectors"]["varejo"]["status"], "bootstrap_without_published_data")
 
-    def test_retail_operational_scope_is_a_safe_noop(self):
+    def test_retail_operational_scope_runs_shared_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp, patch("dashboard.run_update_command", return_value={"status": "ok"}) as command:
             result = dashboard.run_update(Path(tmp), [2026], sector="varejo", scope="operational")
-        command.assert_not_called()
+        flat = [part for call in command.call_args_list for part in call.args[1]]
+        self.assertIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
+        self.assertIn(str(Path(dashboard.BASE_DIR) / "app_extrator_operacional.py"), flat)
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["companies"]["operational"], [])
+        self.assertEqual(len(result["companies"]["operational"]), 16)
 
     def test_all_financial_expands_to_all_sector_pipelines(self):
         with tempfile.TemporaryDirectory() as tmp, patch("dashboard.run_update_command", return_value={"status": "ok"}) as command, patch("dashboard.find_balanco_json", return_value=Path(tmp) / "x.json"):

@@ -65,6 +65,25 @@ _CONSTRUCTION_RESULTS_PAGES = {
     "VIVR3": "https://ri.viver.com.br/informacoes-financeiras/central-resultados/",
 }
 
+_RETAIL_URLS = {
+    "ALLD3": "https://ri.alliedbrasil.com.br/",
+    "AMAR3": "https://ri.marisa.com.br/",
+    "AMER3": "https://ri.americanas.io/",
+    "BHIA3": "https://ri.grupocasasbahia.com.br/",
+    "CEAB3": "https://ri.cea.com.br/",
+    "CGRA3": "https://www.grazziotin.com.br/ri/",
+    "LJQQ3": "https://ri.quero-quero.com.br/",
+    "LREN3": "https://ri.lojasrenner.com.br/",
+    "MGLU3": "https://ri.magazineluiza.com.br/",
+    "RIAA3": "https://ri.riachuelo.com.br/",
+    "SBFG3": "https://ri.gruposbf.com.br/",
+    "TFCO4": "https://ri.tfco.com.br/",
+    "TOKY3": "https://ri.grupotoky.com.br/",
+    "VSTE3": "https://ri.veste.com/",
+    "WEST3": "https://ri.westwing.com.br/",
+    "WHRL3": "https://www.whirlpool.com.br/investidores",
+}
+
 
 def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
     companies = {company.ticker: company for company in companies_for_sector(sector) if company.operational_enabled}
@@ -89,6 +108,7 @@ def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[
 OPERATIONAL_RI_SOURCES = {
     "saude": _build_sector_sources("saude", _HEALTH_URLS),
     "construcao_civil": _build_sector_sources("construcao_civil", _CONSTRUCTION_URLS, _CONSTRUCTION_RESULTS_PAGES),
+    "varejo": _build_sector_sources("varejo", _RETAIL_URLS),
 }
 
 

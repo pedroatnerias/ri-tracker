@@ -49,7 +49,10 @@ def hydrate_existing_data(data_repo: Path, resultados: Path, sector: str, requir
         source = data_repo_sector_dir(data_repo, current_sector)
         target = resolve_sector_results_dir(resultados, current_sector, create=True)
         if not source.exists():
-            if requirements == "dashboard" and not operational_companies(current_sector):
+            # Varejo pode iniciar sem snapshot publicado: a primeira coleta
+            # cria o contrato operacional. Setores já maduros continuam
+            # exigindo a hidratação para garantir resiliência.
+            if requirements == "dashboard" and (current_sector == "varejo" or not operational_companies(current_sector)):
                 restored["sectors"][current_sector] = {
                     "source": str(source),
                     "target": str(target),
@@ -148,13 +151,44 @@ def run_regenerate_charts(resultados: Path, sector: str, chart_scope: str, ticke
     return {"sectors": {current: regenerate_charts(resultados, current, chart_scope, ticker) for current in expand_sectors(sector)}}
 
 
+def recalculate_retail_operational(resultados: Path) -> dict[str, object]:
+    """Reconstrói métricas derivadas de Varejo usando apenas observações persistidas."""
+    from company_registry import company_by_ticker
+    from retail_operational import build_snapshot
+
+    base = resolve_sector_results_dir(resultados, "varejo")
+    operational_dir = base / "dados_operacionais"
+    if not operational_dir.exists():
+        return {"status": "missing_inputs", "updated": []}
+    updated: list[str] = []
+    for path in sorted(operational_dir.glob("*.json")):
+        if path.name == "operational_observations.json":
+            continue
+        payload = read_json_if_exists(path)
+        if not payload or not isinstance(payload.get("observations"), list):
+            continue
+        ticker = str(payload.get("ticker") or path.stem).upper()
+        reported = [item for item in payload["observations"] if isinstance(item, dict) and item.get("reported_or_derived", "reported") == "reported"]
+        if not reported:
+            continue
+        rebuilt = build_snapshot(
+            ticker=ticker, company_name=company_by_ticker(ticker).expected_name,
+            observations=reported, companies_requested=len(operational_companies("varejo")),
+            documents_processed=list((payload.get("discovery") or {}).get("documents_processed") or []),
+        )
+        path.write_text(json.dumps(rebuilt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        updated.append(path.name)
+    return {"status": "success", "updated": updated}
+
+
 def run_rebuild_dashboard_no_fetch(resultados: Path, sector: str, force_rebuild: bool = False) -> dict[str, object]:
     sectors: dict[str, object] = {}
     for current in expand_sectors(sector):
+        operational = recalculate_retail_operational(resultados) if current == "varejo" else {"status": "not_applicable", "updated": []}
         recalc = recalculate_indicators(resultados, current, "all")
         charts = regenerate_charts(resultados, current, "all", "all")
         manifest = validate_outputs(resultados, current, "financial")
-        sectors[current] = {"recalculate": recalc, "charts": charts, "manifest": manifest, "force_rebuild": force_rebuild}
+        sectors[current] = {"recalculate": recalc, "operational": operational, "charts": charts, "manifest": manifest, "force_rebuild": force_rebuild}
     return {"sectors": sectors}
 
 

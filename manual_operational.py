@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from company_registry import canonical_ticker, company_by_ticker, operational_companies
 from operational_dictionary import all_metric_names
 from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY
+from metric_definitions import RETAIL_OPERATIONAL_DICTIONARY
 
 
 TICKERS: tuple[str, ...] = tuple(company.ticker for company in operational_companies("all"))
@@ -36,6 +37,7 @@ METRIC_UNITS = {
     "Receita Bruta": "R$",
     "Glosa/PCLD": "R$",
     **{definition["display_name"]: definition["unit"] for definition in CONSTRUCTION_OPERATIONAL_DICTIONARY.values()},
+    **{definition["display_name"]: definition["unit"] for definition in RETAIL_OPERATIONAL_DICTIONARY.values() if not definition.get("dependency_only")},
 }
 
 CONSTRUCTION_METRIC_BY_ID = {key: value["display_name"] for key, value in CONSTRUCTION_OPERATIONAL_DICTIONARY.items()}

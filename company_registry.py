@@ -38,7 +38,7 @@ class StatementScaleOverride:
 SECTOR_CONFIG = {
     "saude": SectorConfig("Saúde", True, True),
     "construcao_civil": SectorConfig("Construção civil", True, True),
-    "varejo": SectorConfig("Varejo", True, False),
+    "varejo": SectorConfig("Varejo", True, True),
     "tecnologia": SectorConfig("Tecnologia", True, False),
 }
 REAL_SECTORS = tuple(SECTOR_CONFIG)

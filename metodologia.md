@@ -1,14 +1,14 @@
 ---
 title: "Metodologia do Acompanhador de Mercado"
-version: "4.0"
-date: "2026-09-03"
+version: "4.1"
+date: "2026-09-30"
 language: "pt-BR"
 purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações analíticas"
 ---
 
 # Metodologia do Acompanhador de Mercado
 
-> **Atualização metodológica 4.0 — 03/09/2026**
+> **Atualização metodológica 4.1 — 30/09/2026**
 >
 > Esta versão incorpora as mudanças recentes do pipeline. A quantidade histórica
 > de ações é buscada primeiro no Yahoo Finance e comparada com a CVM. Diferenças
@@ -19,7 +19,8 @@ purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações a
 >
 > A regra financeira é compartilhada por Saúde, Construção Civil e Varejo. A separação por
 > setor aplica-se somente ao bloco operacional: Saúde pode usar planilhas e
-> documentos de RI; Construção Civil usa exclusivamente PDFs oficiais de RI.
+> documentos de RI; Construção Civil usa exclusivamente PDFs oficiais de RI;
+> Varejo prioriza Excel oficial e usa PDF oficial como fallback.
 >
 > O tracking transversal registra descoberta, importação, conversão, leitura,
 > resolução, parsing, validação, publicação e preservação de cada documento.
@@ -28,7 +29,7 @@ purpose: "Premissas, fontes, fórmulas, critérios de qualidade e limitações a
 
 ## 1. Objetivo e princípios
 
-O Acompanhador de Mercado consolida informações financeiras e de mercado nos três setores e dados operacionais em Saúde e Construção Civil.
+O Acompanhador de Mercado consolida informações financeiras, de mercado e operacionais em Saúde, Construção Civil e Varejo.
 
 A metodologia prioriza cinco princípios:
 
@@ -42,7 +43,7 @@ O modelo cobre três setores:
 
 - **Saúde**, com dados financeiros, de mercado e operacionais;
 - **Construção Civil**, com dados financeiros, de mercado e operacionais;
-- **Varejo**, com dados financeiros e de mercado, sem pipeline operacional.
+- **Varejo**, com dados financeiros, de mercado e operacionais.
 
 As companhias acompanhadas são definidas no cadastro central do modelo. O escopo contábil é, em regra, **consolidado**; RDOR3 e WEST3 são tratados no escopo **individual**.
 
@@ -645,6 +646,37 @@ Procedimentos ou tratamentos só entram como proxy quando a regra da companhia p
 ### HAPV3
 
 Receitas e glosas divulgadas em RI não substituem automaticamente a receita contábil CVM. A separação é particularmente relevante devido ao tratamento de IFRS 17.
+
+---
+
+## 8.5. Varejo
+
+O universo de empresas é sempre o cadastro central de `company_registry.py`. A
+fonte preferencial é a planilha oficial de fundamentos/resultados; Markdown
+convertido de PDF oficial somente completa chaves de métrica e período ausentes
+no Excel.
+
+As métricas padronizadas são número de lojas, área total de vendas em m²,
+receita física, receita digital, participação da receita digital e receita
+física por m². Lojas próprias, franqueadas e por bandeira permanecem como
+aberturas separadas; não são somadas sem um total explícito não sobreposto.
+
+GMV, sell-out, vendas digitais e receita não são equivalentes. Os dois últimos
+indicadores são calculados somente quando numerador e denominador têm o mesmo
+período e escopo:
+
+```text
+Receita digital / receita total comparável
+Receita física / área média de vendas
+```
+
+Quando apenas a área de fechamento existe, ela pode alimentar o segundo cálculo
+com confiança média e a flag `closing_area_used_instead_of_average_area`. A
+ausência de base comparável produz valor nulo e diagnóstico; nunca produz zero.
+
+Cada observação conserva arquivo, URL oficial quando disponível, aba ou página,
+célula, rótulo original, unidade original, regra de normalização e data de
+coleta. Falhas de coleta preservam o snapshot válido anterior.
 
 ---
 

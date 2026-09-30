@@ -36,7 +36,7 @@ class CompanyRegistryTests(unittest.TestCase):
         expected = {"ALLD3", "AMAR3", "AMER3", "BHIA3", "CEAB3", "CGRA3", "LJQQ3", "LREN3", "MGLU3", "RIAA3", "SBFG3", "TFCO4", "TOKY3", "VSTE3", "WEST3", "WHRL3"}
         self.assertEqual({c.ticker for c in companies_for_sector("varejo")}, expected)
         self.assertEqual({c.ticker for c in financial_companies("varejo")}, expected)
-        self.assertEqual(operational_companies("varejo"), ())
+        self.assertEqual({c.ticker for c in operational_companies("varejo")}, expected)
         self.assertEqual(company_by_ticker("GUAR3").ticker, "RIAA3")
         self.assertEqual(company_by_ticker("LLIS3").ticker, "VSTE3")
         self.assertEqual({c.ticker for c in company_by_ticker("CGRA3").share_classes}, {"CGRA3", "CGRA4"})

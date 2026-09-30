@@ -73,16 +73,17 @@ def validate_operational_snapshot(path: Path, sector: str) -> None:
     if ticker not in allowed:
         raise SystemExit(f"Ticker {ticker or 'ausente'} não pertence ao setor {sector}.")
     payload_sector = payload.get("sector")
-    if sector == "construcao_civil" and payload_sector != sector:
+    structured_sectors = {"construcao_civil", "varejo"}
+    if sector in structured_sectors and payload_sector != sector:
         raise SystemExit(f"Snapshot operacional pertence ao setor {payload_sector or 'não informado'}, mas o setor solicitado é {sector}.")
     observations = payload.get("observations")
     empty_statuses = {"not_found", "not_found_no_previous_data", "source_unavailable", "unsupported_document"}
-    if sector == "construcao_civil":
+    if sector in structured_sectors:
         required = {"schema_version", "generated_at", "extractor_version", "companies_requested", "documents_processed", "calculation_metadata"}
         missing = sorted(required - set(payload))
         if missing:
             raise SystemExit(f"Snapshot operacional sem campos obrigatórios: {', '.join(missing)}.")
-    if sector == "construcao_civil" and (not isinstance(observations, list) or (not observations and payload.get("status") not in empty_statuses)):
+    if sector in structured_sectors and (not isinstance(observations, list) or (not observations and payload.get("status") not in empty_statuses)):
         raise SystemExit(f"Nenhuma observação válida de {sector} foi gerada.")
     for observation in observations if isinstance(observations, list) else []:
         observation_ticker = str(observation.get("ticker") or ticker).upper()
@@ -314,7 +315,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     ) if scope in {"all", "operational"} and op_dir.exists() else []
     for path in operational_jsons:
         validate_operational_snapshot(path, sector)
-    operational_quality = build_operational_quality_report(base, sector) if scope in {"all", "operational"} and sector == "construcao_civil" else {}
+    operational_quality = build_operational_quality_report(base, sector) if scope in {"all", "operational"} and sector in {"construcao_civil", "varejo"} else {}
     manual_path = base / MANUAL_OVERRIDES_FILENAME
     manual_exists = manual_path.exists()
     if manual_exists:
@@ -341,7 +342,7 @@ def build_publish_manifest(base: Path, scope: str = "all", sector: str = "saude"
     if operational_quality.get("warnings"):
         warnings.extend(str(item) for item in operational_quality["warnings"])
     status = "success_with_warnings" if warnings else "success"
-    if scope in {"all", "operational"} and sector == "construcao_civil" and operational_quality.get("companies_with_valid_observations", 0) == 0:
+    if scope in {"all", "operational"} and sector in {"construcao_civil", "varejo"} and operational_quality.get("companies_with_valid_observations", 0) == 0:
         status = "failed_quality_gate"
     tracking_files = sorted((base / "tracking").glob("*.json")) if (base / "tracking").exists() else []
     tracking_summary = {}

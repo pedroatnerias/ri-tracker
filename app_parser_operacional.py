@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -920,10 +921,13 @@ def coletar_documentos_empresa(
 def nome_arquivo_documento(
     documento: DocumentoEncontrado,
 ) -> str:
+    suffix = Path(urlparse(documento.url_documento).path).suffix.lower()
+    if suffix not in {".pdf", ".xlsx", ".xlsm", ".xls"}:
+        suffix = ".xlsx" if documento.tipo == "PLANILHA_RESULTADOS" else ".pdf"
     return (
         f"{documento.ticker}_"
         f"{documento.periodo}_"
-        f"{documento.tipo}.pdf"
+        f"{documento.tipo}{suffix}"
     )
 
 
@@ -941,6 +945,16 @@ def conteudo_e_pdf(
         "application/pdf" in content_type
         or conteudo.startswith(b"%PDF")
     )
+
+
+def conteudo_e_planilha(resposta: requests.Response, suffix: str) -> bool:
+    content_type = resposta.headers.get("Content-Type", "").lower()
+    conteudo = resposta.content
+    if suffix in {".xlsx", ".xlsm"}:
+        return conteudo.startswith(b"PK") or "spreadsheet" in content_type or "excel" in content_type
+    if suffix == ".xls":
+        return conteudo.startswith(bytes.fromhex("D0CF11E0A1B11AE1")) or "excel" in content_type
+    return False
 
 
 def baixar_documento(
@@ -974,16 +988,17 @@ def baixar_documento(
     )
     resposta.raise_for_status()
 
-    if not conteudo_e_pdf(resposta):
-        raise ValueError(
-            "O endereço não retornou um PDF. "
-            f"Content-Type: {resposta.headers.get('Content-Type')}"
-        )
+    suffix = destino.suffix.lower()
+    if suffix == ".pdf" and not conteudo_e_pdf(resposta):
+        raise ValueError("O endereço não retornou um PDF. " f"Content-Type: {resposta.headers.get('Content-Type')}")
+    if suffix in {".xlsx", ".xlsm", ".xls"} and not conteudo_e_planilha(resposta, suffix):
+        raise ValueError("O endereço não retornou uma planilha Excel válida. " f"Content-Type: {resposta.headers.get('Content-Type')}")
 
-    arquivo_temporario = destino.with_suffix(".pdf.part")
+    arquivo_temporario = destino.with_suffix(destino.suffix + ".part")
     arquivo_temporario.write_bytes(resposta.content)
 
-    validar_pdf(arquivo_temporario)
+    if suffix == ".pdf":
+        validar_pdf(arquivo_temporario)
     arquivo_temporario.replace(destino)
 
     return DownloadRealizado(
@@ -1162,6 +1177,17 @@ def listar_pdfs_entrada(input_dir: Path = PASTA_ENTRADA_PADRAO, *, sector: str |
     return sorted(
         arquivo.resolve()
         for arquivo in input_dir.glob("*.pdf")
+        if arquivo.is_file() and (allowed is None or _canonical_ticker_from_filename(arquivo.name) in allowed)
+    )
+
+
+def listar_planilhas_entrada(input_dir: Path = PASTA_ENTRADA_PADRAO, *, sector: str | None = None) -> list[Path]:
+    input_dir.mkdir(parents=True, exist_ok=True)
+    allowed = None if sector is None else {company.ticker for company in operational_companies(sector)}
+    return sorted(
+        arquivo.resolve()
+        for pattern in ("*.xlsx", "*.xlsm", "*.xls")
+        for arquivo in input_dir.glob(pattern)
         if arquivo.is_file() and (allowed is None or _canonical_ticker_from_filename(arquivo.name) in allowed)
     )
 
@@ -1777,6 +1803,15 @@ def main() -> int:
     if argumentos.somente_download:
         return 0
 
+    # Entrada preserva o original; Saída reúne planilhas e Markdown para o
+    # extrator operacional sem alterar o contrato do pipeline.
+    for spreadsheet in listar_planilhas_entrada(input_dir, sector=sector):
+        if tickers and _canonical_ticker_from_filename(spreadsheet.name) not in tickers:
+            continue
+        destination = output_dir / spreadsheet.name
+        if not destination.exists() or argumentos.sobrescrever_downloads:
+            shutil.copy2(spreadsheet, destination)
+
     if argumentos.pdf:
         pdfs = [
             Path(argumentos.pdf).expanduser().resolve()
@@ -1790,6 +1825,21 @@ def main() -> int:
                 for pdf in pdfs
                 if _canonical_ticker_from_filename(pdf.name) in tickers
             ]
+
+    if not pdfs and sector == "varejo" and listar_planilhas_entrada(input_dir, sector=sector):
+        planilhas = listar_planilhas_entrada(input_dir, sector=sector)
+        result = {
+            "sector": sector, "companies_requested": len(tickers or allowed_tickers),
+            "companies_with_sources": len({(_canonical_ticker_from_filename(path.name) or "") for path in planilhas}),
+            "documents_discovered": len(registros), "documents_downloaded": len(registros),
+            "documents_converted": 0, "spreadsheets_available": len(planilhas),
+            "documents_rejected_wrong_sector": 0, "status": "success_spreadsheets_available",
+            "input_dir": str(input_dir), "output_dir": str(output_dir), "errors": [], "warnings": [],
+        }
+        if argumentos.result_json:
+            Path(argumentos.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
+        return 0
 
     if not pdfs:
         result = {

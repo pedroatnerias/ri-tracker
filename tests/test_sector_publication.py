@@ -17,11 +17,24 @@ def financial_outputs(base: Path, ticker: str) -> None:
 
 
 class SectorPublicationTests(unittest.TestCase):
-    def test_retail_operational_publication_is_not_applicable(self):
+    def test_retail_operational_publication_uses_structured_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertEqual(data_publication.validate_results(root, "operational", "varejo")["status"], "not_applicable")
-            self.assertEqual(data_publication.publish_validated_data(root, root / "data", scope="operational", sector="varejo")["status"], "not_applicable")
+            snapshot = root / "varejo" / "dados_operacionais" / "MGLU3.json"
+            snapshot.parent.mkdir(parents=True)
+            snapshot.write_text(json.dumps({
+                "schema_version": "retail_operational_v1", "sector": "varejo",
+                "generated_at": "2026-09-30T00:00:00+00:00", "extractor_version": "retail_operational_v1",
+                "companies_requested": 16, "documents_processed": 1, "calculation_metadata": {},
+                "ticker": "MGLU3", "observations": [{
+                    "sector": "varejo", "ticker": "MGLU3", "indicator_id": "stores_count",
+                    "period": "2T26", "value": 100, "unit": "lojas", "source_document": "oficial.xlsx",
+                    "confidence": "high", "validation_status": "valid",
+                }], "metricas": {}, "status": "found_new_data",
+            }), encoding="utf-8")
+            manifest = data_publication.validate_results(root, "operational", "varejo")
+            self.assertEqual(manifest["status"], "success_with_warnings")
+            self.assertEqual(manifest["operational_jsons"], ["dados_operacionais/MGLU3.json"])
 
     def test_financial_publications_preserve_other_sector_and_manifest_v2(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -70,8 +70,17 @@ jobs:
             --requirements dashboard
       - name: Reconstruir sem coleta
         run: python -m pipeline_tasks rebuild-dashboard-no-fetch --resultados resultados --sector "${{ inputs.sector }}" ${{ inputs.force_rebuild && '--force-rebuild' || '' }}
+      - name: Definir escopo de validação
+        id: validation_scope
+        shell: bash
+        run: |
+          if [[ "${{ inputs.sector }}" == "tecnologia" ]]; then
+            echo "scope=financial" >> "$GITHUB_OUTPUT"
+          else
+            echo "scope=all" >> "$GITHUB_OUTPUT"
+          fi
       - name: Validar manifests
-        run: python -m data_publication validate resultados --scope financial --sector "${{ inputs.sector }}"
+        run: python -m data_publication validate resultados --scope "${{ steps.validation_scope.outputs.scope }}" --sector "${{ inputs.sector }}"
       - name: Artefatos para inspeção
         if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v4
@@ -85,7 +94,7 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
-        run: python -m data_publication publish resultados ri-tracker-data/data --scope financial --sector "${{ inputs.sector }}"
+        run: python -m data_publication publish resultados ri-tracker-data/data --scope "${{ steps.validation_scope.outputs.scope }}" --sector "${{ inputs.sector }}"
       - name: Commit e push
         if: ${{ inputs.publish }}
         working-directory: ri-tracker-data

@@ -1618,8 +1618,161 @@ def parse_local_files(values: list[str]) -> dict[str, Path]:
     return parsed
 
 
+def _retail_source_metadata(markdown_dir: Path) -> dict[object, dict[str, Any]]:
+    """Indexa o manifesto do parser sem tornar sua ausência bloqueante."""
+    candidates = [
+        Path(__file__).resolve().parent / "Releases e relatórios" / "manifesto_downloads_varejo.json",
+        markdown_dir.parent.parent / "manifesto_downloads_varejo.json",
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, list):
+            indexed: dict[object, dict[str, Any]] = {}
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                indexed[(str(item.get("ticker") or "").upper(), str(item.get("periodo") or ""))] = item
+                if item.get("nome_arquivo"):
+                    indexed[str(item["nome_arquivo"])] = item
+            return indexed
+    return {}
+
+
+async def run_retail(args: argparse.Namespace) -> int:
+    from company_registry import operational_companies
+    from retail_operational import (
+        build_snapshot,
+        dedupe_observations,
+        extract_markdown_observations,
+        extract_workbook_observations,
+        normalize_period as normalize_retail_period,
+    )
+
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    document_dir = Path(args.md_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    document_dir.mkdir(parents=True, exist_ok=True)
+    companies = {company.ticker: company for company in operational_companies("varejo")}
+    selected = {ticker.upper() for ticker in args.only} if args.only else set(companies)
+    invalid = selected - set(companies)
+    if invalid:
+        raise ValueError(f"tickers não suportados em varejo: {', '.join(sorted(invalid))}")
+
+    explicit_files: dict[str, list[Path]] = {}
+    for value in args.file:
+        if "=" not in value:
+            raise ValueError(f"--file deve usar TICKER=caminho; recebido: {value}")
+        ticker, raw_path = value.split("=", 1)
+        ticker = ticker.strip().upper()
+        path = Path(raw_path).expanduser().resolve()
+        if ticker not in companies or not path.exists():
+            raise ValueError(f"arquivo/ticker de varejo inválido: {value}")
+        explicit_files.setdefault(ticker, []).append(path)
+
+    # PDFs locais seguem exatamente o parser existente; o Markdown resultante
+    # é o fallback auditável quando não há planilha útil.
+    if converter_pdf_para_markdown is not None:
+        for pdf in document_dir.rglob("*.pdf"):
+            try:
+                converter_pdf_para_markdown(pdf, diretorio_saida=document_dir, extrair_imagens=False, mostrar_progresso=False)
+            except Exception as exc:
+                safe_print(f"[PDF] aviso: falha ao converter {pdf.name}: {exc}")
+
+    metadata = _retail_source_metadata(document_dir)
+    generated = 0
+    preserved = 0
+    all_observations: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    documents_seen = 0
+    for ticker in sorted(selected):
+        company = companies[ticker]
+        files = list(explicit_files.get(ticker, []))
+        files.extend(
+            path for pattern in ("*.xlsx", "*.xlsm", "*.xls", "*.md")
+            for path in document_dir.rglob(pattern)
+            if path.is_file() and path.name.upper().startswith(tuple((ticker, *company.legacy_tickers)))
+        )
+        files = list(dict.fromkeys(files))
+        spreadsheets = [path for path in files if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}]
+        markdowns = [path for path in files if path.suffix.lower() == ".md" and not path.name.endswith(".meta.json")]
+        observations: list[dict[str, Any]] = []
+        processed: list[str] = []
+        for path in spreadsheets:
+            period = normalize_retail_period(path.name) or ""
+            source = metadata.get(path.name) or metadata.get((ticker, period), {})
+            try:
+                extracted = extract_workbook_observations(path, ticker=ticker, source_url=str(source.get("url_documento") or ""))
+                if source.get("baixado_em"):
+                    for item in extracted:
+                        item["collected_at"] = source["baixado_em"]
+                observations.extend(extracted)
+                processed.append(path.name)
+                documents_seen += 1
+            except Exception as exc:
+                errors.append({"ticker": ticker, "document": path.name, "error": str(exc)})
+        excel_keys = {(item.get("indicator_id"), item.get("period"), item.get("scope"), item.get("segment")) for item in observations}
+        if not args.no_md_fallback:
+            for path in markdowns:
+                period = normalize_retail_period(path.name) or ""
+                source = metadata.get(path.name) or metadata.get((ticker, period), {})
+                try:
+                    fallback = extract_markdown_observations(
+                        path.read_text(encoding="utf-8", errors="replace"), ticker=ticker,
+                        source_document=path.name, source_url=str(source.get("url_documento") or ""),
+                    )
+                    if source.get("baixado_em"):
+                        for item in fallback:
+                            item["collected_at"] = source["baixado_em"]
+                    observations.extend(item for item in fallback if (item.get("indicator_id"), item.get("period"), item.get("scope"), item.get("segment")) not in excel_keys)
+                    processed.append(path.name)
+                    documents_seen += 1
+                except Exception as exc:
+                    errors.append({"ticker": ticker, "document": path.name, "error": str(exc)})
+        previous_path = output_dir / f"{ticker}.json"
+        previous_payload: dict[str, Any] = {}
+        if previous_path.exists():
+            try:
+                previous_payload = json.loads(previous_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                previous_payload = {}
+        payload = build_snapshot(
+            ticker=ticker, company_name=company.expected_name,
+            observations=dedupe_observations(observations), companies_requested=len(selected),
+            documents_processed=processed, previous_payload=previous_payload,
+        )
+        if payload.get("status") == "preserved_existing_data":
+            preserved += 1
+        if payload.get("observations"):
+            generated += 1
+            all_observations.extend(payload["observations"])
+        write_json(payload, output_dir)
+
+    if all_observations:
+        write_observations_json(all_observations, output_dir)
+    result = {
+        "sector": "varejo", "companies_requested": len(selected),
+        "documents_processed": documents_seen, "companies_with_observations": generated,
+        "companies_without_observations": len(selected) - generated,
+        "operational_files_generated": len(selected), "snapshots_preserved": preserved,
+        "observations_valid": len(all_observations), "errors": errors,
+        "status": "success_new_snapshot" if all_observations else "no_valid_observations",
+        "coverage_status": "complete" if generated == len(selected) else ("partial" if generated else "none"),
+    }
+    if args.result_json:
+        Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    safe_print("OPERATIONAL_RESULT=" + json.dumps(result, ensure_ascii=False))
+    return 0 if all_observations else 1
+
+
 async def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
+    if args.sector == "varejo":
+        return await run_retail(args)
     if args.sector == "construcao_civil":
         from company_registry import operational_companies
         from construction_operational import CONSTRUCTION_OPERATIONAL_DICTIONARY, calculate_derived_from_observations, extract_markdown_observations, extract_workbook_observations
