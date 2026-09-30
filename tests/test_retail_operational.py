@@ -7,6 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook
 
 import app_extrator_operacional
+import app_parser_operacional
 import data_publication
 import dashboard
 import pipeline_tasks
@@ -131,7 +132,7 @@ class RetailOperationalTests(unittest.TestCase):
 
     def test_retail_registry_and_dashboard_metrics_share_one_universe(self):
         tickers = {company.ticker for company in operational_companies("varejo")}
-        self.assertEqual(len(tickers), 16)
+        self.assertEqual(len(tickers), 17)
         self.assertEqual(set(operational_sources_for_sector("varejo")), tickers)
         self.assertEqual(
             all_metric_names("varejo"),
@@ -164,6 +165,47 @@ class RetailOperationalTests(unittest.TestCase):
             rebuilt = json.loads((base / "MGLU3.json").read_text(encoding="utf-8"))
         self.assertEqual(result["updated"], ["MGLU3.json"])
         self.assertIn("Receita digital / receita total", rebuilt["metricas"])
+
+    def test_static_and_network_discovery_accept_undated_spreadsheets(self):
+        html = '<a href="https://ri.example.com/fundamentos.xlsx">Planilha de fundamentos</a>'
+        rows = app_parser_operacional.extrair_links_html(
+            html, "https://ri.example.com/planilhas", "MGLU3", "Magazine Luiza", 2022,
+            permitir_planilha_sem_periodo=True, allowed_domains=["ri.example.com"],
+        )
+        self.assertEqual([(item.tipo, item.periodo) for item in rows], [("PLANILHA_RESULTADOS", "HISTORICO")])
+        network = app_parser_operacional.documentos_de_network(
+            [{"url": "https://api.example.com/planilha_2T26.xlsx", "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}],
+            "MGLU3", "Magazine Luiza", 2022, "https://ri.example.com/",
+            permitir_planilha_sem_periodo=True, allowed_domains=["api.example.com"],
+        )
+        self.assertEqual(network[0].periodo, "2T26")
+
+    def test_discovery_rejects_non_files_and_unapproved_domains(self):
+        html = '<a href="https://third-party.example/fundamentos.xlsx">Planilha 2T26</a><a href="/login">Planilha 2T26</a>'
+        rows = app_parser_operacional.extrair_links_html(
+            html, "https://ri.example.com/", "MGLU3", "Magazine Luiza", 2022,
+            permitir_planilha_sem_periodo=True, allowed_domains=["ri.example.com"],
+        )
+        self.assertEqual(rows, [])
+
+    def test_real_content_type_is_sniffed_from_bytes(self):
+        self.assertEqual(app_parser_operacional.identificar_tipo_conteudo(b"PK\x03\x04payload", "text/html")[0], "excel_ooxml")
+        self.assertEqual(app_parser_operacional.identificar_tipo_conteudo(b"<html>login</html>", "application/vnd.ms-excel")[0], "html")
+        self.assertEqual(app_parser_operacional.identificar_tipo_conteudo(b"%PDF-1.7", "application/octet-stream")[0], "pdf")
+
+    def test_multiple_workbook_sheets_are_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MGLU3_HISTORICO.xlsx"
+            workbook = Workbook()
+            workbook.active.title = "Capa"
+            workbook.active.append(["Sem dados"])
+            sheet = workbook.create_sheet("Operacao")
+            sheet.append(["Indicador", "2T26"])
+            sheet.append(["Numero de lojas", 321])
+            workbook.save(path)
+            rows = extract_workbook_observations(path, ticker="MGLU3")
+        self.assertEqual(rows[0]["sheet"], "Operacao")
+        self.assertEqual(rows[0]["value"], 321)
 
 
 if __name__ == "__main__":

@@ -1702,19 +1702,33 @@ async def run_retail(args: argparse.Namespace) -> int:
         markdowns = [path for path in files if path.suffix.lower() == ".md" and not path.name.endswith(".meta.json")]
         observations: list[dict[str, Any]] = []
         processed: list[str] = []
+        document_diagnostics: list[dict[str, Any]] = []
         for path in spreadsheets:
             period = normalize_retail_period(path.name) or ""
             source = metadata.get(path.name) or metadata.get((ticker, period), {})
             try:
-                extracted = extract_workbook_observations(path, ticker=ticker, source_url=str(source.get("url_documento") or ""))
+                inspection: dict[str, Any] = {}
+                extracted = extract_workbook_observations(
+                    path, ticker=ticker, source_url=str(source.get("url_documento") or ""),
+                    diagnostics=inspection,
+                )
                 if source.get("baixado_em"):
                     for item in extracted:
                         item["collected_at"] = source["baixado_em"]
                 observations.extend(extracted)
                 processed.append(path.name)
                 documents_seen += 1
+                document_diagnostics.append({
+                    "document": path.name, "source_type": "official_spreadsheet",
+                    "status": "extracted" if extracted else "no_matching_observations",
+                    "observations": len(extracted), **inspection,
+                })
             except Exception as exc:
                 errors.append({"ticker": ticker, "document": path.name, "error": str(exc)})
+                document_diagnostics.append({
+                    "document": path.name, "source_type": "official_spreadsheet",
+                    "status": "error", "error": str(exc),
+                })
         excel_keys = {(item.get("indicator_id"), item.get("period"), item.get("scope"), item.get("segment")) for item in observations}
         if not args.no_md_fallback:
             for path in markdowns:
@@ -1731,8 +1745,17 @@ async def run_retail(args: argparse.Namespace) -> int:
                     observations.extend(item for item in fallback if (item.get("indicator_id"), item.get("period"), item.get("scope"), item.get("segment")) not in excel_keys)
                     processed.append(path.name)
                     documents_seen += 1
+                    document_diagnostics.append({
+                        "document": path.name, "source_type": "official_pdf_markdown",
+                        "status": "extracted" if fallback else "no_matching_observations",
+                        "observations": len(fallback),
+                    })
                 except Exception as exc:
                     errors.append({"ticker": ticker, "document": path.name, "error": str(exc)})
+                    document_diagnostics.append({
+                        "document": path.name, "source_type": "official_pdf_markdown",
+                        "status": "error", "error": str(exc),
+                    })
         previous_path = output_dir / f"{ticker}.json"
         previous_payload: dict[str, Any] = {}
         if previous_path.exists():
@@ -1744,6 +1767,7 @@ async def run_retail(args: argparse.Namespace) -> int:
             ticker=ticker, company_name=company.expected_name,
             observations=dedupe_observations(observations), companies_requested=len(selected),
             documents_processed=processed, previous_payload=previous_payload,
+            document_diagnostics=document_diagnostics,
         )
         if payload.get("status") == "preserved_existing_data":
             preserved += 1

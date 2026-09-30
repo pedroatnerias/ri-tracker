@@ -205,6 +205,12 @@ class DownloadRealizado:
     sha256: str
     baixado_em: str
     status: str
+    url_final: str = ""
+    status_http: int | None = None
+    content_type_http: str = ""
+    tipo_conteudo_real: str = ""
+    tipo_descoberto: str = ""
+    erro: str = ""
 
 
 @dataclass
@@ -274,9 +280,9 @@ def identificar_periodo(texto: str) -> tuple[str, int] | None:
     texto_normalizado = normalizar_texto(unquote(texto))
 
     padroes_trimestrais = (
-        r"\b([1-4])\s*[tq]\s*[-_/]?\s*(20\d{2}|\d{2})\b",
-        r"\b([1-4])\s*(?:tri|trimestre)\s*[-_/]?\s*(20\d{2}|\d{2})\b",
-        r"\b(20\d{2}|\d{2})\s*[-_/]?\s*([1-4])\s*[tq]\b",
+        r"(?<!\d)([1-4])\s*[tq]\s*[-_/]?\s*(20\d{2}|\d{2})(?!\d)",
+        r"(?<!\d)([1-4])\s*(?:tri|trimestre)\s*[-_/]?\s*(20\d{2}|\d{2})(?!\d)",
+        r"(?<!\d)(20\d{2}|\d{2})\s*[-_/]?\s*([1-4])\s*[tq](?!\d)",
     )
 
     for indice, padrao in enumerate(padroes_trimestrais):
@@ -415,6 +421,13 @@ def limpar_url_extraida(url: str) -> str:
     return url.replace("\\/", "/").strip().strip("\"'()[]{};,")
 
 
+def dominio_permitido(url: str, allowed_domains: list[str] | tuple[str, ...] | set[str] | None) -> bool:
+    if not allowed_domains:
+        return True
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    return any(host == domain.lower() or host.endswith(f".{domain.lower()}") for domain in allowed_domains)
+
+
 def urls_em_texto(texto: str) -> list[str]:
     urls = [
         limpar_url_extraida(url)
@@ -439,8 +452,29 @@ def montar_documento(
     titulo: str,
     url_origem: str,
     url_documento: str,
+    permitir_planilha_sem_periodo: bool = False,
 ) -> DocumentoEncontrado | None:
-    if not tipo or not periodo_ano:
+    if not tipo:
+        return None
+
+    suffix = Path(urlparse(url_documento).path).suffix.lower()
+    if suffix in {".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".woff", ".woff2", ".ttf"}:
+        return None
+
+    if tipo == "PLANILHA_RESULTADOS":
+        parsed = urlparse(url_documento)
+        path = parsed.path.lower()
+        suffix = Path(path).suffix.lower()
+        download_hint = normalizar_texto(f"{path} {parsed.query}")
+        if suffix not in {".xlsx", ".xlsm", ".xls"} and not any(
+            token in download_hint
+            for token in ("/v2/d/", "/download", "download=", "/document/", "/arquivo/")
+        ):
+            return None
+
+    if not periodo_ano and tipo == "PLANILHA_RESULTADOS" and permitir_planilha_sem_periodo:
+        periodo_ano = ("HISTORICO", datetime.now().year)
+    if not periodo_ano:
         return None
 
     periodo, ano = periodo_ano
@@ -465,6 +499,8 @@ def extrair_links_html(
     ticker: str,
     empresa: str,
     ano_inicial: int,
+    permitir_planilha_sem_periodo: bool = False,
+    allowed_domains: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> list[DocumentoEncontrado]:
     soup = BeautifulSoup(html, "html.parser")
     encontrados: list[DocumentoEncontrado] = []
@@ -485,6 +521,8 @@ def extrair_links_html(
                 continue
 
             url_documento = urljoin(url_base, href)
+            if not dominio_permitido(url_documento, allowed_domains):
+                continue
             texto_completo = f"{titulo} {href} {atributos} {contexto}"
 
             if not parece_pdf(url_documento, texto_completo):
@@ -499,6 +537,7 @@ def extrair_links_html(
                 titulo=titulo,
                 url_origem=url_base,
                 url_documento=url_documento,
+                permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
             )
 
             if not documento or documento.url_documento in urls_vistas:
@@ -511,6 +550,8 @@ def extrair_links_html(
     # .pdf, mas precisa ter contexto suficiente de periodo e tipo.
     for url_extraida in urls_em_texto(html):
         url_documento = urljoin(url_base, url_extraida)
+        if not dominio_permitido(url_documento, allowed_domains):
+            continue
         posicao = html.find(url_documento)
         if posicao < 0:
             posicao = html.find(url_extraida)
@@ -530,6 +571,7 @@ def extrair_links_html(
             titulo=Path(urlparse(url_documento).path).name,
             url_origem=url_base,
             url_documento=url_documento,
+            permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
         )
         if documento and documento.url_documento not in urls_vistas:
             urls_vistas.add(documento.url_documento)
@@ -606,6 +648,7 @@ def documento_de_contexto(
     url_origem: str,
     url_documento: str,
     contexto: str,
+    permitir_planilha_sem_periodo: bool = False,
 ) -> DocumentoEncontrado | None:
     if not parece_pdf(url_documento, contexto):
         return None
@@ -618,6 +661,7 @@ def documento_de_contexto(
         titulo=Path(urlparse(url_documento).path).name,
         url_origem=url_origem,
         url_documento=url_documento,
+        permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
     )
 
 
@@ -627,11 +671,15 @@ def documentos_de_network(
     empresa: str,
     ano_inicial: int,
     url_origem: str,
+    permitir_planilha_sem_periodo: bool = False,
+    allowed_domains: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> list[DocumentoEncontrado]:
     documentos: list[DocumentoEncontrado] = []
     vistos: set[str] = set()
     for item in network_items:
         url = str(item.get("url") or "")
+        if not dominio_permitido(url, allowed_domains):
+            continue
         content_type = str(item.get("content_type") or "")
         contexto = f"{url} {content_type} {item.get('body_preview') or ''}"
         if "application/pdf" in content_type.lower():
@@ -643,6 +691,7 @@ def documentos_de_network(
             url_origem=url_origem,
             url_documento=url,
             contexto=contexto,
+            permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
         )
         if documento and documento.url_documento not in vistos:
             vistos.add(documento.url_documento)
@@ -694,7 +743,12 @@ def obter_html_playwright_resultado(url: str) -> RespostaPlaywright:
                 content_norm = normalizar_texto(content_type)
                 relevante = (
                     "application/pdf" in content_norm
+                    or "spreadsheet" in content_norm
+                    or "excel" in content_norm
                     or ".pdf" in url_norm
+                    or ".xlsx" in url_norm
+                    or ".xlsm" in url_norm
+                    or re.search(r"\.xls(?:$|\?)", url_norm) is not None
                     or "download" in url_norm
                     or "document" in url_norm
                     or "arquivo" in url_norm
@@ -796,8 +850,41 @@ def coletar_documentos_empresa(
     usar_playwright: bool,
     diagnostico_ri: bool = False,
 ) -> list[DocumentoEncontrado]:
+    discovery_pages = [str(item) for item in configuracao.get("discovery_pages", []) if item]
+    direct_documents = list(configuracao.get("direct_documents", []))
+    if discovery_pages:
+        combinados: dict[str, DocumentoEncontrado] = {}
+        for page_url in discovery_pages:
+            page_config = dict(configuracao)
+            page_config["url"] = page_url
+            page_config["discovery_pages"] = []
+            page_config["direct_documents"] = []
+            for documento in coletar_documentos_empresa(
+                ticker=ticker, configuracao=page_config, sessao=sessao,
+                ano_inicial=ano_inicial, usar_playwright=usar_playwright,
+                diagnostico_ri=diagnostico_ri,
+            ):
+                combinados[documento.url_documento] = documento
+        for item in direct_documents:
+            url_documento = str(item.get("url") or "")
+            if not url_documento:
+                continue
+            documento = DocumentoEncontrado(
+                ticker=ticker, empresa=str(configuracao["empresa"]),
+                periodo=str(item.get("period") or "HISTORICO"),
+                ano=int(item.get("year") or datetime.now().year),
+                tipo=str(item.get("type") or "PLANILHA_RESULTADOS"),
+                titulo_original=str(item.get("title") or Path(urlparse(url_documento).path).name or "documento direto"),
+                url_origem=str(item.get("source_page") or configuracao.get("homepage") or configuracao.get("url") or ""),
+                url_documento=url_documento,
+            )
+            combinados[documento.url_documento] = documento
+        return list(combinados.values())
+
     empresa = configuracao["empresa"]
     url = configuracao["url"]
+    permitir_planilha_sem_periodo = bool(configuracao.get("allow_undated_spreadsheet"))
+    allowed_domains = configuracao.get("allowed_domains")
 
     print(f"\n[{ticker}] Consultando {empresa}")
     print(f"Página: {url}")
@@ -821,6 +908,8 @@ def coletar_documentos_empresa(
             ticker=ticker,
             empresa=empresa,
             ano_inicial=ano_inicial,
+            permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
+            allowed_domains=allowed_domains,
         )
 
         print(
@@ -874,6 +963,8 @@ def coletar_documentos_empresa(
             ticker=ticker,
             empresa=empresa,
             ano_inicial=ano_inicial,
+            permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
+            allowed_domains=allowed_domains,
         )
         documentos_network = documentos_de_network(
             resposta_playwright.network_items,
@@ -881,6 +972,8 @@ def coletar_documentos_empresa(
             empresa=empresa,
             ano_inicial=ano_inicial,
             url_origem=url,
+            permitir_planilha_sem_periodo=permitir_planilha_sem_periodo,
+            allowed_domains=allowed_domains,
         )
 
         combinados = {
@@ -957,6 +1050,25 @@ def conteudo_e_planilha(resposta: requests.Response, suffix: str) -> bool:
     return False
 
 
+def identificar_tipo_conteudo(conteudo: bytes, content_type: str = "") -> tuple[str, str]:
+    """Identifica o formato real pelos bytes; o cabeçalho HTTP é apenas evidência auxiliar."""
+    header = (content_type or "").lower()
+    prefix = conteudo[:512].lstrip().lower()
+    if conteudo.startswith(b"%PDF"):
+        return "pdf", ".pdf"
+    if conteudo.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
+        return "excel_xls", ".xls"
+    if conteudo.startswith(b"PK"):
+        return "excel_ooxml", ".xlsx"
+    if prefix.startswith((b"<!doctype html", b"<html")) or "text/html" in header:
+        return "html", ".html"
+    if "application/pdf" in header:
+        return "invalid_pdf_payload", ".bin"
+    if "spreadsheet" in header or "excel" in header:
+        return "invalid_excel_payload", ".bin"
+    return "unknown", ".bin"
+
+
 def baixar_documento(
     documento: DocumentoEncontrado,
     sessao: requests.Session,
@@ -965,17 +1077,18 @@ def baixar_documento(
 ) -> DownloadRealizado | None:
     input_dir.mkdir(parents=True, exist_ok=True)
 
-    nome_arquivo = nome_arquivo_documento(documento)
-    destino = input_dir / nome_arquivo
+    nome_proposto = nome_arquivo_documento(documento)
+    destino = input_dir / nome_proposto
 
     if destino.exists() and not sobrescrever:
         return DownloadRealizado(
             **asdict(documento),
             arquivo_local=str(destino.resolve()),
-            nome_arquivo=nome_arquivo,
+            nome_arquivo=nome_proposto,
             sha256=calcular_sha256(destino),
             baixado_em=datetime.now().astimezone().isoformat(),
             status="ja_existente",
+            tipo_conteudo_real="existing_file",
         )
 
     resposta = sessao.get(
@@ -988,26 +1101,39 @@ def baixar_documento(
     )
     resposta.raise_for_status()
 
-    suffix = destino.suffix.lower()
-    if suffix == ".pdf" and not conteudo_e_pdf(resposta):
-        raise ValueError("O endereço não retornou um PDF. " f"Content-Type: {resposta.headers.get('Content-Type')}")
-    if suffix in {".xlsx", ".xlsm", ".xls"} and not conteudo_e_planilha(resposta, suffix):
-        raise ValueError("O endereço não retornou uma planilha Excel válida. " f"Content-Type: {resposta.headers.get('Content-Type')}")
+    content_type = resposta.headers.get("Content-Type", "")
+    tipo_real, extensao_real = identificar_tipo_conteudo(resposta.content, content_type)
+    if tipo_real != "pdf" and not tipo_real.startswith("excel_"):
+        raise ValueError(
+            f"conteúdo real {tipo_real}, esperado PDF ou Excel; Content-Type: {content_type}; URL final: {resposta.url}"
+        )
+    tipo_documento_real = "PLANILHA_RESULTADOS" if tipo_real.startswith("excel_") else documento.tipo
+    if tipo_real == "excel_ooxml" and Path(urlparse(resposta.url).path).suffix.lower() == ".xlsm":
+        extensao_real = ".xlsm"
+    destino = input_dir / f"{documento.ticker}_{documento.periodo}_{tipo_documento_real}{extensao_real}"
+    nome_arquivo = destino.name
 
     arquivo_temporario = destino.with_suffix(destino.suffix + ".part")
     arquivo_temporario.write_bytes(resposta.content)
 
-    if suffix == ".pdf":
+    if extensao_real == ".pdf":
         validar_pdf(arquivo_temporario)
     arquivo_temporario.replace(destino)
 
+    document_data = asdict(documento)
+    document_data["tipo"] = tipo_documento_real
     return DownloadRealizado(
-        **asdict(documento),
+        **document_data,
         arquivo_local=str(destino.resolve()),
         nome_arquivo=nome_arquivo,
         sha256=calcular_sha256(destino),
         baixado_em=datetime.now().astimezone().isoformat(),
         status="baixado",
+        url_final=resposta.url,
+        status_http=resposta.status_code,
+        content_type_http=content_type,
+        tipo_conteudo_real=tipo_real,
+        tipo_descoberto=documento.tipo,
     )
 
 
@@ -1027,13 +1153,15 @@ def salvar_manifesto_downloads(
         except Exception:
             existente = []
 
-    por_chave: dict[tuple[str, str, str], dict[str, Any]] = {}
+    por_chave: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
 
     for item in existente:
         chave = (
             str(item.get("ticker", "")),
             str(item.get("periodo", "")),
             str(item.get("tipo", "")),
+            str(item.get("url_documento", "")),
+            str(item.get("status", "")),
         )
         por_chave[chave] = item
 
@@ -1043,6 +1171,8 @@ def salvar_manifesto_downloads(
             registro.ticker,
             registro.periodo,
             registro.tipo,
+            registro.url_documento,
+            registro.status,
         )
         por_chave[chave] = item
 
@@ -1111,6 +1241,17 @@ def baixar_documentos_ri(
             usar_playwright = False
             documentos = list(erro.documentos)
 
+        if not documentos:
+            registros.append(DownloadRealizado(
+                ticker=ticker, empresa=str(configuracao.get("empresa") or ticker),
+                periodo="", ano=datetime.now().year, tipo="",
+                titulo_original="", url_origem=str(configuracao.get("url") or ""),
+                url_documento="", arquivo_local="", nome_arquivo="", sha256="",
+                baixado_em=datetime.now().astimezone().isoformat(),
+                status="nenhum_documento_descoberto",
+                erro="As paginas oficiais configuradas nao expuseram documento elegivel para o periodo solicitado.",
+            ))
+
         # Evita múltiplos arquivos para a mesma combinação.
         por_chave: dict[tuple[str, str], DocumentoEncontrado] = {}
 
@@ -1145,6 +1286,15 @@ def baixar_documentos_ri(
                     )
 
             except Exception as erro:
+                registros.append(DownloadRealizado(
+                    **asdict(documento),
+                    arquivo_local="",
+                    nome_arquivo=nome_arquivo_documento(documento),
+                    sha256="",
+                    baixado_em=datetime.now().astimezone().isoformat(),
+                    status="erro_download",
+                    erro=str(erro),
+                ))
                 print(
                     "  [erro] "
                     f"{documento.ticker} "
@@ -1156,14 +1306,15 @@ def baixar_documentos_ri(
             time.sleep(INTERVALO_ENTRE_DOWNLOADS)
 
     salvar_manifesto_downloads(registros, manifest_path)
-    if not registros:
+    concluidos = [item for item in registros if item.status in {"baixado", "ja_existente"}]
+    if not concluidos:
         afetados = ", ".join(sorted(empresas_selecionadas))
         print(
             "0 documentos encontrados nos sites de RI. "
             f"Tickers afetados: {afetados}",
             file=sys.stderr,
         )
-    return registros
+    return concluidos
 
 
 # ============================================================

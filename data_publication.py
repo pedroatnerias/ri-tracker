@@ -77,7 +77,7 @@ def validate_operational_snapshot(path: Path, sector: str) -> None:
     if sector in structured_sectors and payload_sector != sector:
         raise SystemExit(f"Snapshot operacional pertence ao setor {payload_sector or 'não informado'}, mas o setor solicitado é {sector}.")
     observations = payload.get("observations")
-    empty_statuses = {"not_found", "not_found_no_previous_data", "source_unavailable", "unsupported_document"}
+    empty_statuses = {"not_found", "not_found_no_previous_data", "source_unavailable", "unsupported_document", "extraction_failed"}
     if sector in structured_sectors:
         required = {"schema_version", "generated_at", "extractor_version", "companies_requested", "documents_processed", "calculation_metadata"}
         missing = sorted(required - set(payload))
@@ -91,6 +91,11 @@ def validate_operational_snapshot(path: Path, sector: str) -> None:
             raise SystemExit(f"Snapshot contém observação de outro setor: {observation.get('sector')}.")
         if observation_ticker not in allowed:
             raise SystemExit(f"Ticker {observation_ticker} não pertence ao setor {sector}.")
+    if sector == "varejo" and isinstance(observations, list):
+        from retail_operational import observation_validation_errors
+        errors = observation_validation_errors(observations, ticker)
+        if errors:
+            raise SystemExit(f"Snapshot operacional de varejo invalido em {path}: {'; '.join(errors[:10])}")
 
 
 def validate_png_file(path: Path, label: str) -> None:

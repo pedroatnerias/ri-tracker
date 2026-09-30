@@ -31,12 +31,17 @@ historico/compatibilidade para consultas e leitura de dados legados.
 Construção Civil preserva seu pipeline operacional baseado em PDFs oficiais de
 RI, além do pipeline financeiro.
 
-Varejo acompanha ALLD3, AMAR3, AMER3, BHIA3, CEAB3, CGRA3, LJQQ3, LREN3,
+Varejo acompanha ALLD3, AMAR3, AMER3, AUAU3, BHIA3, CEAB3, CGRA3, LJQQ3, LREN3,
 MGLU3, RIAA3, SBFG3, TFCO4, TOKY3, VSTE3, WEST3 e WHRL3. Além do financeiro,
 o setor acompanha lojas, área de vendas e receitas física/digital. RIAA3/GUAR3 e VSTE3/LLIS3 usam a continuidade de
 ticker do cadastro; CGRA3/CGRA4 e WHRL3/WHRL4 têm market cap somado por classe.
 Em TFCO4, as ON são ponderadas a 1/10 da PN conforme a estrutura de direitos
 econômicos divulgada pela companhia.
+
+AUAU3 representa a União Pet Participações (Grupo Petz Cobasi) desde janeiro
+de 2026. PETZ3 fica registrado apenas como predecessor informativo: o Tracker
+não redireciona nem combina automaticamente a série histórica da Petz com a
+companhia combinada, pois o novo escopo também inclui a Cobasi.
 
 ```bash
 python update_data.py --sector saude --scope all --mode incremental

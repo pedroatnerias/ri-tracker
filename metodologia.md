@@ -656,6 +656,16 @@ fonte preferencial é a planilha oficial de fundamentos/resultados; Markdown
 convertido de PDF oficial somente completa chaves de métrica e período ausentes
 no Excel.
 
+O cadastro de fontes separa `spreadsheet_pages`, `results_pages` e documentos
+diretos conhecidos. O formato é confirmado pelos bytes recebidos, independentemente
+do nome do link, e o manifesto registra URL final, cabeçalho HTTP, tipo real e
+falhas de descoberta ou download.
+
+Para AUAU3, o emissor atual é a União Pet Participações S.A. PETZ3 é um
+predecessor informativo e não um `legacy_ticker`: dados anteriores da Petz não
+são reatribuídos automaticamente ao Grupo Petz Cobasi. Uma eventual série
+contínua exige reconciliação explícita de Petz, Cobasi, período e escopo.
+
 As métricas padronizadas são número de lojas, área total de vendas em m²,
 receita física, receita digital, participação da receita digital e receita
 física por m². Lojas próprias, franqueadas e por bandeira permanecem como

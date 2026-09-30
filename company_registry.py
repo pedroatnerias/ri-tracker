@@ -61,6 +61,8 @@ class Company:
     configuration_status: str = "validated"
     configuration_note: str | None = None
     legacy_tickers: tuple[str, ...] = ()
+    predecessor_tickers: tuple[str, ...] = ()
+    continuity_note: str | None = None
     share_classes: tuple[ShareClass, ...] = ()
     statement_scale_overrides: tuple[StatementScaleOverride, ...] = ()
 
@@ -82,11 +84,12 @@ def _c(ticker: str, sector: str, cd: str, cnpj: str, name: str, aliases: tuple[s
        scope: str = "con", operational: bool | None = None, yahoo: str | None = None,
        status: str = "validated", note: str | None = None,
        legacy_tickers: tuple[str, ...] = (), share_classes: tuple[ShareClass, ...] = (),
+       predecessor_tickers: tuple[str, ...] = (), continuity_note: str | None = None,
        statement_scale_overrides: tuple[StatementScaleOverride, ...] = ()) -> Company:
     operational_enabled = SECTOR_CONFIG[sector].operational_enabled if operational is None else operational
     return Company(ticker, sector, cd.zfill(6), cnpj, name, aliases or (name,), scope, True,
                    operational_enabled, yahoo if yahoo is not None else f"{ticker}.SA", status, note, legacy_tickers,
-                   share_classes, statement_scale_overrides)
+                   predecessor_tickers, continuity_note, share_classes, statement_scale_overrides)
 
 
 _COMPANIES = (
@@ -126,6 +129,16 @@ _COMPANIES = (
     _c("ALLD3", "varejo", "25330", "20.247.322/0001-47", "ALLIED TECNOLOGIA S.A."),
     _c("AMAR3", "varejo", "22055", "61.189.288/0001-89", "MARISA LOJAS S.A."),
     _c("AMER3", "varejo", "20990", "00.776.574/0001-56", "AMERICANAS S.A. - EM RECUPERACAO JUDICIAL", ("AMERICANAS S.A.", "AMERICANAS S.A. - EM RECUPERACAO JUDICIAL")),
+    _c(
+        "AUAU3", "varejo", "27766", "53.153.938/0001-08", "UNIAO PET PARTICIPACOES S.A.",
+        ("UNIAO PET PARTICIPACOES S.A.", "GRUPO PETZ COBASI", "UNIAO PET"),
+        predecessor_tickers=("PETZ3",),
+        continuity_note=(
+            "AUAU3 identifica o Grupo Petz Cobasi desde 05/01/2026. PETZ3 e apenas predecessor "
+            "informativo: series historicas nao sao reatribuidas automaticamente porque a companhia "
+            "combinada inclui Petz e Cobasi e requer reconciliacao explicita de escopo."
+        ),
+    ),
     _c("BHIA3", "varejo", "6505", "33.041.260/0652-90", "GRUPO CASAS BAHIA S.A.", ("GRUPO CASAS BAHIA S.A.", "VIA S.A.", "VIA VAREJO S.A.")),
     _c("CEAB3", "varejo", "24848", "45.242.914/0001-05", "C&A MODAS S.A."),
     _c("CGRA3", "varejo", "4537", "92.012.467/0001-70", "GRAZZIOTIN S.A.", share_classes=(ShareClass("CGRA3", "QT_ACAO_ORDIN_CAP_INTEGR"), ShareClass("CGRA4", "QT_ACAO_PREF_CAP_INTEGR"))),

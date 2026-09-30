@@ -33,7 +33,7 @@ class SectorUpdateTests(unittest.TestCase):
         flat = [part for call in command.call_args_list for part in call.args[1]]
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_balancos.py"), flat)
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
-        self.assertEqual(len(result["companies"]["operational"]), 16)
+        self.assertEqual(len(result["companies"]["operational"]), 17)
 
     def test_retail_first_deploy_does_not_require_published_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,7 +48,7 @@ class SectorUpdateTests(unittest.TestCase):
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_parser_operacional.py"), flat)
         self.assertIn(str(Path(dashboard.BASE_DIR) / "app_extrator_operacional.py"), flat)
         self.assertEqual(result["status"], "success")
-        self.assertEqual(len(result["companies"]["operational"]), 16)
+        self.assertEqual(len(result["companies"]["operational"]), 17)
 
     def test_all_financial_expands_to_all_sector_pipelines(self):
         with tempfile.TemporaryDirectory() as tmp, patch("dashboard.run_update_command", return_value={"status": "ok"}) as command, patch("dashboard.find_balanco_json", return_value=Path(tmp) / "x.json"):

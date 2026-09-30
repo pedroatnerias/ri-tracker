@@ -25,10 +25,12 @@ class SectorPublicationTests(unittest.TestCase):
             snapshot.write_text(json.dumps({
                 "schema_version": "retail_operational_v1", "sector": "varejo",
                 "generated_at": "2026-09-30T00:00:00+00:00", "extractor_version": "retail_operational_v1",
-                "companies_requested": 16, "documents_processed": 1, "calculation_metadata": {},
+                "companies_requested": 17, "documents_processed": 1, "calculation_metadata": {},
                 "ticker": "MGLU3", "observations": [{
                     "sector": "varejo", "ticker": "MGLU3", "indicator_id": "stores_count",
                     "period": "2T26", "value": 100, "unit": "lojas", "source_document": "oficial.xlsx",
+                    "source_type": "official_spreadsheet", "row_label": "Numero de lojas", "raw_value": "100",
+                    "reported_or_derived": "reported", "scope": "retail_channels", "segment": "consolidado",
                     "confidence": "high", "validation_status": "valid",
                 }], "metricas": {}, "status": "found_new_data",
             }), encoding="utf-8")

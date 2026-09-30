@@ -69,6 +69,7 @@ _RETAIL_URLS = {
     "ALLD3": "https://ri.alliedbrasil.com.br/",
     "AMAR3": "https://ri.marisa.com.br/",
     "AMER3": "https://ri.americanas.io/",
+    "AUAU3": "https://ri.petzcobasi.com.br/",
     "BHIA3": "https://ri.grupocasasbahia.com.br/",
     "CEAB3": "https://ri.cea.com.br/",
     "CGRA3": "https://www.grazziotin.com.br/ri/",
@@ -77,11 +78,50 @@ _RETAIL_URLS = {
     "MGLU3": "https://ri.magazineluiza.com.br/",
     "RIAA3": "https://ri.riachuelo.com.br/",
     "SBFG3": "https://ri.gruposbf.com.br/",
-    "TFCO4": "https://ri.tfco.com.br/",
-    "TOKY3": "https://ri.grupotoky.com.br/",
-    "VSTE3": "https://ri.veste.com/",
+    "TFCO4": "https://www.tfco.com.br/ri/",
+    "TOKY3": "https://investors.grupotoky.com.br/",
+    "VSTE3": "https://www.veste.com/",
     "WEST3": "https://ri.westwing.com.br/",
     "WHRL3": "https://www.whirlpool.com.br/investidores",
+}
+
+_RETAIL_RESULTS_PAGES = {
+    "ALLD3": "https://ri.alliedbrasil.com.br/informacoes-financeiras-e-operacionais/central-de-resultados/",
+    "AMAR3": "https://ri.marisa.com.br/informacoes-financeiras/central-de-resultados/",
+    "AMER3": "https://ri.americanas.io/informacoes-aos-investidores/central-de-resultados/",
+    "AUAU3": "https://ri.petzcobasi.com.br/informacoes-financeiras/central-de-resultados-cobasi/",
+    "BHIA3": "https://ri.grupocasasbahia.com.br/informacoes-financeiras/central-de-resultados/",
+    "CEAB3": "https://ri.cea.com.br/central-de-resultados/",
+    "CGRA3": "https://www.grazziotin.com.br/documentos-de-governanca/informacoes-financeiras/release-financeiro/",
+    "LJQQ3": "https://ri.quero-quero.com.br/informacoes-financeiras/central-de-resultados/",
+    "LREN3": "https://ri.lojasrenner.com.br/info-aos-investidores/central-de-resultados/",
+    "MGLU3": "https://ri.magazineluiza.com.br/listresultados.aspx?idCanal=0WX0bwP76pYcZvx+vXUnvg==",
+    "RIAA3": "https://ri.riachuelo.com.br/informacoes-financeiras/central-de-resultados/",
+    "SBFG3": "https://ri.gruposbf.com.br/informacoes-financeiras/central-de-resultados/",
+    "TFCO4": "https://www.tfco.com.br/ri/informacoes-financeiras/central-de-resultados/",
+    "TOKY3": "https://investors.grupotoky.com.br/central-de-resultados/",
+    "VSTE3": "https://www.veste.com/informacoes-financeiras/central-de-resultados/",
+    "WEST3": "https://ri.westwing.com.br/informacoes-financeiras/central-de-resultados/",
+    "WHRL3": "https://www.whirlpool.com.br/investidores",
+}
+
+_RETAIL_SPREADSHEET_PAGES = {
+    "ALLD3": "https://ri.alliedbrasil.com.br/informacoes-financeiras-e-operacionais/planilha-de-fundamentos/",
+    "AUAU3": "https://ri.petzcobasi.com.br/informacoes-financeiras/planilha-interativa/",
+    "BHIA3": "https://ri.grupocasasbahia.com.br/informacoes-financeiras/planilha-interativa/",
+    "CEAB3": "https://ri.cea.com.br/planilha-dinamica/",
+    "LJQQ3": "https://ri.quero-quero.com.br/informacoes-financeiras/planilha-de-resultados/",
+    "LREN3": "https://ri.lojasrenner.com.br/info-aos-investidores/planilhas-e-fundamentos/",
+    "RIAA3": "https://ri.riachuelo.com.br/informacoes-financeiras/fundamentos-e-planilhas/",
+    "SBFG3": "https://ri.gruposbf.com.br/informacoes-financeiras/planilha-interativa/",
+    "VSTE3": "https://www.veste.com/informacoes-financeiras/planilha-de-fundamentos/",
+}
+
+_RETAIL_DIRECT_DOCUMENTS = {
+    "AMAR3": [{
+        "url": "https://api.mziq.com/mzfilemanager/v2/d/660f4475-162e-43ea-9bd7-86de0a0ed2fa/06aa40a1-1ba8-e05c-f11a-04283ace6405?origin=2",
+        "type": "PLANILHA_RESULTADOS", "period": "HISTORICO", "title": "Planilhas e Fundamentos",
+    }],
 }
 
 
@@ -108,8 +148,27 @@ def _build_sector_sources(sector: str, urls: dict[str, str], result_pages: dict[
 OPERATIONAL_RI_SOURCES = {
     "saude": _build_sector_sources("saude", _HEALTH_URLS),
     "construcao_civil": _build_sector_sources("construcao_civil", _CONSTRUCTION_URLS, _CONSTRUCTION_RESULTS_PAGES),
-    "varejo": _build_sector_sources("varejo", _RETAIL_URLS),
+    "varejo": _build_sector_sources("varejo", _RETAIL_URLS, _RETAIL_RESULTS_PAGES),
 }
+
+for _ticker, _source in OPERATIONAL_RI_SOURCES["varejo"].items():
+    _source["spreadsheet_pages"] = [_RETAIL_SPREADSHEET_PAGES[_ticker]] if _ticker in _RETAIL_SPREADSHEET_PAGES else []
+    _source["discovery_pages"] = list(dict.fromkeys([*_source["spreadsheet_pages"], *_source["results_pages"]]))
+    _source["direct_documents"] = list(_RETAIL_DIRECT_DOCUMENTS.get(_ticker, ()))
+    _source["allow_undated_spreadsheet"] = True
+    _source["accepted_document_types"] = [
+        "PLANILHA_RESULTADOS", "PREVIA_OPERACIONAL",
+        "RELEASE_RESULTADOS", "APRESENTACAO_RESULTADOS",
+    ]
+    extra_domains = {
+        str(item["url"]).split("/", 3)[2]
+        for item in _source["direct_documents"]
+    }
+    _source["allowed_domains"] = sorted({
+        *_source["allowed_domains"], *extra_domains,
+        # MZ hospeda os documentos de diversas páginas oficiais de RI.
+        "api.mziq.com", "cdn-sites-assets.mziq.com", "s3.amazonaws.com",
+    })
 
 
 def operational_sources_for_sector(sector: str) -> dict[str, dict[str, Any]]:

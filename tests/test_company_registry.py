@@ -33,7 +33,7 @@ class CompanyRegistryTests(unittest.TestCase):
             company_by_ticker("XXXX3")
 
     def test_retail_universe_capabilities_and_legacy_tickers(self):
-        expected = {"ALLD3", "AMAR3", "AMER3", "BHIA3", "CEAB3", "CGRA3", "LJQQ3", "LREN3", "MGLU3", "RIAA3", "SBFG3", "TFCO4", "TOKY3", "VSTE3", "WEST3", "WHRL3"}
+        expected = {"ALLD3", "AMAR3", "AMER3", "AUAU3", "BHIA3", "CEAB3", "CGRA3", "LJQQ3", "LREN3", "MGLU3", "RIAA3", "SBFG3", "TFCO4", "TOKY3", "VSTE3", "WEST3", "WHRL3"}
         self.assertEqual({c.ticker for c in companies_for_sector("varejo")}, expected)
         self.assertEqual({c.ticker for c in financial_companies("varejo")}, expected)
         self.assertEqual({c.ticker for c in operational_companies("varejo")}, expected)
@@ -46,7 +46,12 @@ class CompanyRegistryTests(unittest.TestCase):
         tfco = company_by_ticker("TFCO4")
         self.assertEqual([c.class_label for c in tfco.share_classes], ["ON", "PN"])
         self.assertEqual([c.economic_weight for c in tfco.share_classes], [0.1, 1.0])
-        self.assertFalse(expected & {"SLED3", "AUAU3", "AZZA3"})
+        self.assertFalse(expected & {"SLED3", "AZZA3", "PETZ3"})
+        auau = company_by_ticker("AUAU3")
+        self.assertEqual(auau.predecessor_tickers, ("PETZ3",))
+        self.assertEqual(auau.yahoo_tickers, ("AUAU3.SA",))
+        with self.assertRaises(ValueError):
+            company_by_ticker("PETZ3")
         self.assertEqual(expand_sectors("all"), ("saude", "construcao_civil", "varejo", "tecnologia"))
         toky = company_by_ticker("TOKY3")
         self.assertEqual(statement_value_factor(toky, "ITR", "2026-06-30", "UNIDADE", 1), 1_000)
@@ -59,6 +64,7 @@ class CompanyRegistryTests(unittest.TestCase):
         expected = {
             "ALLD3": ("025330", "20.247.322/0001-47"), "AMAR3": ("022055", "61.189.288/0001-89"),
             "AMER3": ("020990", "00.776.574/0001-56"), "BHIA3": ("006505", "33.041.260/0652-90"),
+            "AUAU3": ("027766", "53.153.938/0001-08"),
             "CEAB3": ("024848", "45.242.914/0001-05"), "CGRA3": ("004537", "92.012.467/0001-70"),
             "LJQQ3": ("025038", "96.418.264/0218-02"), "LREN3": ("008133", "92.754.738/0001-62"),
             "MGLU3": ("022470", "47.960.950/0001-21"), "RIAA3": ("004669", "08.402.943/0001-52"),

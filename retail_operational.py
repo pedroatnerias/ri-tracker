@@ -22,6 +22,13 @@ RETAIL_EXTRACTOR_VERSION = "retail_operational_v1"
 MISSING_MARKERS = {"", "-", "--", "—", "n/a", "na", "nd", "n.d.", "não divulgado", "nao divulgado"}
 
 
+RETAIL_BRAND_SEGMENTS = (
+    "renner", "camicado", "youcom", "ashua", "centauro", "fisia", "nike",
+    "petz", "cobasi", "marisa", "riachuelo", "carters", "carter's",
+    "tokstok", "tok&stok", "mobly", "quero-quero", "casas bahia", "ponto",
+)
+
+
 def normalize_text(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(char for char in text if not unicodedata.combining(char))
@@ -32,10 +39,13 @@ def normalize_period(value: Any) -> str | None:
     text = normalize_text(value).upper().replace(" ", "").replace("Q", "T")
     match = re.search(r"([1-4])T(?:R?I?M?)?[-_/]?(20\d{2}|\d{2})", text)
     if match:
-        return f"{match.group(1)}T{match.group(2)[-2:]}"
+        year = int(match.group(2))
+        year = year + 2000 if year < 100 else year
+        return f"{match.group(1)}T{str(year)[-2:]}" if 2000 <= year <= datetime.now().year else None
     match = re.search(r"(?:FY|ANO|ANUAL)?[-_/]?(20\d{2})", text)
     if match:
-        return match.group(1)
+        year = int(match.group(1))
+        return str(year) if 2000 <= year <= datetime.now().year else None
     return None
 
 
@@ -78,6 +88,8 @@ def identify_metric(label: str, context: str = "") -> tuple[str | None, list[str
         forbidden = next((term for term in definition.get("forbidden_contexts", ()) if normalize_text(term) in haystack), None)
         if forbidden:
             return None, [f"forbidden_context:{normalize_text(forbidden)}"]
+        if any(brand in label_text for brand in RETAIL_BRAND_SEGMENTS) and "total" not in label_text and "consolid" not in label_text:
+            flags.append("brand_or_segment_breakdown")
         if metric_id == "stores_count" and any(term in label_text for term in ("propria", "franqueada", "franquia", "bandeira", "marca")) and "total" not in label_text:
             flags.append("breakdown_without_explicit_total")
         return metric_id, flags
@@ -92,7 +104,10 @@ def normalize_value(metric_id: str, value: float, unit_context: str) -> tuple[fl
     text = normalize_text(unit_context).replace("²", "2")
     original_unit = unit_context.strip() or RETAIL_OPERATIONAL_DICTIONARY[metric_id]["unit"]
     if metric_id == "sales_area_sqm":
-        factor = 1_000.0 if re.search(r"\bmil(?:hares)?\s*(?:m2|metros)", text) else 1.0
+        factor = 1_000.0 if (
+            re.search(r"\bmil(?:hares)?\s*(?:m2|metros)", text)
+            or re.search(r"\b(?:000s|thousand)\s*(?:m2|sq|square|metros)", text)
+        ) else 1.0
         return value * factor, "m²", original_unit
     if metric_id in {"physical_revenue_brl", "digital_revenue_brl", "comparable_total_revenue_brl"}:
         if any(term in text for term in ("bilhao", "bilhoes", "billion", "r$ bi")):
@@ -113,6 +128,9 @@ def _segment_from_label(label: str) -> str:
         return "franqueadas"
     if "propria" in text:
         return "próprias"
+    for brand in RETAIL_BRAND_SEGMENTS:
+        if brand in text:
+            return brand.replace("'", "")
     return "consolidado"
 
 
@@ -123,7 +141,7 @@ def build_observation(*, ticker: str, metric_id: str, value: float, period: str,
                       flags: Iterable[str] = ()) -> dict[str, Any]:
     normalized_value, unit, raw_unit = normalize_value(metric_id, value, unit_context)
     validation_flags = list(flags)
-    breakdown = "breakdown_without_explicit_total" in validation_flags
+    breakdown = any(flag in validation_flags for flag in ("breakdown_without_explicit_total", "brand_or_segment_breakdown"))
     area_basis = "average" if metric_id == "sales_area_sqm" and "media" in normalize_text(label) else "closing"
     confidence = "medium" if breakdown else "high"
     return {
@@ -146,9 +164,14 @@ def build_observation(*, ticker: str, metric_id: str, value: float, period: str,
 
 
 def _nearest_period(rows: list[list[Any]], row_index: int, column: int, default_period: str | None) -> str | None:
-    for index in range(row_index, max(-1, row_index - 12), -1):
+    # A célula da própria observação nunca pode ser interpretada como ano.
+    for index in range(row_index - 1, max(-1, row_index - 100), -1):
         if column < len(rows[index]):
-            period = normalize_period(rows[index][column])
+            candidate = rows[index][column]
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                period = str(int(candidate)) if float(candidate).is_integer() and 2000 <= int(candidate) <= datetime.now().year else None
+            else:
+                period = normalize_period(candidate)
             if period:
                 return period
     return default_period
@@ -185,33 +208,75 @@ def extract_rows_observations(rows: list[list[Any]], *, ticker: str, source_docu
     return dedupe_observations(observations)
 
 
-def _workbook_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
+def _workbook_rows(path: Path) -> list[tuple[str, list[list[Any]], dict[tuple[int, int], str]]]:
     if path.suffix.lower() == ".xls":
         import pandas as pd
         book = pd.ExcelFile(path)
         try:
-            return [(name, pd.read_excel(book, sheet_name=name, header=None).where(lambda frame: frame.notna(), None).values.tolist()) for name in book.sheet_names]
+            return [(name, pd.read_excel(book, sheet_name=name, header=None).where(lambda frame: frame.notna(), None).values.tolist(), {}) for name in book.sheet_names]
         finally:
             book.close()
     from openpyxl import load_workbook
     workbook = load_workbook(path, read_only=True, data_only=True)
+    formula_workbook = load_workbook(path, read_only=True, data_only=False)
     try:
-        return [(sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)]) for sheet in workbook.worksheets]
+        output = []
+        for sheet in workbook.worksheets:
+            formula_sheet = formula_workbook[sheet.title]
+            if (sheet.max_row or 0) > 100_000 or (sheet.max_column or 0) > 1_000:
+                sheet.reset_dimensions()
+            if (formula_sheet.max_row or 0) > 100_000 or (formula_sheet.max_column or 0) > 1_000:
+                formula_sheet.reset_dimensions()
+            formulas = {
+                (cell.row, cell.column): str(cell.value)
+                for row in formula_sheet.iter_rows()
+                for cell in row
+                if isinstance(cell.value, str) and cell.value.startswith("=")
+            }
+            output.append((sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)], formulas))
+        return output
     finally:
         workbook.close()
+        formula_workbook.close()
 
 
-def extract_workbook_observations(path: str | Path, *, ticker: str, source_url: str = "") -> list[dict[str, Any]]:
+def extract_workbook_observations(path: str | Path, *, ticker: str, source_url: str = "",
+                                  diagnostics: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     workbook_path = Path(path)
     default_period = normalize_period(workbook_path.name)
     observations: list[dict[str, Any]] = []
-    for sheet_name, rows in _workbook_rows(workbook_path):
-        observations.extend(extract_rows_observations(
+    sheet_names: list[str] = []
+    formula_cells = 0
+    for sheet_name, rows, formulas in _workbook_rows(workbook_path):
+        sheet_names.append(sheet_name)
+        formula_cells += len(formulas)
+        extracted = extract_rows_observations(
             rows, ticker=ticker, source_document=workbook_path.name,
             source_type="official_spreadsheet", source_url=source_url,
             sheet=sheet_name, default_period=default_period,
-        ))
+        )
+        for item in extracted:
+            match = re.fullmatch(r"R(\d+)C(\d+)", str(item.get("source_cell") or ""))
+            if match and (int(match.group(1)), int(match.group(2))) in formulas:
+                item["source_formula"] = formulas[(int(match.group(1)), int(match.group(2)))]
+                item.setdefault("validation_flags", []).append("formula_cached_value_used")
+        observations.extend(extracted)
+    if diagnostics is not None:
+        diagnostics.update({
+            "sheets": sheet_names,
+            "formula_cells": formula_cells,
+            "formula_cache_limitation": "openpyxl nao recalcula formulas; somente valores armazenados no arquivo podem ser extraidos",
+        })
     return dedupe_observations(observations)
+
+
+def inspect_workbook(path: str | Path) -> dict[str, Any]:
+    sheets = _workbook_rows(Path(path))
+    return {
+        "sheets": [name for name, _rows, _formulas in sheets],
+        "formula_cells": sum(len(formulas) for _name, _rows, formulas in sheets),
+        "formula_cache_limitation": "openpyxl nao recalcula formulas; somente valores armazenados no arquivo podem ser extraidos",
+    }
 
 
 def extract_markdown_observations(text: str, *, ticker: str, source_document: str,
@@ -256,6 +321,42 @@ def dedupe_observations(observations: Iterable[dict[str, Any]]) -> list[dict[str
         if current is None or candidate_rank > current_rank:
             selected[key] = observation
     return sorted(selected.values(), key=lambda item: (str(item.get("period")), str(item.get("indicator_id")), str(item.get("segment"))))
+
+
+def observation_validation_errors(observations: Iterable[dict[str, Any]], ticker: str) -> list[str]:
+    errors: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for index, item in enumerate(observations):
+        prefix = f"observacao[{index}]"
+        metric_id = str(item.get("indicator_id") or "")
+        if metric_id not in RETAIL_OPERATIONAL_DICTIONARY:
+            errors.append(f"{prefix}: indicador desconhecido {metric_id or 'ausente'}")
+            continue
+        if str(item.get("ticker") or "").upper() != ticker.upper():
+            errors.append(f"{prefix}: ticker divergente")
+        value = item.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+            errors.append(f"{prefix}: valor numerico invalido")
+        period = str(item.get("period") or "")
+        if not re.fullmatch(r"(?:[1-4]T\d{2}|20\d{2})", period):
+            errors.append(f"{prefix}: periodo invalido {period or 'ausente'}")
+        expected_unit = str(RETAIL_OPERATIONAL_DICTIONARY[metric_id]["unit"])
+        if str(item.get("unit") or "") != expected_unit:
+            errors.append(f"{prefix}: unidade {item.get('unit')} difere de {expected_unit}")
+        key = (metric_id, period, str(item.get("scope") or ""), str(item.get("segment") or ""))
+        if key in seen:
+            errors.append(f"{prefix}: duplicidade de indicador/periodo/escopo/segmento")
+        seen.add(key)
+        if item.get("reported_or_derived") == "reported":
+            for field in ("source_document", "source_type", "row_label", "raw_value"):
+                if item.get(field) in (None, ""):
+                    errors.append(f"{prefix}: proveniencia ausente em {field}")
+        elif item.get("reported_or_derived") == "derived":
+            if not isinstance(item.get("inputs"), dict) or not item.get("formula"):
+                errors.append(f"{prefix}: indicador derivado sem formula/inputs")
+        else:
+            errors.append(f"{prefix}: natureza reportada/calculada ausente")
+    return errors
 
 
 def derive_metrics(observations: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -329,7 +430,9 @@ def build_metricas(observations: Iterable[dict[str, Any]]) -> dict[str, list[dic
 
 def build_snapshot(*, ticker: str, company_name: str, observations: list[dict[str, Any]],
                    companies_requested: int, documents_processed: list[str],
-                   previous_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+                   previous_payload: dict[str, Any] | None = None,
+                   document_diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    document_diagnostics = list(document_diagnostics or [])
     reported = dedupe_observations(observations)
     derived, diagnostics = derive_metrics(reported)
     combined = dedupe_observations([*reported, *derived])
@@ -337,19 +440,36 @@ def build_snapshot(*, ticker: str, company_name: str, observations: list[dict[st
         preserved = dict(previous_payload)
         preserved["status"] = "preserved_existing_data"
         preserved.setdefault("warnings", []).append("Snapshot anterior preservado: nenhuma observação válida nova encontrada.")
+        preserved["last_attempt"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "documents_processed": documents_processed,
+            "document_diagnostics": document_diagnostics,
+        }
         return preserved
     missing = [
         definition["display_name"] for metric_id, definition in RETAIL_OPERATIONAL_DICTIONARY.items()
         if not definition.get("dependency_only") and not any(item.get("indicator_id") == metric_id for item in combined)
     ]
+    if combined:
+        status = "found_new_data"
+    elif any(item.get("status") == "error" for item in document_diagnostics):
+        status = "extraction_failed"
+    elif documents_processed:
+        status = "unsupported_document"
+    else:
+        status = "source_unavailable"
     return {
         "schema_version": RETAIL_SCHEMA_VERSION, "sector": "varejo",
         "generated_at": datetime.now(timezone.utc).isoformat(), "extractor_version": RETAIL_EXTRACTOR_VERSION,
         "ticker": ticker, "companhia": company_name, "companies_requested": companies_requested,
         "documents_processed": len(documents_processed), "metricas": build_metricas(combined),
-        "observations": combined, "status": "found_new_data" if combined else "not_found_no_previous_data",
+        "observations": combined, "status": status,
         "coverage_status": "found" if combined else "not_found",
-        "discovery": {"source_policy": "official_spreadsheet_then_official_pdf", "documents_processed": documents_processed},
+        "discovery": {
+            "source_policy": "official_spreadsheet_then_official_pdf",
+            "documents_processed": documents_processed,
+            "document_diagnostics": document_diagnostics,
+        },
         "calculation_metadata": {"derived_observations": len(derived), "diagnostics": diagnostics},
         "warnings": ([{
             "metric": name, "status": "not_found",
